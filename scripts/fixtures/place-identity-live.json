@@ -1,0 +1,184 @@
+[
+  {
+    "query": "85度C 高雄富國店",
+    "search": {
+      "id": "ChIJ29H3cAMFbjQRREyGNMQlOTw",
+      "types": [
+        "cafe",
+        "cake_shop",
+        "bakery",
+        "dessert_shop",
+        "confectionery",
+        "food_store",
+        "manufacturer",
+        "gift_shop",
+        "store",
+        "wholesaler",
+        "service",
+        "food",
+        "point_of_interest",
+        "establishment"
+      ],
+      "displayName": {
+        "text": "85度c 咖啡蛋糕飲料麵包Bakery & Café（高雄富國店直營店）",
+        "languageCode": "zh-TW"
+      },
+      "primaryTypeDisplayName": {
+        "text": "咖啡館",
+        "languageCode": "zh-TW"
+      },
+      "primaryType": "cafe"
+    },
+    "details": {
+      "id": "ChIJ29H3cAMFbjQRREyGNMQlOTw",
+      "types": [
+        "cafe",
+        "cake_shop",
+        "dessert_shop",
+        "gift_shop",
+        "bakery",
+        "confectionery",
+        "food_store",
+        "manufacturer",
+        "food",
+        "point_of_interest",
+        "store",
+        "wholesaler",
+        "service",
+        "establishment"
+      ],
+      "formattedAddress": "813台灣高雄市左營區新上里富國路238號",
+      "location": {
+        "latitude": 22.6624757,
+        "longitude": 120.306647
+      },
+      "displayName": {
+        "text": "85度c 咖啡蛋糕飲料麵包Bakery & Café（高雄富國店直營店）",
+        "languageCode": "zh-TW"
+      },
+      "primaryTypeDisplayName": {
+        "text": "咖啡館",
+        "languageCode": "zh-TW"
+      },
+      "primaryType": "cafe"
+    }
+  },
+  {
+    "query": "Amor阿默典藏蛋糕 高雄立文店",
+    "search": {
+      "id": "ChIJiRr-eQAFbjQRL2eKfDjtfqg",
+      "types": [
+        "cake_shop",
+        "bakery",
+        "food_store",
+        "manufacturer",
+        "store",
+        "wholesaler",
+        "service",
+        "food",
+        "point_of_interest",
+        "establishment"
+      ],
+      "displayName": {
+        "text": "Amo阿默典藏蛋糕 高雄立文店",
+        "languageCode": "zh-TW"
+      },
+      "primaryTypeDisplayName": {
+        "text": "蛋糕專賣店",
+        "languageCode": "zh-TW"
+      },
+      "primaryType": "cake_shop"
+    },
+    "details": {
+      "id": "ChIJiRr-eQAFbjQRL2eKfDjtfqg",
+      "types": [
+        "cake_shop",
+        "bakery",
+        "food_store",
+        "manufacturer",
+        "food",
+        "point_of_interest",
+        "store",
+        "wholesaler",
+        "service",
+        "establishment"
+      ],
+      "formattedAddress": "813台灣高雄市左營區新上里立文路100號1 樓",
+      "location": {
+        "latitude": 22.664650899999998,
+        "longitude": 120.304312
+      },
+      "displayName": {
+        "text": "Amo阿默典藏蛋糕 高雄立文店",
+        "languageCode": "zh-TW"
+      },
+      "primaryTypeDisplayName": {
+        "text": "蛋糕專賣店",
+        "languageCode": "zh-TW"
+      },
+      "primaryType": "cake_shop"
+    }
+  },
+  {
+    "query": "糖村 高雄立文店",
+    "search": {
+      "id": "ChIJcbgvtn8EbjQRgBdobqxxz3Q",
+      "types": [
+        "gift_shop",
+        "candy_store",
+        "confectionery",
+        "cake_shop",
+        "wholesaler",
+        "bakery",
+        "food_store",
+        "store",
+        "service",
+        "manufacturer",
+        "point_of_interest",
+        "food",
+        "establishment"
+      ],
+      "displayName": {
+        "text": "糖村SUGAR&SPICE 高雄立文店_伴手禮.牛軋糖推薦.彌月.生日蛋糕.喜餅喜糖.端午禮盒",
+        "languageCode": "zh-TW"
+      },
+      "primaryTypeDisplayName": {
+        "text": "禮品店",
+        "languageCode": "zh-TW"
+      },
+      "primaryType": "gift_shop"
+    },
+    "details": {
+      "id": "ChIJcbgvtn8EbjQRgBdobqxxz3Q",
+      "types": [
+        "cake_shop",
+        "gift_shop",
+        "candy_store",
+        "bakery",
+        "manufacturer",
+        "wholesaler",
+        "confectionery",
+        "food_store",
+        "store",
+        "service",
+        "food",
+        "point_of_interest",
+        "establishment"
+      ],
+      "formattedAddress": "813台灣高雄市左營區立文路92號巨蛋站2號/4號出口",
+      "location": {
+        "latitude": 22.6646473,
+        "longitude": 120.30447339999999
+      },
+      "displayName": {
+        "text": "糖村SUGAR&SPICE 高雄立文店_伴手禮.牛軋糖推薦.彌月.生日蛋糕.喜餅喜糖.端午禮盒",
+        "languageCode": "zh-TW"
+      },
+      "primaryTypeDisplayName": {
+        "text": "禮品店",
+        "languageCode": "zh-TW"
+      },
+      "primaryType": "gift_shop"
+    }
+  }
+]

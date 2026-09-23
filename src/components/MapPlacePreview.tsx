@@ -1,3 +1,4 @@
+import { PlaceRecommendationReason } from "@/components/PlaceRecommendationReason";
 import { Heart, Loader2, MessageCircle, Star, X } from "lucide-react";
 import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
 import { PlaceNavButtons } from "@/components/PlaceNavButtons";
@@ -60,7 +61,9 @@ export function MapPlacePreview({
             {isBusy ? (
               <Loader2 className="h-4 w-4 animate-spin" />
             ) : (
-              <Heart className={`h-4 w-4 ${isSaved ? "fill-clay text-clay" : "text-muted-foreground"}`} />
+              <Heart
+                className={`h-4 w-4 ${isSaved ? "fill-clay text-clay" : "text-muted-foreground"}`}
+              />
             )}
           </button>
         </div>
@@ -77,9 +80,11 @@ export function MapPlacePreview({
           {place.address && (
             <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{place.address}</p>
           )}
-          <p className="mt-2 text-sm leading-relaxed text-foreground/85">{place.reason}</p>
+          <p className="mt-2 text-sm leading-relaxed text-foreground/85">
+            <PlaceRecommendationReason place={place} />
+          </p>
           <PlaceHoursBadge
-                          place={place}
+            place={place}
             className="mt-2"
             statusLabel={place.openStatusLabel}
             todayHoursLabel={place.todayHoursLabel}
@@ -98,8 +103,7 @@ export function MapPlacePreview({
             onClick={onOpenChat}
             className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-full bg-primary py-2.5 text-sm text-primary-foreground"
           >
-            <MessageCircle className="h-4 w-4" />
-            和 Roamie 聊這裡
+            <MessageCircle className="h-4 w-4" />和 Roamie 聊這裡
           </button>
         </div>
       </article>

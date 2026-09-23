@@ -26,7 +26,11 @@ export type NormalizedOpeningView = {
 };
 
 /** @deprecated 使用 NormalizedOpeningView.status */
-export type NormalizedOpeningStatus = NormalizedOpeningStatusValue | "open_now" | "no_hours" | "closed";
+export type NormalizedOpeningStatus =
+  | NormalizedOpeningStatusValue
+  | "open_now"
+  | "no_hours"
+  | "closed";
 
 export type NormalizedOpeningInfo = NormalizedOpeningView & {
   normalizedOpeningStatus: NormalizedOpeningStatusValue;
@@ -39,9 +43,10 @@ function isClosedHoursText(text: string): boolean {
   return CLOSED_HOURS_TEXT_RE.test(text.trim());
 }
 
-function resolveOpenNowWithSource(
-  data: PlaceHoursData,
-): { openNow: boolean | null; source: NormalizedOpeningSource } {
+function resolveOpenNowWithSource(data: PlaceHoursData): {
+  openNow: boolean | null;
+  source: NormalizedOpeningSource;
+} {
   const current = data.currentOpeningHours?.openNow;
   if (current === true || current === false) {
     return { openNow: current, source: "currentOpeningHours" };
@@ -146,7 +151,8 @@ export type OpeningStateInput = {
 
 /** State governs display; labels are accepted only as exact legacy sentinels. */
 export function openingStateForDisplay(place: OpeningStateInput): OpeningDisplayState {
-  if (["CLOSED_PERMANENTLY", "CLOSED_TEMPORARILY"].includes(place.businessStatus ?? "")) return "closed";
+  if (["CLOSED_PERMANENTLY", "CLOSED_TEMPORARILY"].includes(place.businessStatus ?? ""))
+    return "closed";
   const normalized = place.normalizedOpeningStatus;
   if (normalized === "closed" || normalized === "unknown") return normalized;
   if (normalized === "closingSoon" || normalized === "closing_soon") return "closingSoon";
@@ -154,11 +160,23 @@ export function openingStateForDisplay(place: OpeningStateInput): OpeningDisplay
   if (place.openNow === false) return "closed";
   if (place.openStatus === "closing_soon") return "closingSoon";
   if (place.openNow === true || place.openStatus === "open") return "open";
-  if (["closed_now", "closed_today", "permanently_closed", "temporarily_closed"].includes(place.openStatus ?? "")) return "closed";
+  if (
+    ["closed_now", "closed_today", "permanently_closed", "temporarily_closed"].includes(
+      place.openStatus ?? "",
+    )
+  )
+    return "closed";
   const legacy = place.normalizedOpeningLabel ?? place.openStatusLabel;
   const keys: Record<OpeningDisplayState, string[]> = {
     open: ["place.open", "nativeQa.todayOpen"],
-    closed: ["place.closed", "nativeQa.legacyClosed", "nativeQa.closedToday", "nativeQa.closedNow", "nativeQa.permanentlyClosed", "nativeQa.temporarilyClosed"],
+    closed: [
+      "place.closed",
+      "nativeQa.legacyClosed",
+      "nativeQa.closedToday",
+      "nativeQa.closedNow",
+      "nativeQa.permanentlyClosed",
+      "nativeQa.temporarilyClosed",
+    ],
     closingSoon: ["nativeQa.closingSoon"],
     unknown: ["place.hoursUnknown", "nativeQa.legacyUnknown"],
   };
@@ -169,10 +187,18 @@ export function openingStateForDisplay(place: OpeningStateInput): OpeningDisplay
 }
 
 export function openingStatusLabelForLocale(locale: Locale, status: OpeningDisplayState): string {
-  return translate(locale, status === "closingSoon" ? "nativeQa.closingSoon" : `place.${status === "unknown" ? "hoursUnknown" : status}`);
+  return translate(
+    locale,
+    status === "closingSoon"
+      ? "nativeQa.closingSoon"
+      : `place.${status === "unknown" ? "hoursUnknown" : status}`,
+  );
 }
 
-export function placeOpeningStatusLabel(place: OpeningStateInput, locale: Locale = "zh-TW"): string {
+export function placeOpeningStatusLabel(
+  place: OpeningStateInput,
+  locale: Locale = "zh-TW",
+): string {
   return openingStatusLabelForLocale(locale, openingStateForDisplay(place));
 }
 
@@ -200,15 +226,20 @@ function parseNextOpenHint(hint: string): { day: "today" | "tomorrow" | "other";
 
 /** 詳情頁：單一營業狀態文案（Google openNow / nextOpenTime / nextCloseTime） */
 export function resolvePlaceDetailOpeningLine(
-  place: OpeningStateInput & Partial<Pick<PlaceResult, "nextOpenHint" | "todayHoursLabel" | "openUntilTime">>,
+  place: OpeningStateInput &
+    Partial<Pick<PlaceResult, "nextOpenHint" | "todayHoursLabel" | "openUntilTime">>,
   locale: Locale = "zh-TW",
 ): string {
-  if (place.businessStatus === "CLOSED_PERMANENTLY") return translate(locale, "nativeQa.permanentlyClosed");
-  if (place.businessStatus === "CLOSED_TEMPORARILY") return translate(locale, "nativeQa.temporarilyClosed");
+  if (place.businessStatus === "CLOSED_PERMANENTLY")
+    return translate(locale, "nativeQa.permanentlyClosed");
+  if (place.businessStatus === "CLOSED_TEMPORARILY")
+    return translate(locale, "nativeQa.temporarilyClosed");
   const state = openingStateForDisplay(place);
   const label = openingStatusLabelForLocale(locale, state);
   if (state === "open" || state === "closingSoon") {
-    const time = place.openUntilTime?.trim() || extractCloseTimeFromTodayHoursLabel(place.todayHoursLabel ?? "");
+    const time =
+      place.openUntilTime?.trim() ||
+      extractCloseTimeFromTodayHoursLabel(place.todayHoursLabel ?? "");
     return time ? `${label} · ${translate(locale, "nativeQa.openUntil", { time })}` : label;
   }
   if (state === "closed") {
@@ -216,11 +247,13 @@ export function resolvePlaceDetailOpeningLine(
     if (hint) {
       const parsed = parseNextOpenHint(hint);
       if (parsed.time && parsed.day !== "other") {
-        const closed = parsed.day === "tomorrow" ? translate(locale, "nativeQa.legacyClosed") : label;
+        const closed =
+          parsed.day === "tomorrow" ? translate(locale, "nativeQa.legacyClosed") : label;
         return `${closed} · ${translate(locale, parsed.day === "today" ? "nativeQa.nextToday" : "nativeQa.nextTomorrow", { time: parsed.time })}`;
       }
     }
-    if (isClosedHoursText(place.todayHoursLabel ?? "")) return translate(locale, "nativeQa.legacyClosed");
+    if (isClosedHoursText(place.todayHoursLabel ?? ""))
+      return translate(locale, "nativeQa.legacyClosed");
   }
   return label;
 }
@@ -244,15 +277,18 @@ export function resolvePlaceOpeningDisplay(
 
   let hoursLine = (place.todayHoursLabel ?? "").trim() || null;
   if (hoursLine) {
-    if (openNow === true && (isClosedHoursText(hoursLine) || hoursLine === "休息中" || hoursLine === "今日休息")) {
+    if (
+      openNow === true &&
+      (isClosedHoursText(hoursLine) || hoursLine === "休息中" || hoursLine === "今日休息")
+    ) {
       hoursLine = "今日營業中";
     }
-  if (hoursLine === label || hoursLine === `今日 ${label}`) {
-    hoursLine = null;
-  }
-  if (label === "營業中" && hoursLine === "今日營業中") {
-    hoursLine = null;
-  }
+    if (hoursLine === label || hoursLine === `今日 ${label}`) {
+      hoursLine = null;
+    }
+    if (label === "營業中" && hoursLine === "今日營業中") {
+      hoursLine = null;
+    }
     if (openNow === true && hoursLine === "營業資訊暫缺") {
       hoursLine = "今日營業中";
     }
@@ -260,10 +296,8 @@ export function resolvePlaceOpeningDisplay(
     hoursLine = "今日營業中";
   }
 
-  const closingSoonNote =
-    openNow === true ? (place.closingSoonNote?.trim() || null) : null;
-  const nextOpenHint =
-    openNow === false ? (place.nextOpenHint?.trim() || null) : null;
+  const closingSoonNote = openNow === true ? place.closingSoonNote?.trim() || null : null;
+  const nextOpenHint = openNow === false ? place.nextOpenHint?.trim() || null : null;
 
   return {
     label,
@@ -332,4 +366,76 @@ export function normalizedOpeningViewFromPlace(
     source: "unknown",
     openNow: place.openNow ?? null,
   };
+}
+
+/** Factual reason supplement; closed now is not evidence of an all-day closure. */
+export function placeReasonHours(
+  place: Partial<PlaceResult>,
+  locale: Locale = "zh-TW",
+  at = new Date(),
+): string {
+  const schedule = place.currentOpeningHours?.weekdayDescriptions?.length
+    ? place.currentOpeningHours
+    : place.regularOpeningHours;
+  const fromSchedule = schedule
+    ? getTodayHoursFromDescriptions(
+        {
+          regularOpeningHours: schedule,
+          utcOffsetMinutes: place.utcOffsetMinutes,
+        },
+        at,
+      )
+    : "";
+  const raw = (fromSchedule || place.todayHoursLabel || "").trim();
+  if (/^(?:今日|今天|today[: ]*)?\s*(?:公休|休息|不營業|closed|定休日|휴무)\s*$/i.test(raw))
+    return locale === "zh-TW"
+      ? "今天公休。"
+      : locale === "ja"
+        ? "本日は休業です。"
+        : locale === "ko"
+          ? "오늘은 휴무입니다."
+          : "Closed today.";
+  const normalized = raw
+    .normalize("NFKC")
+    .replace(
+      /(上午|下午|晚上|中午|凌晨)\s*(\d{1,2}):(\d{2})/g,
+      (_, part, hour, minute) =>
+        `${(Number(hour) % 12) + (/下午|晚上|中午/.test(part) ? 12 : 0)}:${minute}`,
+    )
+    .replace(
+      /(\d{1,2}):(\d{2})\s*(AM|PM)/gi,
+      (_, hour, minute, part) =>
+        `${(Number(hour) % 12) + (part.toUpperCase() === "PM" ? 12 : 0)}:${minute}`,
+    );
+  let ranges: string[] = normalized.match(/\b\d{1,2}:\d{2}\s*[-–—~～至]\s*\d{1,2}:\d{2}\b/g) ?? [];
+  if (!ranges.length) {
+    const day =
+      place.utcOffsetMinutes != null
+        ? new Date(at.getTime() + place.utcOffsetMinutes * 60_000).getUTCDay()
+        : at.getDay();
+    const periods = place.currentOpeningHours?.periods ?? place.regularOpeningHours?.periods ?? [];
+    const time = (point: { hour?: number; minute?: number }) =>
+      `${String(point.hour ?? 0).padStart(2, "0")}:${String(point.minute ?? 0).padStart(2, "0")}`;
+    // Only use same-day explicit periods; never invent an end for overnight/24-hour periods.
+    ranges = periods
+      .filter(
+        (p) =>
+          p.open?.day === day &&
+          p.close?.day === day &&
+          p.open.hour != null &&
+          p.close.hour != null,
+      )
+      .map((p) => `${time(p.open!)}–${time(p.close!)}`);
+  }
+  if (!ranges.length) return "";
+  const hours = ranges
+    .map((r) => r.replace(/\s*[-–—~～至]\s*/, "–"))
+    .join(locale === "zh-TW" || locale === "ja" ? "、" : ", ");
+  return locale === "zh-TW"
+    ? `今天 ${hours} 營業。`
+    : locale === "ja"
+      ? `本日の営業時間は${hours}です。`
+      : locale === "ko"
+        ? `오늘 영업시간은 ${hours}입니다.`
+        : `Today's hours are ${hours}.`;
 }

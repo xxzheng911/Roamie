@@ -1,6 +1,10 @@
 import type { Locale } from "@/lib/i18n/types";
 import { buildPlaceRecommendationReason } from "@/lib/build-place-recommendation-reason";
-import { identityDisplayLabel, resolvePlaceIdentity, type PlaceIdentity } from "@/lib/place-identity";
+import {
+  identityDisplayLabel,
+  resolvePlaceIdentity,
+  type PlaceIdentity,
+} from "@/lib/place-identity";
 import type { PlaceResult } from "@/lib/place-result";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { classifyWeatherScene } from "@/lib/weather-scene";
@@ -189,46 +193,21 @@ export type PlaceIntroInput = {
 
 /** 依 Google Places 資料產生地點介紹（不憑空編造） */
 export function buildPlaceIntroFromFacts(input: PlaceIntroInput): PlaceIntroPayload {
-  const { place, reason, weather, locale, editorialSummary, reviewSnippets } = input;
-  const base = templateIntro(place, locale, weather, reason);
-  const typeLabel = identityDisplayLabel(resolvePlaceIdentity(place));
-
-  const facts: string[] = [];
-  if (editorialSummary?.trim()) facts.push(editorialSummary.trim());
-  if (place.rating != null) {
-    facts.push(
-      locale === "zh-TW"
-        ? `Google 評分 ${place.rating.toFixed(1)}`
-        : `Google rating ${place.rating.toFixed(1)}`,
-    );
-  }
-  if (reviewSnippets?.length) {
-    facts.push(
-      locale === "zh-TW"
-        ? `訪客提到：${reviewSnippets.slice(0, 2).join("；")}`
-        : `Visitors mention: ${reviewSnippets.slice(0, 2).join("; ")}`,
-    );
-  }
-  if (place.todayHoursLabel) {
-    facts.push(
-      locale === "zh-TW" ? `今日營業：${place.todayHoursLabel}` : `Hours: ${place.todayHoursLabel}`,
-    );
-  }
-
-  const hasRichData = facts.length >= 2 || Boolean(editorialSummary?.trim());
-  const intro = hasRichData
-    ? locale === "zh-TW"
-      ? `${place.name}是${typeLabel}。${facts.slice(0, 3).join("。")}。`
-      : `${place.name} — ${typeLabel}. ${facts.slice(0, 3).join(". ")}.`
-    : base.intro;
-
+  const { place, weather, locale } = input;
+  const base = templateIntro(place, locale, weather);
+  const reason = buildPlaceRecommendationReason(
+    place,
+    null,
+    weather,
+    undefined,
+    { presentation: "detail" },
+    locale,
+  );
   return {
-    intro: intro.slice(0, 280),
-    recommendReason: reason?.trim() || base.recommendReason,
-    suitableFor: base.suitableFor,
-    weatherFit: weatherFitText(weather ?? null, locale),
-    goNowAdvice: goNowAdviceForPlace(place, locale),
-    dataSparse: !hasRichData,
-    source: hasRichData ? "ai" : "template",
+    ...base,
+    intro: reason,
+    recommendReason: reason,
+    dataSparse: !place.reviewEvidence?.signals.length,
+    source: "template",
   };
 }

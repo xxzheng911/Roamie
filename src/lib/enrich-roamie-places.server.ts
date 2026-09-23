@@ -1,3 +1,7 @@
+import {
+  buildPlaceRecommendationReason,
+  resolveRecommendationReasonPlace,
+} from "@/lib/build-place-recommendation-reason";
 import { translate } from "@/lib/i18n/translate";
 import { localizedAvailabilityCopy } from "@/lib/generated-display-projection";
 import type { RoamieRequestContext } from "@/lib/ai/context";
@@ -5,7 +9,6 @@ import type { RoamieItineraryItem, RoamieRecommendationItem, RoamieResponse } fr
 import { normalizeRecommendationItem } from "@/lib/ai/types";
 import {
   applyAvailabilityFields,
-  appendReasonWithHours,
   derivePlaceAvailability,
   filterOpenPlaces,
   isPlaceAvailableNow,
@@ -25,10 +28,7 @@ import {
   buildExplicitPreferKeywords,
   buildPlusPreferenceRankingContext,
 } from "@/lib/plus-preference-ranking";
-import {
-  isRecommendablePlace,
-  itineraryToRecommendableInput,
-} from "@/lib/is-recommendable-place";
+import { isRecommendablePlace, itineraryToRecommendableInput } from "@/lib/is-recommendable-place";
 import { lookupPlacesHoursBatch } from "@/lib/places.functions";
 import {
   filterAlreadyRecommendedPlaces,
@@ -74,8 +74,7 @@ function enrichOptsFromContext(ctx: RoamieRequestContext): EnrichRoamieOptions |
       lat: center.lat,
       lng: center.lng,
       tripStartDate:
-        ctx.itineraryRequest?.startDate?.trim() ||
-        new Date().toISOString().slice(0, 10),
+        ctx.itineraryRequest?.startDate?.trim() || new Date().toISOString().slice(0, 10),
       at,
     };
   }
@@ -94,7 +93,11 @@ async function enrichRecommendations(
   recs: RoamieRecommendationItem[],
   opts: EnrichRoamieOptions,
   ctx: RoamieRequestContext,
-): Promise<{ recommendations: RoamieRecommendationItem[]; lateNightMode: boolean; stats: ReturnType<typeof summarizeAvailabilityStats> }> {
+): Promise<{
+  recommendations: RoamieRecommendationItem[];
+  lateNightMode: boolean;
+  stats: ReturnType<typeof summarizeAvailabilityStats>;
+}> {
   const center = { lat: opts.lat!, lng: opts.lng! };
   const at = opts.at ?? new Date();
   const sceneFlow = shouldActivateLateNightSceneFlow(ctx.mood ?? ctx.selectedMood, at);
@@ -153,14 +156,7 @@ async function enrichRecommendations(
           setting: ctx.planningHints?.setting,
         })
       : null;
-  const ranked = rankRecommendations(
-    openOnly,
-    hoursMap,
-    at,
-    mood,
-    ctx.weather ?? null,
-    plusCtx,
-  );
+  const ranked = rankRecommendations(openOnly, hoursMap, at, mood, ctx.weather ?? null, plusCtx);
   const stats = summarizeAvailabilityStats(ranked);
   const lateNightMode = isLateNightMode(at) || sceneFlow;
 
@@ -172,9 +168,21 @@ async function enrichRecommendations(
 
   let recommendations = selected.map(({ rec, availability }) => {
     const patched = applyAvailabilityFields(rec, availability);
-    return ctx.locale && ctx.locale !== "zh-TW"
-      ? localizedAvailabilityCopy(patched, ctx.locale, availability.openStatus)
-      : { ...patched, reason: appendReasonWithHours(patched.reason, availability) };
+    const display =
+      ctx.locale && ctx.locale !== "zh-TW"
+        ? localizedAvailabilityCopy(patched, ctx.locale, availability.openStatus)
+        : patched;
+    return {
+      ...display,
+      reason: buildPlaceRecommendationReason(
+        resolveRecommendationReasonPlace(patched),
+        null,
+        null,
+        at,
+        undefined,
+        ctx.locale,
+      ),
+    };
   });
 
   if (sceneFlow && ctx.location && recommendations.length < 3) {
@@ -191,55 +199,55 @@ async function enrichItinerary(
   const { beginPlacesFlow, endPlacesFlow } = await import("@/lib/places-api-stats");
   const flow = beginPlacesFlow("itinerary_once");
   try {
-  const center = { lat: opts.lat!, lng: opts.lng! };
-  const names = [...new Set(items.map((i) => i.placeName).filter(Boolean))];
-  if (!names.length) return items;
+    const center = { lat: opts.lat!, lng: opts.lng! };
+    const names = [...new Set(items.map((i) => i.placeName).filter(Boolean))];
+    if (!names.length) return items;
 
-  const hoursMap = await lookupPlacesHoursBatch(
-    names.map((name) => {
-      const item = items.find((i) => i.placeName === name);
-      return { name, lat: item?.lat, lng: item?.lng };
-    }),
-    center,
-    {
-      caller: "enrichItinerary",
-      screen: "itinerary",
-    },
-  );
+    const hoursMap = await lookupPlacesHoursBatch(
+      names.map((name) => {
+        const item = items.find((i) => i.placeName === name);
+        return { name, lat: item?.lat, lng: item?.lng };
+      }),
+      center,
+      {
+        caller: "enrichItinerary",
+        screen: "itinerary",
+      },
+    );
 
-  const kept: RoamieItineraryItem[] = [];
+    const kept: RoamieItineraryItem[] = [];
 
-  for (const item of items) {
-    const hours: PlaceHoursData = hoursMap.get(item.placeName) ?? {};
-    const at = parseItineraryAt(opts.tripStartDate, item);
-    if (
-      !isPlaceAvailableNow(
-        hours,
-        { name: item.placeName, type: item.title },
-        { context: "scheduled", at, atTime: item.time },
-      )
-    ) {
-      continue;
+    for (const item of items) {
+      const hours: PlaceHoursData = hoursMap.get(item.placeName) ?? {};
+      const at = parseItineraryAt(opts.tripStartDate, item);
+      if (
+        !isPlaceAvailableNow(
+          hours,
+          { name: item.placeName, type: item.title },
+          { context: "scheduled", at, atTime: item.time },
+        )
+      ) {
+        continue;
+      }
+
+      const availability = derivePlaceAvailability(hours, {
+        context: "scheduled",
+        at,
+        atTime: item.time,
+      });
+      const recommendable = isRecommendablePlace(
+        itineraryToRecommendableInput(item, {
+          businessStatus: availability.businessStatus,
+          openStatus: availability.openStatus,
+        }),
+        "plan_trip",
+      );
+      if (!recommendable.ok) continue;
+
+      kept.push(item);
     }
 
-    const availability = derivePlaceAvailability(hours, {
-      context: "scheduled",
-      at,
-      atTime: item.time,
-    });
-    const recommendable = isRecommendablePlace(
-      itineraryToRecommendableInput(item, {
-        businessStatus: availability.businessStatus,
-        openStatus: availability.openStatus,
-      }),
-      "plan_trip",
-    );
-    if (!recommendable.ok) continue;
-
-    kept.push(item);
-  }
-
-  return kept;
+    return kept;
   } finally {
     endPlacesFlow(flow);
   }
@@ -257,8 +265,11 @@ export async function enrichRoamieResponse(
     const opts = enrichOptsFromContext(ctx);
     if (!opts?.lat || !opts.lng) return response;
 
-    const { recommendations: enrichedRecs, lateNightMode, stats } =
-      await enrichRecommendations(response.recommendations ?? [], opts, ctx);
+    const {
+      recommendations: enrichedRecs,
+      lateNightMode,
+      stats,
+    } = await enrichRecommendations(response.recommendations ?? [], opts, ctx);
 
     let finalRecs = enrichedRecs;
     const selected = ctx.selectedPlaces ?? [];
@@ -297,36 +308,39 @@ export async function enrichRoamieResponse(
       finalRecs.length > 0 &&
       (aiRecCount < 2 || /要不要看看夜景|附近大部分店家慢慢休息|適合深夜待著/.test(summary))
     ) {
-      summary = ctx.locale && ctx.locale !== "zh-TW"
-        ? translate(ctx.locale, "destinationEditorial.late_places", { count: finalRecs.length })
-        : buildLateNightMoodSummary({
-        city: ctx.location?.city ?? ctx.weather?.city,
-        mood: ctx.mood ?? ctx.selectedMood,
-        placeCount: finalRecs.length,
-      });
+      summary =
+        ctx.locale && ctx.locale !== "zh-TW"
+          ? translate(ctx.locale, "destinationEditorial.late_places", { count: finalRecs.length })
+          : buildLateNightMoodSummary({
+              city: ctx.location?.city ?? ctx.weather?.city,
+              mood: ctx.mood ?? ctx.selectedMood,
+              placeCount: finalRecs.length,
+            });
     } else if (lateNightMode && finalRecs.length === 0) {
-      summary = ctx.locale && ctx.locale !== "zh-TW"
-        ? translate(ctx.locale, "destinationEditorial.late_empty")
-        : buildLateNightCompanionSummary({
-        mood: ctx.mood,
-        weather: ctx.weather,
-        city: ctx.location?.city ?? ctx.weather?.city,
-        stats,
-      });
+      summary =
+        ctx.locale && ctx.locale !== "zh-TW"
+          ? translate(ctx.locale, "destinationEditorial.late_empty")
+          : buildLateNightCompanionSummary({
+              mood: ctx.mood,
+              weather: ctx.weather,
+              city: ctx.location?.city ?? ctx.weather?.city,
+              stats,
+            });
     } else if (
       lateNightMode &&
       finalRecs.length > 0 &&
       stats.open + stats.closingSoon <= 1 &&
       !/休息|深夜|慢慢/.test(summary)
     ) {
-      summary = ctx.locale && ctx.locale !== "zh-TW"
-        ? `${summary.trim()}\n\n${translate(ctx.locale, "destinationEditorial.late_check")}`
-        : `${summary.trim()}\n\n${buildLateNightCompanionSummary({
-        mood: ctx.mood,
-        weather: ctx.weather,
-        city: ctx.location?.city,
-        stats,
-      })}`;
+      summary =
+        ctx.locale && ctx.locale !== "zh-TW"
+          ? `${summary.trim()}\n\n${translate(ctx.locale, "destinationEditorial.late_check")}`
+          : `${summary.trim()}\n\n${buildLateNightCompanionSummary({
+              mood: ctx.mood,
+              weather: ctx.weather,
+              city: ctx.location?.city,
+              stats,
+            })}`;
     }
 
     return {

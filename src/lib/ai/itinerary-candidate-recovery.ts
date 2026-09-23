@@ -41,6 +41,7 @@ function recommendationToPlace(item: NonNullable<CanonicalTravelContext["partial
     lng: item.lng,
     rating: item.rating ?? null,
     userRatingCount: item.userRatingCount ?? null,
+    reviewEvidence: item.reviewEvidence,
     photoName: item.photoName ?? null,
     primaryType: item.primaryType ?? item.type ?? null,
     types: item.types ?? (item.type ? [item.type] : []),

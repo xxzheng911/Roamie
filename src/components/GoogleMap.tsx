@@ -48,6 +48,7 @@ type Props = {
   mapPadding?: MapVisiblePadding;
   /** 點擊地圖空白區（不含 marker） */
   onMapClick?: () => void;
+  onUserCenterChange?: (center: { lat: number; lng: number }) => void;
 };
 
 export function GoogleMap({
@@ -61,6 +62,7 @@ export function GoogleMap({
   onMapReady,
   mapPadding,
   onMapClick,
+  onUserCenterChange,
 }: Props) {
   const { t: uiT } = useI18n();
 
@@ -189,6 +191,16 @@ export function GoogleMap({
     applyMapVisiblePadding(mapRef.current, mapPadding);
     triggerMapResize(mapRef.current);
   }, [mapPadding, mapReady]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady || !onUserCenterChange) return;
+    const listener = map.addListener("dragend", () => {
+      const center = map.getCenter();
+      if (center) onUserCenterChange({ lat: center.lat(), lng: center.lng() });
+    });
+    return () => listener.remove();
+  }, [mapReady, onUserCenterChange]);
 
   useEffect(() => {
     if (!mapRef.current || !mapReady || !onMapClick) return;

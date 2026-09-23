@@ -1,3 +1,6 @@
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
+import type { PlacesRequestOwner } from "@/lib/places-api-guard";
+import { runPlacesApiDeduped } from "@/lib/places-api-guard";
 import type { Locale } from "@/lib/i18n/types";
 import type { PlaceResult } from "@/lib/place-result";
 import type { TripStopSuggestion } from "@/lib/trip-stop-search.functions";
@@ -32,9 +35,9 @@ type FetchPlaceDetailsFn = (args: {
 
 import { shouldLogExploreEvent } from "@/lib/explore-request-guard";
 
-/** Xcode / Safari Web Inspector 較容易看到 console.log */
+/** Optional structured Explore diagnostics. */
 function exploreLog(line: string): void {
-  console.log(line);
+  devVerboseInfo(line);
 }
 
 export function logExplorePrimaryPlace(name: string, placeId: string): void {
@@ -134,6 +137,7 @@ export async function resolveExplorePrimaryPlace(
     weather: WeatherSummary | null;
     reasonProfile: UserProfileForReason | null;
     fetchPlaceDetailsFn?: FetchPlaceDetailsFn;
+    requestOwner?: PlacesRequestOwner;
   },
 ): Promise<ExplorePrimaryPlaceCard | null> {
   const placeId = normalizeExplorePlaceId(suggestion.placeId ?? "");
@@ -141,6 +145,7 @@ export async function resolveExplorePrimaryPlace(
   if (!placeId || !displayName) return null;
 
   if (
+    !options.requestOwner &&
     !isPinnableSearchSelection({
       label: displayName,
       types: suggestion.types,
@@ -158,13 +163,23 @@ export async function resolveExplorePrimaryPlace(
       placeId,
       browserKey,
       options.locale,
+      undefined,
+      { requestOwner: options.requestOwner, requestPath: "capacitor_client" },
     );
   }
-  if (!details && options.fetchPlaceDetailsFn) {
-    const result = await options.fetchPlaceDetailsFn({
-      data: { placeId, locale: options.locale },
-    });
-    details = result.place;
+  if (options.requestOwner?.exploreSession?.controller.signal.aborted) return null;
+  if (!details && options.fetchPlaceDetailsFn && (!browserKey || !options.requestOwner)) {
+    const fetchDetails = () =>
+      options.fetchPlaceDetailsFn!({ data: { placeId, locale: options.locale } });
+    const result = options.requestOwner
+      ? await runPlacesApiDeduped(
+          `explore-details:${placeId}:${options.locale}`,
+          "details",
+          fetchDetails,
+          options.requestOwner,
+        )
+      : await fetchDetails();
+    details = result?.place ?? null;
   }
 
   if (details?.lat != null && details.lng != null) {
@@ -178,8 +193,9 @@ export async function resolveExplorePrimaryPlace(
     }
   }
 
+  if (options.requestOwner) return null; // No unowned fallback after a blocked/aborted request.
   const { card } = await resolveExploreMapSuggestion(suggestion, options);
-  if (!card?.lat || !card.lng) return null;
+  if (card?.lat == null || card.lng == null) return null;
 
   return {
     ...card,

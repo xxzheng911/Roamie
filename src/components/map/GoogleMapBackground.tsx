@@ -18,6 +18,7 @@ type Props = {
   onLoadError?: (message: string) => void;
   onMapReady?: (map: google.maps.Map) => void;
   onMapClick?: () => void;
+  onUserCenterChange?: (center: { lat: number; lng: number }) => void;
 };
 
 /**
@@ -34,6 +35,7 @@ export function GoogleMapBackground({
   onLoadError,
   onMapReady,
   onMapClick,
+  onUserCenterChange,
 }: Props) {
   const stageRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<google.maps.Map | null>(null);
@@ -95,6 +97,7 @@ export function GoogleMapBackground({
         onLoadError={onLoadError}
         mapPadding={mapPadding}
         onMapClick={onMapClick}
+        onUserCenterChange={onUserCenterChange}
         onMapReady={handleMapReady}
         className="h-full w-full"
       />

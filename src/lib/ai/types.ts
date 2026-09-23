@@ -1,3 +1,10 @@
+import type { Locale } from "@/lib/i18n/types";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import { PlaceReviewEvidenceSchema } from "@/lib/place-review-evidence";
+import {
+  buildPlaceRecommendationReason,
+  resolveRecommendationReasonPlace,
+} from "@/lib/build-place-recommendation-reason";
 import { readGeneratedLocale } from "@/lib/generated-locale";
 import { z } from "zod";
 import type { OutfitAdvicePayload, TripOutfitSuggestionFields } from "@/lib/outfit/types";
@@ -23,9 +30,19 @@ export const RoamieRecommendationItemSchema = z.object({
   photoName: z.string().nullable().optional(),
   rating: z.number().nullable().optional(),
   userRatingCount: z.number().nullable().optional(),
+  reviewEvidence: PlaceReviewEvidenceSchema.optional(),
   businessStatus: z.string().nullable().optional(),
   normalizedOpeningStatus: z.enum(["open", "closed", "unknown"]).optional(),
-  openStatus: z.enum(["open", "closing_soon", "closed_now", "permanently_closed", "temporarily_closed", "unknown"]).optional(),
+  openStatus: z
+    .enum([
+      "open",
+      "closing_soon",
+      "closed_now",
+      "permanently_closed",
+      "temporarily_closed",
+      "unknown",
+    ])
+    .optional(),
   openNow: z.boolean().nullable().optional(),
   openStatusLabel: z.string().optional(),
   todayHoursLabel: z.string().optional(),
@@ -104,9 +121,19 @@ export const RoamieItineraryItemSchema = z.object({
   photoName: z.string().nullable().optional(),
   rating: z.number().nullable().optional(),
   userRatingCount: z.number().nullable().optional(),
+  reviewEvidence: PlaceReviewEvidenceSchema.optional(),
   businessStatus: z.string().nullable().optional(),
   normalizedOpeningStatus: z.enum(["open", "closed", "unknown"]).optional(),
-  openStatus: z.enum(["open", "closing_soon", "closed_now", "permanently_closed", "temporarily_closed", "unknown"]).optional(),
+  openStatus: z
+    .enum([
+      "open",
+      "closing_soon",
+      "closed_now",
+      "permanently_closed",
+      "temporarily_closed",
+      "unknown",
+    ])
+    .optional(),
   openNow: z.boolean().nullable().optional(),
   openStatusLabel: z.string().optional(),
   todayHoursLabel: z.string().optional(),
@@ -219,7 +246,9 @@ export function isRoamiePayloadV2(payload: unknown): payload is RoamiePayloadV2 
 /** 補齊舊資料或手動組裝的推薦項目，避免缺欄位 */
 export function normalizeItineraryItem(
   raw: Partial<RoamieItineraryItem> & { placeName: string; title: string },
+  locale: Locale = effectiveAppLocale(),
 ): RoamieItineraryItem {
+  const reasonPlace = resolveRecommendationReasonPlace(raw);
   return {
     date: raw.date ?? "",
     time: raw.time ?? "",
@@ -252,8 +281,11 @@ export function normalizeItineraryItem(
     photoName: raw.photoName,
     rating: raw.rating,
     userRatingCount: raw.userRatingCount,
+    reviewEvidence: reasonPlace.reviewEvidence,
     businessStatus: raw.businessStatus,
-    ...(raw.normalizedOpeningStatus !== undefined ? { normalizedOpeningStatus: raw.normalizedOpeningStatus } : {}),
+    ...(raw.normalizedOpeningStatus !== undefined
+      ? { normalizedOpeningStatus: raw.normalizedOpeningStatus }
+      : {}),
     ...(raw.openStatus !== undefined ? { openStatus: raw.openStatus } : {}),
     ...(raw.openNow !== undefined ? { openNow: raw.openNow } : {}),
     openStatusLabel: raw.openStatusLabel,
@@ -262,23 +294,55 @@ export function normalizeItineraryItem(
     phone: raw.phone,
     types: raw.types,
     placeSnapshotSource: raw.placeSnapshotSource,
-    recommendationReason: raw.recommendationReason,
-    recommendationReasonSource: raw.recommendationReasonSource,
+    recommendationReason: buildPlaceRecommendationReason(
+      reasonPlace,
+      null,
+      null,
+      undefined,
+      undefined,
+      locale,
+    ),
+    recommendationReasonSource: reasonPlace.reviewEvidence?.signals.length
+      ? "evidence"
+      : "template",
     recommendationSource: raw.recommendationSource,
     recommendationReasonVersion: raw.recommendationReasonVersion,
   };
 }
 
+/** LLM JSON cannot author provider review evidence. Verified/cache evidence is resolved later. */
+export function normalizeAiGeneratedResponse(raw: Record<string, unknown>): RoamieResponse {
+  const strip = (items: unknown) =>
+    Array.isArray(items)
+      ? items.map((item) => {
+          if (!item || typeof item !== "object") return item;
+          const clean = { ...item };
+          delete clean.reviewEvidence;
+          return clean;
+        })
+      : items;
+  return normalizeRoamieResponse({
+    ...raw,
+    recommendations: strip(raw.recommendations),
+    itinerary: strip(raw.itinerary),
+  });
+}
+
 export function normalizeRoamieResponse(raw: Record<string, unknown>): RoamieResponse {
+  const locale = readGeneratedLocale(raw.generatedLocale) ?? effectiveAppLocale();
   const recs = Array.isArray(raw.recommendations)
     ? raw.recommendations.map((r) =>
-        normalizeRecommendationItem(r as Partial<RoamieRecommendationItem> & { name: string }),
+        normalizeRecommendationItem(
+          r as Partial<RoamieRecommendationItem> & { name: string },
+          locale,
+        ),
       )
     : [];
   const itin = Array.isArray(raw.itinerary)
     ? raw.itinerary.map((i) =>
         normalizeItineraryItem(
           i as Partial<RoamieItineraryItem> & { placeName: string; title: string },
+          locale,
         ),
       )
     : [];
@@ -299,12 +363,14 @@ export function normalizeRecommendationItem(
     languageCode?: string;
     localizationSource?: string;
   },
+  locale: Locale = effectiveAppLocale(),
 ): RoamieRecommendationItem & {
   localizedDisplayName?: string;
   originalName?: string;
   languageCode?: string;
   localizationSource?: string;
 } {
+  const reasonPlace = resolveRecommendationReasonPlace(raw);
   const localized =
     (raw.localizedDisplayName ?? "").trim() || (raw.placeName ?? "").trim() || raw.name;
   return {
@@ -312,20 +378,23 @@ export function normalizeRecommendationItem(
     type: raw.type ?? "地點",
     primaryType: raw.primaryType ?? raw.type ?? null,
     description: raw.description ?? "",
-    reason: raw.reason ?? "",
+    reason: buildPlaceRecommendationReason(reasonPlace, null, null, undefined, undefined, locale),
     estimatedTime: raw.estimatedTime ?? "1-2 小時",
     address: raw.address ?? "",
     lat: raw.lat ?? null,
     lng: raw.lng ?? null,
     googleMapsUrl: raw.googleMapsUrl ?? "",
     placeName: localized,
-    reasonSource: raw.reasonSource ?? "template",
+    reasonSource: reasonPlace.reviewEvidence?.signals.length ? "evidence" : "template",
     googlePlaceId: raw.googlePlaceId,
     photoName: raw.photoName ?? null,
     rating: raw.rating ?? null,
     userRatingCount: raw.userRatingCount ?? null,
+    reviewEvidence: reasonPlace.reviewEvidence,
     businessStatus: raw.businessStatus ?? null,
-    ...(raw.normalizedOpeningStatus !== undefined ? { normalizedOpeningStatus: raw.normalizedOpeningStatus } : {}),
+    ...(raw.normalizedOpeningStatus !== undefined
+      ? { normalizedOpeningStatus: raw.normalizedOpeningStatus }
+      : {}),
     ...(raw.openStatus !== undefined ? { openStatus: raw.openStatus } : {}),
     ...(raw.openNow !== undefined ? { openNow: raw.openNow } : {}),
     openStatusLabel: raw.openStatusLabel,

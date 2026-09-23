@@ -94,12 +94,11 @@ export function buildUnifiedPlaceCard(input: BuildUnifiedPlaceCardInput): Unifie
     isSavedFavorite,
   };
 
-  const reason =
-    input.reason?.trim() ||
-    buildDiversePlaceRecommendationReasons(
-      [{ place, context }],
-      { userProfile: userProfile ?? null, weather, locale },
-    )[0];
+  const reason = buildDiversePlaceRecommendationReasons([{ place, context }], {
+    userProfile: userProfile ?? null,
+    weather,
+    locale,
+  })[0];
 
   const displayCategory = resolvePlaceDisplayCategory(place);
   const coverImageUrl = resolvePlaceCoverImage(place, { categoryId, photoWidth });
@@ -127,9 +126,7 @@ function unifiedCardDistanceMeters(input: BuildUnifiedPlaceCardInput): number | 
  * given list, then reuses the per-place card builder. Order is preserved.
  */
 export function buildUnifiedPlaceCards(inputs: BuildUnifiedPlaceCardInput[]): UnifiedPlaceCard[] {
-  const eligibleInputs = inputs.filter((input) =>
-    isPlaceOperationalForRecommendation(input.place),
-  );
+  const eligibleInputs = inputs.filter((input) => isPlaceOperationalForRecommendation(input.place));
   if (eligibleInputs.length === 0) return [];
   const reasons = buildDiversePlaceRecommendationReasons(
     eligibleInputs.map((input) => ({
@@ -154,7 +151,7 @@ export function buildUnifiedPlaceCards(inputs: BuildUnifiedPlaceCardInput[]): Un
   return eligibleInputs.map((input, index) =>
     buildUnifiedPlaceCard({
       ...input,
-      reason: input.reason?.trim() || reasons[index],
+      reason: reasons[index],
     }),
   );
 }

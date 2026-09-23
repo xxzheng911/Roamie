@@ -1,3 +1,4 @@
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import type { Locale } from "@/lib/i18n/types";
 import type { PlaceResult } from "@/lib/place-result";
 import type { TripStopSuggestion } from "@/lib/trip-stop-search.functions";
@@ -226,7 +227,7 @@ async function runCityCategoryTextQueries(
       });
       const places = Array.isArray(result.places) ? result.places : [];
       if (places.length === 0) continue;
-      console.info(
+      devVerboseInfo(
         "[EXPLORE_CITY_CATEGORY_TEXT]",
         `category=${categoryId}`,
         `query=${queryText}`,
@@ -278,7 +279,7 @@ async function runCityCategoryNearbyGroups(
         });
         const places = Array.isArray(result.places) ? result.places : [];
         if (places.length === 0) continue;
-        console.info(
+        devVerboseInfo(
           "[EXPLORE_CITY_CATEGORY_NEARBY]",
           `category=${categoryId}`,
           `types=${includedTypes.join(",")}`,
@@ -306,7 +307,7 @@ export async function fetchExploreCityCategoryPlaces(params: {
   const label = normalizeDestinationLabel(cityLabel);
   if (!label || categoryId === "all") return [];
 
-  console.info("[EXPLORE_CITY_CATEGORY_FETCH]", `city=${label}`, `category=${categoryId}`);
+  devVerboseInfo("[EXPLORE_CITY_CATEGORY_FETCH]", `city=${label}`, `category=${categoryId}`);
 
   const merged = new Map<string, PlaceResult>();
   const radius = cityExploreRadiusMeters(label);
@@ -359,7 +360,7 @@ export async function fetchExploreCityCategoryPlaces(params: {
   }
 
   const final = [...merged.values()];
-  console.info("[EXPLORE_CITY_CATEGORY_RESULT]", `city=${label}`, `category=${categoryId}`, `count=${final.length}`);
+  devVerboseInfo("[EXPLORE_CITY_CATEGORY_RESULT]", `city=${label}`, `category=${categoryId}`, `count=${final.length}`);
   return final;
 }
 
@@ -474,11 +475,11 @@ function acceptCityPlace(
   categoryId = "sight",
 ): void {
   if (!passesCityFetchGate(place, categoryId)) {
-    console.info("[EXPLORE_FILTER_DROP]", `name=${place.name ?? ""}`, "reason=city_fetch_gate");
+    devVerboseInfo("[EXPLORE_FILTER_DROP]", `name=${place.name ?? ""}`, "reason=city_fetch_gate");
     return;
   }
   if (isExploreCityPoliticalEntity(place)) {
-    console.info("[EXPLORE_REJECT_CITY_ENTITY_CARD]", `name=${place.name ?? ""}`);
+    devVerboseInfo("[EXPLORE_REJECT_CITY_ENTITY_CARD]", `name=${place.name ?? ""}`);
     return;
   }
   if (!isPlaceInExploreCity(place, label, cityCenter)) return;
@@ -527,7 +528,7 @@ async function runCityTextQueries(
           });
           const places = Array.isArray(result.places) ? result.places : [];
           if (places.length === 0) return;
-          console.info("[EXPLORE_TEXT_SEARCH_FALLBACK]", `query=${queryText}`, `count=${places.length}`);
+          devVerboseInfo("[EXPLORE_TEXT_SEARCH_FALLBACK]", `query=${queryText}`, `count=${places.length}`);
           for (const place of places) {
             acceptCityPlace(place, label, cityCenter, merged, "sight");
           }
@@ -572,7 +573,7 @@ async function runCityNearbyGroups(
         });
         const places = Array.isArray(result.places) ? result.places : [];
         if (places.length === 0) continue;
-        console.info(
+        devVerboseInfo(
           "[EXPLORE_CITY_NEARBY_FALLBACK]",
           `category=${bucket.categoryId}`,
           `types=${includedTypes.join(",")}`,
@@ -596,9 +597,23 @@ export function pickExploreCitySuggestion(
   const trimmed = query.trim();
   if (!trimmed || suggestions.length === 0) return null;
 
-  console.info("[EXPLORE_CITY_SEARCH]", `query=${trimmed}`, `suggestions=${suggestions.length}`);
+  devVerboseInfo("[EXPLORE_CITY_SEARCH]", `query=${trimmed}`, `suggestions=${suggestions.length}`);
 
   const normalizedQuery = normalizeDestinationLabel(trimmed);
+  const exactCity = suggestions.some(
+    (s) =>
+      isCityRecommendSelection({ label: s.label, types: s.types }) &&
+      normalizeDestinationLabel(s.label) === normalizedQuery,
+  );
+  // A landmark query such as 首爾塔 must not select the city 首爾.
+  if (!exactCity && !isCityRecommendSelection({ label: trimmed })) {
+    return (
+      pickPrimarySuggestion(
+        trimmed,
+        suggestions.filter((s) => !isCityRecommendSelection({ label: s.label, types: s.types })),
+      ) ?? pickPrimarySuggestion(trimmed, suggestions)
+    );
+  }
   const cityCandidates = suggestions.filter((s) => {
     const label = s.label.trim();
     const types = s.types ?? [];
@@ -617,7 +632,7 @@ export function pickExploreCitySuggestion(
 
   if (cityCandidates.length > 0) {
     const picked = cityCandidates.sort((a, b) => (b.distanceMeters ?? 0) - (a.distanceMeters ?? 0))[0]!;
-    console.info(
+    devVerboseInfo(
       "[EXPLORE_CITY_GEOCODE]",
       `hasLabel=${Boolean(picked.label)}`,
       `hasPlaceId=${Boolean(picked.placeId)}`,
@@ -627,7 +642,7 @@ export function pickExploreCitySuggestion(
 
   const picked = pickPrimarySuggestion(trimmed, suggestions);
   if (picked) {
-    console.info(
+    devVerboseInfo(
       "[EXPLORE_CITY_GEOCODE]",
       `hasFallbackLabel=${Boolean(picked.label)}`,
       `hasPlaceId=${Boolean(picked.placeId)}`,
@@ -645,12 +660,12 @@ export async function fetchExploreCityBootstrapPlaces(params: {
 }): Promise<PlaceResult[]> {
   const { cityLabel, cityCenter, locale, searchPlacesFn } = params;
   const label = normalizeDestinationLabel(cityLabel);
-  console.info(
+  devVerboseInfo(
     "[EXPLORE_POPULAR_PLACES_FETCH]",
     `hasCity=${Boolean(label)}`,
     `locationBucket=${cityCenter.lat.toFixed(2)},${cityCenter.lng.toFixed(2)}`,
   );
-  console.info("[EXPLORE_DESTINATION_COORDS]", `locationBucket=${cityCenter.lat.toFixed(2)},${cityCenter.lng.toFixed(2)}`);
+  devVerboseInfo("[EXPLORE_DESTINATION_COORDS]", `locationBucket=${cityCenter.lat.toFixed(2)},${cityCenter.lng.toFixed(2)}`);
 
   const merged = new Map<string, PlaceResult>();
 
@@ -663,7 +678,7 @@ export async function fetchExploreCityBootstrapPlaces(params: {
   }
 
   const final = [...merged.values()];
-  console.info(
+  devVerboseInfo(
     "[EXPLORE_FINAL_RECOMMENDATIONS]",
     `hasCity=${Boolean(label)}`,
     `count=${final.length}`,

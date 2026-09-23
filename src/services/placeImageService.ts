@@ -3,12 +3,16 @@ import roamieDefaultCover from "@/assets/roamie-default-cover.png";
 import type { RoamiePayloadV2 } from "@/lib/ai/types";
 import { ROAMIE_API_FALLBACK, API_CACHE_TTL_MS } from "@/lib/api/constants";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
-import { preferJpegPngImageUrl } from "@/lib/safe-image-url";
+import { extractGooglePlacePhotoName, preferJpegPngImageUrl } from "@/lib/safe-image-url";
 import { pickPlaceSceneFallback } from "@/lib/place-scene-fallback";
 import type { PlaceResult } from "@/lib/place-result";
 import { createRequestCache } from "@/services/requestCache";
 import { searchUnsplashImage, searchUnsplashWithQueries } from "@/services/unsplashService";
-import { cachePlaceImages } from "@/lib/place-runtime-cache";
+import {
+  cachePlaceImages,
+  readPlaceRuntimeCache,
+  writePlaceRuntimeCache,
+} from "@/lib/place-runtime-cache";
 
 export type ImageSource = "google" | "unsplash" | "upload" | "default" | "roamie";
 
@@ -258,7 +262,14 @@ export async function getPlaceImage(
   return placeImageRequestCache.getOrFetch(key, async () => {
     const width = input.photoWidth ?? 600;
     if (!options?.skipGoogle) {
-      let canonicalPhotoName = input.photoName?.trim() || null;
+      const runtime = input.placeId ? readPlaceRuntimeCache(input.placeId) : null;
+      let canonicalPhotoName =
+        input.photoName?.trim() ||
+        runtime?.photoName ||
+        (runtime?.coverImageUrl ? extractGooglePlacePhotoName(runtime.coverImageUrl) : null);
+      if (!canonicalPhotoName && runtime?.coverImageUrl) {
+        return { url: runtime.coverImageUrl, source: "default" as const };
+      }
       if (!canonicalPhotoName && input.placeId?.trim()) {
         try {
           const { getPlaceDetailsServerFnViaGateway } = await import("@/lib/pie/places-gateway");
@@ -273,7 +284,10 @@ export async function getPlaceImage(
       const fromGoogle = resolveGooglePlacePhoto(canonicalPhotoName, width);
       if (fromGoogle) {
         if (input.placeId?.trim()) {
-          cachePlaceImages(input.placeId, { coverImageUrl: fromGoogle });
+          writePlaceRuntimeCache(input.placeId, {
+            photoName: canonicalPhotoName,
+            coverImageUrl: fromGoogle,
+          });
         }
         return { url: fromGoogle, source: "google" as const };
       }

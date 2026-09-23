@@ -5,7 +5,11 @@ import {
   type PlacesSearchResult,
 } from "@/lib/places-search-normalize";
 import { PLACES_FAILED_CACHE_TTL_MS } from "@/lib/places-api-guard";
-import { logPlacesCacheHit, logPlacesCacheMiss, logPlacesDedupePending } from "@/lib/places-api-guard";
+import {
+  logPlacesCacheHit,
+  logPlacesCacheMiss,
+  logPlacesDedupePending,
+} from "@/lib/places-api-guard";
 import { logPlacesApiSkipDuplicate } from "@/lib/places-diagnostics";
 import { homeNearbySearchRadiusMeters } from "@/lib/search-radius";
 import {
@@ -16,6 +20,7 @@ import {
   type UnifiedPlaceCacheScope,
 } from "@/lib/unified-place-cache";
 
+const inFlightAuthority = new Map<string, () => boolean>();
 const inFlightMap = new Map<string, Promise<PlacesSearchResult>>();
 const failedKeyUntil = new Map<string, number>();
 const clientFallbackAttempted = new Set<string>();
@@ -56,9 +61,9 @@ export function buildPlacesSearchKey(
   const radius = data.radius ?? homeNearbySearchRadiusMeters();
   const types = [...(data.includedTypes ?? [])].sort().join(",");
   const groups = nearbyGroupsKey(data.nearbyGroups);
-  const query = (scope?.query ?? data.query ?? "").trim();
+  const query = (scope?.query ?? data.query ?? "").trim().replace(/\s+/g, " ").toLowerCase();
   const mode = scope?.mode ?? data.mode;
-  return `${base}|${radius}|${mode}|${query}|${types}|${groups}`;
+  return `${base}|${radius}|${mode}|${query}|${types}|${groups}|${data.skipLocationBias === true ? "unbiased" : "biased"}`;
 }
 
 export function readPlacesSearchCacheStatus(key: string): "hit" | "miss" | "inflight" | "unknown" {
@@ -99,16 +104,38 @@ export function getPlacesSearchCachedOrRun(
   runner: () => Promise<PlacesSearchResult>,
   options?: {
     forceRefresh?: boolean;
+    signal?: AbortSignal;
+    /** Caller-scoped session validity; unrelated requests do not revoke this authority. */
+    isCurrent?: () => boolean;
+    onDedupe?: () => void;
     scope?: Partial<PlacesSearchCacheScope>;
   },
 ): Promise<PlacesSearchResult> {
+  const isValid = () => !options?.signal?.aborted && (options?.isCurrent?.() ?? true);
+  const assertValid = () => {
+    if (!isValid()) throw new DOMException("Search response superseded", "AbortError");
+  };
+  const publish = (result: PlacesSearchResult) => {
+    assertValid();
+    return result;
+  };
+  if (!isValid())
+    return Promise.reject(new DOMException("Search response superseded", "AbortError"));
   const now = Date.now();
   const forceRefresh = options?.forceRefresh || consumeUnifiedPlaceCacheForceRefresh();
+
+  const inflight = inFlightMap.get(key);
+  if (inflight && inFlightAuthority.get(key)?.()) {
+    options?.onDedupe?.();
+    lastCacheStatus.set(key, "inflight");
+    logPlacesDedupePending(key);
+    return inflight.then(publish);
+  }
 
   if (isFailedKey(key, now) && !forceRefresh) {
     const cached = readUnifiedPlaceSearchCache(key);
     if (cached && cached.places.length > 0) {
-      return Promise.resolve(cached);
+      return Promise.resolve(cached).then(publish);
     }
     failedKeyUntil.delete(key);
   }
@@ -117,22 +144,22 @@ export function getPlacesSearchCachedOrRun(
   if (cached && cached.places.length > 0) {
     lastCacheStatus.set(key, "hit");
     logPlacesCacheHit(key);
-    return Promise.resolve(cached);
+    return Promise.resolve(cached).then(publish);
   }
 
   logPlacesCacheMiss(key);
   lastCacheStatus.set(key, "miss");
 
-  const inflight = inFlightMap.get(key);
-  if (inflight) {
-    lastCacheStatus.set(key, "inflight");
-    logPlacesDedupePending(key);
-    return inflight;
-  }
-
+  const assertCommitAuthority = () => {
+    assertValid();
+    if (inFlightMap.get(key) !== promise)
+      throw new DOMException("Search cache owner superseded", "AbortError");
+  };
   const promise = runner()
     .then((result) => {
+      assertCommitAuthority();
       const normalized = normalizePlacesSearchResult(result);
+      assertCommitAuthority();
       if (normalized.places.length > 0) {
         writeUnifiedPlaceSearchCache(key, normalized.places, normalized.error);
         for (const place of normalized.places) {
@@ -155,6 +182,8 @@ export function getPlacesSearchCachedOrRun(
       return normalized;
     })
     .catch((e) => {
+      assertCommitAuthority();
+      if (e instanceof Error && e.name === "AbortError") throw e;
       markPlacesSearchFailed(key);
       return {
         places: [],
@@ -162,11 +191,15 @@ export function getPlacesSearchCachedOrRun(
       };
     })
     .finally(() => {
-      inFlightMap.delete(key);
+      if (inFlightMap.get(key) === promise) {
+        inFlightMap.delete(key);
+        inFlightAuthority.delete(key);
+      }
     });
 
+  inFlightAuthority.set(key, isValid);
   inFlightMap.set(key, promise);
-  return promise;
+  return promise.then(publish);
 }
 
 /** @deprecated 相容舊 geo key */

@@ -1,3 +1,7 @@
+import {
+  exploreSessionCanRequest,
+  type ExploreRequestSession,
+} from "@/lib/explore-request-session";
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import { shouldRetryPlacesFailure } from "@/lib/network-connectivity";
 
@@ -24,6 +28,8 @@ export const FOREGROUND_REQUEST_PROVIDER_BUDGET = 4;
 export const MAX_FOREGROUND_GRANTS_WHILE_HOT = 2;
 const MAX_RETRIES = 2;
 const MAX_CONCURRENT = 2;
+const BACKGROUND_WINDOW_BUDGET = RATE_MAX_CALLS - FOREGROUND_REQUEST_PROVIDER_BUDGET;
+const pendingSignals = new Map<string, AbortSignal | undefined>();
 const BACKOFF_MS = [1000, 2000] as const;
 
 const pending = new Map<string, Promise<unknown>>();
@@ -33,7 +39,11 @@ const recentCallAt: number[] = [];
 const retryCount = new Map<string, number>();
 
 let activeCount = 0;
-const concurrencyWaiters: Array<() => void> = [];
+let activeBackgroundCount = 0;
+const concurrencyWaiters: Array<{
+  owner?: PlacesRequestOwner;
+  resolve: (acquired: boolean) => void;
+}> = [];
 
 /** Pause new Places requests until this timestamp (rate-limit cooldown). */
 let generationCooldownUntil = 0;
@@ -102,12 +112,14 @@ export type PlacesRequestOwner = {
     | "planner"
     | "other";
   priority: "foreground" | "background";
-  requestType: "searchNearby" | "searchText" | "details";
+  requestType: "searchNearby" | "searchText" | "details" | "autocomplete";
   lane?: string;
   generationRequestId?: string;
   intent?: string;
   queryFamily?: string;
   attempt?: number;
+  exploreSession?: ExploreRequestSession;
+  category?: string;
 };
 
 function pushPlacesCallLedger(
@@ -137,7 +149,7 @@ function pushPlacesCallLedger(
   };
   callLedger.push(entry);
   if (callLedger.length > CALL_LEDGER_LIMIT) callLedger.shift();
-  console.info("[PLACES_CALL_LEDGER]", entry);
+  devVerboseInfo("[PLACES_CALL_LEDGER]", entry);
 }
 
 function logPlacesRequestOwner(
@@ -157,15 +169,29 @@ function logPlacesRequestOwner(
     counted: state.counted ?? false,
   });
   if (!owner) return;
-  console.info("[PLACES_REQUEST_OWNER]", { ...owner, ...state });
-  console.info("[PLACES_RATE_LIMIT_STATE]", {
+  const session = owner.exploreSession;
+  if (session) {
+    if (state.deduped) session.dedupedRequests += 1;
+    if (state.counted) {
+      if (owner.priority === "foreground") session.foregroundRequests += 1;
+      else session.backgroundRequests += 1;
+      const category = owner.category ?? "all";
+      session.categoryRequests.set(category, (session.categoryRequests.get(category) ?? 0) + 1);
+    }
+    if (state.blocked) {
+      if (state.blockedReason !== "aborted") session.blockedRequests += 1;
+    }
+  }
+  const { exploreSession: _session, ...diagnosticOwner } = owner;
+  devVerboseInfo("[PLACES_REQUEST_OWNER]", { ...diagnosticOwner, ...state });
+  devVerboseInfo("[PLACES_RATE_LIMIT_STATE]", {
     callsInWindow: recentCallAt.length,
     inflightCount: activeCount,
     cooldownActive: generationCooldownUntil > Date.now(),
     providerProtectionActive: state.providerProtectionActive ?? runawayProtectionActive,
     triggeringSurface: owner.surface,
   });
-  console.info("[PLACES_REQUEST_WINDOW_CONTEXT]", {
+  devVerboseInfo("[PLACES_REQUEST_WINDOW_CONTEXT]", {
     requestId: owner.requestId,
     surface: owner.surface,
     requestType: owner.requestType,
@@ -271,7 +297,14 @@ export function isStalePlacesGeneration(generationRequestId: string | undefined)
 export type PlacesProviderAdmission = {
   admit: boolean;
   bypassWindow: boolean;
-  blockedReason?: "provider_protection" | "request_budget" | "runaway" | "stale_generation";
+  blockedReason?:
+    | "provider_protection"
+    | "request_budget"
+    | "runaway"
+    | "stale_generation"
+    | "background_reservation"
+    | "aborted"
+    | "explore_budget";
   providerProtectionActive: boolean;
 };
 
@@ -281,9 +314,23 @@ export type PlacesProviderAdmission = {
  * Explicit provider cooldown and runaway grants are not bypassed.
  */
 export function evaluatePlacesProviderAdmission(
-  owner?: Pick<PlacesRequestOwner, "generationRequestId" | "priority">,
+  owner?: Pick<
+    PlacesRequestOwner,
+    "generationRequestId" | "priority" | "exploreSession" | "category"
+  >,
   now = Date.now(),
 ): PlacesProviderAdmission {
+  if (owner?.exploreSession) {
+    const aborted = owner.exploreSession.controller.signal.aborted;
+    if (aborted || !exploreSessionCanRequest(owner.exploreSession, owner.category)) {
+      return {
+        admit: false,
+        bypassWindow: false,
+        blockedReason: aborted ? "aborted" : "explore_budget",
+        providerProtectionActive: false,
+      };
+    }
+  }
   if (isStalePlacesGeneration(owner?.generationRequestId)) {
     return {
       admit: false,
@@ -298,6 +345,15 @@ export function evaluatePlacesProviderAdmission(
       bypassWindow: false,
       blockedReason: "provider_protection",
       providerProtectionActive: true,
+    };
+  }
+  pruneRateWindow(now);
+  if (owner?.priority === "background" && recentCallAt.length >= BACKGROUND_WINDOW_BUDGET) {
+    return {
+      admit: false,
+      bypassWindow: false,
+      blockedReason: "background_reservation",
+      providerProtectionActive: false,
     };
   }
   if (!isPlacesRateWindowFull(now)) {
@@ -347,7 +403,7 @@ export function beginForegroundPlacesRequest(
   if (recentCallAt.length < RATE_MAX_CALLS) {
     foregroundGrantsWhileHot = 0;
     runawayProtectionActive = false;
-    foregroundAllowanceRemaining = 0;
+    foregroundAllowanceRemaining = budget;
     return { grantedBudget: budget, windowHot: false, blocked: false };
   }
   if (runawayProtectionActive || foregroundGrantsWhileHot >= MAX_FOREGROUND_GRANTS_WHILE_HOT) {
@@ -373,6 +429,8 @@ export function resetPlacesProviderLimiterForTests(): void {
   activeGenerationRequestId = null;
   generationCooldownUntil = 0;
   pending.clear();
+  pendingSignals.clear();
+  activeBackgroundCount = 0;
   blockedUntilByKey.clear();
   callLedger.length = 0;
   activeCount = 0;
@@ -574,21 +632,50 @@ export function logPlacesApiCallStats(label = "generation"): void {
   );
 }
 
-async function acquireConcurrencySlot(): Promise<void> {
-  if (activeCount < MAX_CONCURRENT) {
+function drainConcurrencyQueue(): void {
+  concurrencyWaiters.sort(
+    (a, b) =>
+      Number(b.owner?.priority === "foreground") - Number(a.owner?.priority === "foreground"),
+  );
+  for (let i = 0; i < concurrencyWaiters.length; ) {
+    const waiter = concurrencyWaiters[i]!;
+    if (waiter.owner?.exploreSession?.controller.signal.aborted) {
+      concurrencyWaiters.splice(i, 1);
+      waiter.resolve(false);
+      continue;
+    }
+    const background = waiter.owner?.priority === "background";
+    if (activeCount >= MAX_CONCURRENT || (background && activeBackgroundCount >= 1)) {
+      i++;
+      continue;
+    }
+    concurrencyWaiters.splice(i, 1);
+    // Transfer the slot before resolving: new arrivals cannot steal it.
     activeCount += 1;
-    return;
+    if (background) activeBackgroundCount += 1;
+    waiter.resolve(true);
   }
-  await new Promise<void>((resolve) => {
-    concurrencyWaiters.push(resolve);
-  });
-  activeCount += 1;
 }
-
-function releaseConcurrencySlot(): void {
+async function acquireConcurrencySlot(owner?: PlacesRequestOwner): Promise<boolean> {
+  return new Promise((resolve) => {
+    const signal = owner?.exploreSession?.controller.signal;
+    const onAbort = () => drainConcurrencyQueue();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    concurrencyWaiters.push({
+      owner,
+      resolve: (acquired) => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve(acquired);
+      },
+    });
+    drainConcurrencyQueue();
+  });
+}
+function releaseConcurrencySlot(owner?: PlacesRequestOwner): void {
   activeCount = Math.max(0, activeCount - 1);
-  const next = concurrencyWaiters.shift();
-  if (next) next();
+  if (owner?.priority === "background")
+    activeBackgroundCount = Math.max(0, activeBackgroundCount - 1);
+  drainConcurrencyQueue();
 }
 
 /** Wait until under rate window / generation cooldown — log blocked at most once. */
@@ -629,10 +716,19 @@ async function waitForRateWindow(key: string): Promise<"ready" | "cooldown"> {
 export async function runPlacesApiDeduped<T>(
   key: string,
   type: string,
-  runner: () => Promise<T>,
+  runner: (signal?: AbortSignal) => Promise<T>,
   owner?: PlacesRequestOwner,
 ): Promise<T | null> {
   const now = Date.now();
+  const signal = owner?.exploreSession?.controller.signal;
+  if (signal?.aborted) {
+    logPlacesRequestOwner(owner, { deduped: false, blocked: true, blockedReason: "aborted" });
+    return null;
+  }
+  if (owner?.exploreSession?.mode === "search" && !owner.exploreSession.grantStarted) {
+    owner.exploreSession.grantStarted = true;
+    beginForegroundPlacesRequest(owner.exploreSession.id);
+  }
 
   if (isStalePlacesGeneration(owner?.generationRequestId)) {
     logPlacesRequestOwner(owner, {
@@ -656,7 +752,7 @@ export async function runPlacesApiDeduped<T>(
   }
 
   const inflight = pending.get(key);
-  if (inflight) {
+  if (inflight && !pendingSignals.get(key)?.aborted) {
     logPlacesDedupePending(key);
     logPlacesRequestOwner(owner, { deduped: true, blocked: false, counted: false });
     return inflight as Promise<T>;
@@ -672,9 +768,11 @@ export async function runPlacesApiDeduped<T>(
     });
     return null;
   }
-  if (admission.bypassWindow)
-    foregroundAllowanceRemaining = Math.max(0, foregroundAllowanceRemaining - 1);
 
+  const onAbort = () => {
+    if (owner?.exploreSession) owner.exploreSession.abortedRequests += 1;
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
   const promise = (async () => {
     try {
       const { shouldBlockNewPlacesCalls } = await import("@/lib/ai/places-cost-cache");
@@ -694,7 +792,7 @@ export async function runPlacesApiDeduped<T>(
     try {
       const { isPlacesQueryOnCooldown, logPlacesSearchSkipped, PLACES_QUERY_COOLDOWN_MS } =
         await import("@/lib/ai/places-cost-cache");
-      if (isPlacesQueryOnCooldown(key)) {
+      if (!owner?.exploreSession && isPlacesQueryOnCooldown(key)) {
         logPlacesSearchSkipped({
           reason: "query_cooldown",
           query: key,
@@ -719,7 +817,7 @@ export async function runPlacesApiDeduped<T>(
       });
       return null;
     }
-    if (!admission.bypassWindow) {
+    if (!owner?.exploreSession && owner?.priority !== "background" && !admission.bypassWindow) {
       const waitResult = await waitForRateWindow(key);
       if (waitResult === "cooldown" || isPlacesRateLimited()) {
         const until = Math.max(generationCooldownUntil, Date.now() + BACKOFF_MS[0]!);
@@ -735,7 +833,11 @@ export async function runPlacesApiDeduped<T>(
       }
     }
 
-    await acquireConcurrencySlot();
+    const acquired = await acquireConcurrencySlot(owner);
+    if (!acquired) {
+      logPlacesRequestOwner(owner, { deduped: false, blocked: true, blockedReason: "aborted" });
+      return null;
+    }
     try {
       if (isStalePlacesGeneration(owner?.generationRequestId)) {
         logPlacesRequestOwner(owner, {
@@ -745,26 +847,53 @@ export async function runPlacesApiDeduped<T>(
         });
         return null;
       }
-      recordPlacesApiCall();
-      logPlacesRequestOwner(owner, { deduped: false, blocked: false, counted: true });
-      logPlacesApiCall(type, key);
-      bumpCallStat(type);
-      void import("@/lib/ai/places-cost-cache")
-        .then((m) => {
-          m.notePlacesQueryCooldown(key);
-        })
-        .catch(() => {});
-
       let lastError: unknown;
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
         try {
-          const result = await runner();
+          // Atomic admission at dispatch (and every retry), not before waiting in the queue.
+          const dispatch = evaluatePlacesProviderAdmission(owner);
+          if (!dispatch.admit) {
+            logPlacesRequestOwner(owner, {
+              deduped: false,
+              blocked: true,
+              blockedReason: dispatch.blockedReason,
+              providerProtectionActive: dispatch.providerProtectionActive,
+            });
+            return null;
+          }
+          if (dispatch.bypassWindow)
+            foregroundAllowanceRemaining = Math.max(0, foregroundAllowanceRemaining - 1);
+          recordPlacesApiCall();
+          logPlacesRequestOwner(owner, { deduped: false, blocked: false, counted: true });
+          logPlacesApiCall(type, key);
+          bumpCallStat(type);
+          void import("@/lib/ai/places-cost-cache")
+            .then((m) => {
+              m.notePlacesQueryCooldown(key);
+            })
+            .catch(() => {});
+
+          const result = await runner(signal);
+          // Transport abort is best-effort; completion must still retain publication authority.
+          if (
+            signal?.aborted ||
+            (!owner?.exploreSession && isStalePlacesGeneration(owner?.generationRequestId))
+          )
+            return null;
           const t = type.toLowerCase();
           if (t.includes("text") || t === "searchtext") markPlacesTextSuccess();
           if (t.includes("detail")) markPlacesDetailOutcome(result != null);
           return result;
         } catch (error) {
           lastError = error;
+          if (signal?.aborted) {
+            logPlacesRequestOwner(owner, {
+              deduped: false,
+              blocked: true,
+              blockedReason: "aborted",
+            });
+            return null;
+          }
           if (!shouldRetryPlacesFailure(error)) break;
           const msg = error instanceof Error ? error.message : String(error);
           const isRate =
@@ -803,12 +932,17 @@ export async function runPlacesApiDeduped<T>(
       if (lastError) throw lastError;
       return null;
     } finally {
-      releaseConcurrencySlot();
+      releaseConcurrencySlot(owner);
     }
   })().finally(() => {
-    pending.delete(key);
+    signal?.removeEventListener("abort", onAbort);
+    if (pending.get(key) === promise) {
+      pending.delete(key);
+      pendingSignals.delete(key);
+    }
   });
 
+  pendingSignals.set(key, signal);
   pending.set(key, promise);
   return promise;
 }

@@ -11,10 +11,46 @@ const PERSONALITY_CLAIM_RULES: Array<{
   evidence: NonNullable<VerifiedPlaceCandidate["sourcePlace"]["reasonClaimEvidence"]>[number];
   patterns: RegExp[];
 }> = [
-  { category: "quiet", evidence: "quiet_ambience", patterns: [/這(?:裡|邊|間).{0,6}安靜/u, /(?:is|feels|stays)\s+quiet\b/i, /静か(?:な|です|で)/u, /조용(?:한|해|합니다)/u] },
-  { category: "crowd", evidence: "low_crowd", patterns: [/人少|人潮少|不擁擠|避開人潮/u, /(?:not crowded|fewer crowds?|uncrowded)/i, /混雑しにくい|人が少ない/u, /붐비지 않|사람이 적/u] },
-  { category: "dwell", evidence: "seating_dwell", patterns: [/適合久坐|可以久坐|適合待很久/u, /(?:good|ideal|suitable)\s+(?:for\s+)?(?:a\s+)?long\s+(?:stay|sit)/i, /長居しやすい/u, /오래 머물기 좋/u] },
-  { category: "price", evidence: "price", patterns: [/價格親民|價錢親民|很省錢|便宜|預算友善/u, /(?:affordable|budget[- ]friendly|inexpensive|cheap)\b/i, /手頃|安い/u, /가성비|저렴/u] },
+  {
+    category: "quiet",
+    evidence: "quiet_ambience",
+    patterns: [
+      /這(?:裡|邊|間).{0,6}安靜/u,
+      /(?:is|feels|stays)\s+quiet\b/i,
+      /静か(?:な|です|で)/u,
+      /조용(?:한|해|합니다)/u,
+    ],
+  },
+  {
+    category: "crowd",
+    evidence: "low_crowd",
+    patterns: [
+      /人少|人潮少|不擁擠|避開人潮/u,
+      /(?:not crowded|fewer crowds?|uncrowded)/i,
+      /混雑しにくい|人が少ない/u,
+      /붐비지 않|사람이 적/u,
+    ],
+  },
+  {
+    category: "dwell",
+    evidence: "seating_dwell",
+    patterns: [
+      /適合久坐|可以久坐|適合待很久/u,
+      /(?:good|ideal|suitable)\s+(?:for\s+)?(?:a\s+)?long\s+(?:stay|sit)/i,
+      /長居しやすい/u,
+      /오래 머물기 좋/u,
+    ],
+  },
+  {
+    category: "price",
+    evidence: "price",
+    patterns: [
+      /價格親民|價錢親民|很省錢|便宜|預算友善/u,
+      /(?:affordable|budget[- ]friendly|inexpensive|cheap)\b/i,
+      /手頃|安い/u,
+      /가성비|저렴/u,
+    ],
+  },
 ];
 
 export function validateAiPersonalityClaims(
@@ -78,6 +114,7 @@ export function mergeAiWithVerifiedCandidates(
         place: candidate.sourcePlace,
         context: { categoryIntent: categoryIntentFromCandidate(candidate) },
       })),
+      { locale: ai.generatedLocale },
     ).map((resolved) => [resolved.placeId, resolved] as const),
   );
 
@@ -86,6 +123,7 @@ export function mergeAiWithVerifiedCandidates(
     if (!resolved) return candidate;
     return {
       ...candidate,
+      reviewEvidence: candidate.sourcePlace.reviewEvidence,
       reason: resolved.reason,
       reasonSource: resolved.evidenceCode === "grounded_neutral" ? "fallback" : "evidence",
     };
@@ -100,16 +138,21 @@ export function mergeAiWithVerifiedCandidates(
     const validation = aiReason
       ? validateAiPersonalityClaims(aiReason, match.sourcePlace)
       : { valid: false, rejectedClaim: "" as const };
-    const acceptedAiReason = aiReason && validation.valid ? aiReason : "";
+    // LLM prose is not factual evidence; even validated style stays outside Place reason authority.
     devVerboseInfo("[RECOMMENDATION_REASON_RESOLVED]", {
       placeId: match.sourcePlace.id,
-      reasonSource: acceptedAiReason ? "ai" : fallbackMatch.reasonSource,
-      primaryEvidence: acceptedAiReason ? "ai_validated" : fallbackMatch.reasonSource,
+      reasonSource: fallbackMatch.reasonSource,
+      primaryEvidence: fallbackMatch.reasonSource,
       availableEvidence: match.sourcePlace.reasonClaimEvidence ?? [],
       identity: match.primaryType ?? "",
       categoryIntent: categoryIntentFromCandidate(match) ?? "",
-      fallbackUsed: !acceptedAiReason,
-      fallbackReason: aiReason && !validation.valid ? "unsupported_ai_personality_claim" : aiReason ? "" : "missing_ai_reason",
+      fallbackUsed: true,
+      fallbackReason:
+        aiReason && !validation.valid
+          ? "unsupported_ai_personality_claim"
+          : aiReason
+            ? "canonical_evidence_authority"
+            : "missing_ai_reason",
       profileTier: options?.profileTier ?? "free",
       profileOnboarded: options?.profileOnboarded === true,
       preferenceEvidenceUsed: false,
@@ -128,9 +171,10 @@ export function mergeAiWithVerifiedCandidates(
     merged.push({
       ...match,
       description: item.description?.trim() || match.description,
-      reason: acceptedAiReason || fallbackMatch.reason,
+      reason: fallbackMatch.reason,
+      reviewEvidence: match.sourcePlace.reviewEvidence,
       estimatedTime: item.estimatedTime?.trim() || match.estimatedTime,
-      reasonSource: acceptedAiReason ? "ai" : fallbackMatch.reasonSource,
+      reasonSource: fallbackMatch.reasonSource,
       googlePlaceId: match.googlePlaceId,
       photoName: match.photoName,
       rating: match.rating,

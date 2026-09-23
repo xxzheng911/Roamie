@@ -1,3 +1,4 @@
+import { PlaceRecommendationReason } from "@/components/PlaceRecommendationReason";
 import { useI18n } from "@/hooks/use-i18n";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -283,7 +284,9 @@ export function PlaceDetailSheet({
 
         <div className="mt-4 rounded-2xl border border-border/80 bg-card/60 px-4 py-3">
           <p className="text-xs font-medium text-muted-foreground">{t("uiCoverage.reason")}</p>
-          <p className="mt-1.5 text-sm leading-relaxed text-foreground/90">{place.reason}</p>
+          <p className="mt-1.5 text-sm leading-relaxed text-foreground/90">
+            <PlaceRecommendationReason place={place} presentation="detail" />
+          </p>
         </div>
 
         <div className="mt-4">

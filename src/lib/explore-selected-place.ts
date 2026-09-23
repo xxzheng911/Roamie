@@ -1,3 +1,4 @@
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import type { Locale } from "@/lib/i18n/types";
 import { isCityRecommendSelection, type CityRecommendSelection } from "@/lib/explore-recommend-mode";
 
@@ -86,7 +87,7 @@ export function buildSelectedPlaceDistanceLabel(locale: Locale): string {
 }
 
 export function normalizeExplorePlaceId(raw?: string | null): string {
-  return (raw ?? "").replace(/^places\//, "").trim();
+  return (raw ?? "").trim().replace(/^places\//, "");
 }
 
 export function pinSelectedPlaceFirst<T extends { id: string }>(pinned: T, results: T[]): T[] {
@@ -101,9 +102,9 @@ export function logExploreSearchSelect(input: {
   types?: string[] | null;
 }): void {
   const types = (input.types ?? []).join(",");
-  console.info(`[EXPLORE_SEARCH_SELECT] name=${input.name}`);
-  console.info(`[EXPLORE_SEARCH_SELECT] placeId=${input.placeId ?? ""}`);
-  console.info(`[EXPLORE_SEARCH_SELECT] types=${types}`);
+  devVerboseInfo(`[EXPLORE_SEARCH_SELECT] name=${input.name}`);
+  devVerboseInfo(`[EXPLORE_SEARCH_SELECT] placeId=${input.placeId ?? ""}`);
+  devVerboseInfo(`[EXPLORE_SEARCH_SELECT] types=${types}`);
 }
 
 export function logExploreSelectedPlaceDetails(input: {
@@ -112,10 +113,10 @@ export function logExploreSelectedPlaceDetails(input: {
   address?: string | null;
   photo?: string | null;
 }): void {
-  console.info(`[EXPLORE_SELECTED_PLACE_DETAILS] name=${input.name}`);
-  console.info(`[EXPLORE_SELECTED_PLACE_DETAILS] rating=${input.rating ?? ""}`);
-  console.info(`[EXPLORE_SELECTED_PLACE_DETAILS] address=${input.address ?? ""}`);
-  console.info(`[EXPLORE_SELECTED_PLACE_DETAILS] photo=${input.photo ? "yes" : "no"}`);
+  devVerboseInfo(`[EXPLORE_SELECTED_PLACE_DETAILS] name=${input.name}`);
+  devVerboseInfo(`[EXPLORE_SELECTED_PLACE_DETAILS] rating=${input.rating ?? ""}`);
+  devVerboseInfo(`[EXPLORE_SELECTED_PLACE_DETAILS] address=${input.address ?? ""}`);
+  devVerboseInfo(`[EXPLORE_SELECTED_PLACE_DETAILS] photo=${input.photo ? "yes" : "no"}`);
 }
 
 export function logExploreSelectedPlacePin(input: {
@@ -125,15 +126,15 @@ export function logExploreSelectedPlacePin(input: {
   pinned?: boolean;
 }): void {
   const types = (input.types ?? []).join(",");
-  console.info(
+  devVerboseInfo(
     `[EXPLORE_SELECTED_PLACE_PIN] name=${input.name} placeId=${input.placeId} types=${types} pinned=${input.pinned === false ? "false" : "true"}`,
   );
 }
 
 export function logExploreRecommendResult(firstPlace?: string | null): void {
-  console.info(`[EXPLORE_RECOMMEND_RESULT] firstPlace=${firstPlace ?? ""}`);
+  devVerboseInfo(`[EXPLORE_RECOMMEND_RESULT] firstPlace=${firstPlace ?? ""}`);
 }
 
 export function logExploreRenderCards(firstCard?: string | null): void {
-  console.info(`[EXPLORE_RENDER_CARDS] firstCard=${firstCard ?? ""}`);
+  devVerboseInfo(`[EXPLORE_RENDER_CARDS] firstCard=${firstCard ?? ""}`);
 }

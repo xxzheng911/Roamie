@@ -67,7 +67,24 @@ const result=document.createElement('pre');result.id='result';result.textContent
 // Keep imports at module scope and report browser assertion errors deterministically.
 const imports=entry.split('\n').filter(l=>l.startsWith('import ')).join('\n');
 const body=entry.split('\n').filter(l=>!l.startsWith('import ')).join('\n');
-await build({stdin:{contents:imports+'\ntry {'+body+'}catch(e){document.body.innerHTML="<pre id=error></pre>";document.getElementById("error").textContent=e.message}',resolveDir:root,loader:"ts"},bundle:true,format:"iife",platform:"browser",outfile:path.join(dir,"test.js"),alias:{"@":path.join(root,"src")},logLevel:"silent"});
+await build({
+  stdin: {
+    contents:
+      imports +
+      "\ntry {" +
+      body +
+      '}catch(e){document.body.innerHTML="<pre id=error></pre>";document.getElementById("error").textContent=e.message}',
+    resolveDir: root,
+    loader: "ts",
+  },
+  bundle: true,
+  format: "iife",
+  platform: "browser",
+  define: { "import.meta.env": "{}" },
+  outfile: path.join(dir, "test.js"),
+  alias: { "@": path.join(root, "src") },
+  logLevel: "silent",
+});
 const assets=path.join(root,"dist/client/assets");const css=fs.readdirSync(assets).filter(f=>/^styles-.*\.css$/.test(f)).map(f=>read(path.join(assets,f))).join('\n');
 fs.writeFileSync(path.join(dir,"index.html"),'<meta charset="utf-8"><style>'+css+'</style><body><script src="test.js"></script>');
 const result=spawnSync(process.env.CHROME_BIN||"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",["--headless","--disable-gpu","--disable-background-networking","--no-first-run","--user-data-dir="+path.join(dir,"profile"),"--dump-dom","--virtual-time-budget=5000","file://"+path.join(dir,"index.html")],{encoding:"utf8",timeout:60000,maxBuffer:10*1024*1024});

@@ -1,3 +1,4 @@
+import { PlaceRecommendationReason } from "@/components/PlaceRecommendationReason";
 import { useI18n } from "@/hooks/use-i18n";
 import { forwardRef, useEffect, useImperativeHandle, useRef, type PointerEvent } from "react";
 import { useScrollPerfMonitor } from "@/hooks/use-scroll-perf-monitor";
@@ -57,6 +58,7 @@ export type MapExploreCardsHandle = {
 type Props = {
   places: MapPlaceCard[];
   loading: boolean;
+  backgroundLoading?: boolean;
   highlightIndex: number | null;
   busyId: string | null;
   savedNames: Set<string>;
@@ -80,6 +82,7 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
     {
       places,
       loading,
+      backgroundLoading,
       highlightIndex,
       busyId,
       savedNames,
@@ -180,7 +183,7 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
 
     return (
       <div className="relative min-w-0 w-full">
-        {loading && (
+        {(loading || backgroundLoading) && (
           <div className="pointer-events-none absolute inset-x-6 top-0 z-10 flex justify-center py-2">
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
           </div>
@@ -226,8 +229,7 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
                   fallbackReason: distLabel ? undefined : "reliable_user_location_unavailable",
                 });
               }
-              const typeLabel =
-                placeCategoryDisplay(p, locale);
+              const typeLabel = placeCategoryDisplay(p, locale);
               const isLast = i === places.length - 1;
               return (
                 <article
@@ -306,7 +308,7 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
                         {p.address || "—"}
                       </p>
                       <p className="line-clamp-2 min-h-[2.25rem] shrink-0 text-[11px] leading-snug text-foreground/80">
-                        {p.reason}
+                        <PlaceRecommendationReason place={p} />
                       </p>
                       <div className="min-h-[1rem] shrink-0">
                         <PlaceHoursBadge

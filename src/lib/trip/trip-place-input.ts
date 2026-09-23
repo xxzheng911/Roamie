@@ -1,3 +1,4 @@
+import { PlaceReviewEvidenceSchema, type PlaceReviewEvidence } from "@/lib/place-review-evidence";
 import { buildPlaceMapsUrl } from "@/lib/maps-navigation";
 import type { RoamieItineraryItem, RoamieRecommendationItem } from "@/lib/ai/types";
 import { normalizeItineraryItem } from "@/lib/ai/types";
@@ -43,6 +44,7 @@ export type TripPlaceInput = {
   navigationLatitude?: number | null;
   navigationLongitude?: number | null;
   coordinateSource?: RoamieItineraryItem["coordinateSource"];
+  reviewEvidence?: PlaceReviewEvidence;
   recommendationReason?: string;
   recommendationReasonSource?: RoamieItineraryItem["recommendationReasonSource"];
   recommendationSource?: AddToTripSurface;
@@ -169,6 +171,9 @@ export function normalizeTripPlaceInput(value: unknown): TripPlaceInput {
     navigationLatitude: normalizedCoordinate(input.navigationLatitude, "lat"),
     navigationLongitude: normalizedCoordinate(input.navigationLongitude, "lng"),
     coordinateSource: input.coordinateSource as TripPlaceInput["coordinateSource"],
+    reviewEvidence: PlaceReviewEvidenceSchema.safeParse(input.reviewEvidence).success
+      ? PlaceReviewEvidenceSchema.parse(input.reviewEvidence)
+      : undefined,
     recommendationReason,
     recommendationReasonSource: recommendationReason
       ? (input.recommendationReasonSource as TripPlaceInput["recommendationReasonSource"])
@@ -219,6 +224,7 @@ export function tripPlaceFromRecommendation(rec: RoamieRecommendationItem): Trip
     userRatingCount: rec.userRatingCount ?? null,
     businessStatus: rec.businessStatus ?? null,
     types: rec.types,
+    reviewEvidence: rec.reviewEvidence,
     recommendationReason: rec.reason,
     recommendationReasonSource: rec.reasonSource,
   });
@@ -260,6 +266,7 @@ export function tripPlaceFromPlaceResult(place: PlaceResult): TripPlaceInput {
     navigationLongitude: place.navigationLongitude ?? undefined,
     coordinateSource: place.coordinateSource ?? undefined,
     localizedDisplayName: displayName,
+    reviewEvidence: recommendation.reviewEvidence,
     recommendationReason: recommendation.reason,
     recommendationReasonSource: recommendation.reasonSource,
   });
@@ -318,6 +325,7 @@ export function tripPlaceToItineraryItem(
     coordinateSource:
       place.coordinateSource ??
       (place.googlePlaceId && place.lat != null && place.lng != null ? "google_places" : undefined),
+    reviewEvidence: place.reviewEvidence,
     recommendationReason: place.recommendationReason,
     recommendationReasonSource: place.recommendationReasonSource,
     recommendationSource: place.recommendationSource,

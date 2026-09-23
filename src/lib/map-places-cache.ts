@@ -13,10 +13,7 @@ import {
 } from "@/lib/explore-map-persistent-cache";
 
 export type { ExploreTimeBucket } from "@/lib/explore-time-bucket";
-export {
-  exploreTimeBucket,
-  buildExploreSessionKey,
-} from "@/lib/explore-time-bucket";
+export { exploreTimeBucket, buildExploreSessionKey } from "@/lib/explore-time-bucket";
 export {
   buildUnifiedPlaceCacheKey,
   buildUnifiedPlaceDetailsCacheKey,
@@ -48,6 +45,7 @@ export type MapPlacesCacheEntry = {
 };
 
 const CACHE = new Map<string, MapPlacesCacheEntry>();
+const IN_FLIGHT_SIGNALS = new Map<string, AbortSignal | undefined>();
 const IN_FLIGHT = new Map<string, Promise<MapPlacesCacheEntry>>();
 const MAX_ENTRIES = 64;
 
@@ -136,7 +134,7 @@ export function invalidateMapPlacesCache(key: string): void {
 export function getMapPlacesCachedOrRun(
   key: string,
   runner: () => Promise<{ places: PlaceResult[]; error: string | null }>,
-  options?: { silent?: boolean; forceRefresh?: boolean },
+  options?: { silent?: boolean; forceRefresh?: boolean; signal?: AbortSignal },
 ): Promise<MapPlacesCacheEntry> {
   if (options?.forceRefresh) {
     invalidateMapPlacesCache(key);
@@ -151,17 +149,23 @@ export function getMapPlacesCachedOrRun(
   }
 
   const inflight = IN_FLIGHT.get(key);
-  if (inflight) return inflight;
+  if (inflight && !IN_FLIGHT_SIGNALS.get(key)?.aborted) return inflight;
 
   const promise = runner()
     .then((result) => {
-      writeMapPlacesCache(key, result.places, result.error);
-      return readMapPlacesCache(key) ?? { places: result.places, error: result.error, at: Date.now() };
+      if (!options?.signal?.aborted) writeMapPlacesCache(key, result.places, result.error);
+      return (
+        readMapPlacesCache(key) ?? { places: result.places, error: result.error, at: Date.now() }
+      );
     })
     .finally(() => {
-      IN_FLIGHT.delete(key);
+      if (IN_FLIGHT.get(key) === promise) {
+        IN_FLIGHT.delete(key);
+        IN_FLIGHT_SIGNALS.delete(key);
+      }
     });
 
+  IN_FLIGHT_SIGNALS.set(key, options?.signal);
   IN_FLIGHT.set(key, promise);
   return promise;
 }

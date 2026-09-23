@@ -1,3 +1,7 @@
+import {
+  getExploreRequestSession,
+  assertExploreSessionActive,
+} from "@/lib/explore-request-session";
 import type { SearchPlacesFn } from "@/lib/explore-category-search";
 import { executeExploreSearch } from "@/lib/places.functions";
 import { getGoogleMapsBrowserKey } from "@/lib/google-maps-client";
@@ -9,16 +13,9 @@ import {
   markPlacesClientFallbackAttempted,
   markPlacesSearchFailed,
 } from "@/lib/places-search-dedupe";
-import {
-  logPlacesApiSkipDuplicate,
-  logPlacesApiCall,
-} from "@/lib/places-diagnostics";
+import { logPlacesApiSkipDuplicate, logPlacesApiCall } from "@/lib/places-diagnostics";
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
-import {
-  isPlacesRateLimited,
-  notePlacesRateLimited,
-  waitForPlacesGenerationCooldown,
-} from "@/lib/places-api-guard";
+import { isPlacesRateLimited } from "@/lib/places-api-guard";
 import { normalizePlacesSearchResult } from "@/lib/places-search-normalize";
 
 async function runClientSearch(
@@ -27,11 +24,9 @@ async function runClientSearch(
 ): Promise<ReturnType<SearchPlacesFn>> {
   // Never hard-fail mid-generation: wait for cooldown, then let executeExploreSearch
   // / runPlacesApiDeduped apply concurrency + Retry-After backoff.
-  if (isPlacesRateLimited()) {
-    notePlacesRateLimited({ attemptIndex: 0 });
-    await waitForPlacesGenerationCooldown();
-  }
-  if (hasPlacesClientFallbackAttempted(key)) {
+  const session = getExploreRequestSession(args.data.placesExploreSessionId);
+  if (session) assertExploreSessionActive(session, args.data.categoryId);
+  if (!session && hasPlacesClientFallbackAttempted(key)) {
     logPlacesApiSkipDuplicate("client_fallback", { key });
     return {
       places: [],
@@ -39,7 +34,7 @@ async function runClientSearch(
     };
   }
 
-  markPlacesClientFallbackAttempted(key);
+  if (!session) markPlacesClientFallbackAttempted(key);
 
   const mapsKey = getGoogleMapsBrowserKey();
   logPlacesApiCall("client", args.data);
@@ -59,6 +54,8 @@ async function runClientSearch(
     );
     return clientResult;
   } catch (e) {
+    if (session?.controller.signal.aborted)
+      throw new DOMException("Search superseded", "AbortError");
     markPlacesSearchFailed(key);
     return normalizePlacesSearchResult({
       places: [],
@@ -75,6 +72,8 @@ export function createUnifiedSearchPlacesFn(serverFn: SearchPlacesFn): SearchPla
   const preferClientOnly = isCapacitorNativeShell();
 
   return async (args) => {
+    const session = getExploreRequestSession(args.data.placesExploreSessionId);
+    if (session) assertExploreSessionActive(session, args.data.categoryId);
     const key = buildPlacesSearchKey(args.data, {
       country: args.data.cacheCountry,
       city: args.data.cacheCity,
@@ -88,44 +87,58 @@ export function createUnifiedSearchPlacesFn(serverFn: SearchPlacesFn): SearchPla
       query: args.data.query,
     });
 
-    return getPlacesSearchCachedOrRun(key, async () => {
-      if (preferClientOnly) {
-        return runClientSearch(args, key);
-      }
-
-      logPlacesApiCall("server", args.data);
-
-      let serverResult = normalizePlacesSearchResult(undefined);
-
-      try {
-        serverResult = normalizePlacesSearchResult(await serverFn(args));
-        if (serverResult.places.length > 0) return serverResult;
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        serverResult = { places: [], error: msg };
-        if (serverResult.places.length === 0 && serverResult.error) {
-          devVerboseInfo(`[PLACES_API_EMPTY] error=${serverResult.error}`);
+    return getPlacesSearchCachedOrRun(
+      key,
+      async () => {
+        if (session) assertExploreSessionActive(session, args.data.categoryId);
+        if (preferClientOnly) {
+          return runClientSearch(args, key);
         }
-      }
 
-      if (isPlacesRateLimited()) {
-        return serverResult.places.length > 0
-          ? serverResult
-          : { places: [], error: "places_rate_limited" };
-      }
+        logPlacesApiCall("server", args.data);
 
-      return runClientSearch(args, key);
-    }, {
-      scope: {
-        country: args.data.cacheCountry,
-        city: args.data.cacheCity,
-        placeId: args.data.cachePlaceId,
-        destinationName: args.data.cacheDestination,
-        category: args.data.categoryId,
-        language: args.data.locale,
-        lat: args.data.lat,
-        lng: args.data.lng,
+        let serverResult = normalizePlacesSearchResult(undefined);
+
+        try {
+          serverResult = normalizePlacesSearchResult(await serverFn(args));
+          if (serverResult.places.length > 0) return serverResult;
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          serverResult = { places: [], error: msg };
+          if (serverResult.places.length === 0 && serverResult.error) {
+            devVerboseInfo(`[PLACES_API_EMPTY] error=${serverResult.error}`);
+          }
+        }
+
+        if (session) assertExploreSessionActive(session, args.data.categoryId);
+        if (isPlacesRateLimited()) {
+          return serverResult.places.length > 0
+            ? serverResult
+            : { places: [], error: "places_rate_limited" };
+        }
+
+        return runClientSearch(args, key);
       },
-    });
+      {
+        signal: session?.controller.signal,
+        isCurrent: session
+          ? () =>
+              getExploreRequestSession(session.id) === session && !session.controller.signal.aborted
+          : undefined,
+        onDedupe: () => {
+          if (session) session.dedupedRequests += 1;
+        },
+        scope: {
+          country: args.data.cacheCountry,
+          city: args.data.cacheCity,
+          placeId: args.data.cachePlaceId,
+          destinationName: args.data.cacheDestination,
+          category: args.data.categoryId,
+          language: args.data.locale,
+          lat: args.data.lat,
+          lng: args.data.lng,
+        },
+      },
+    );
   };
 }

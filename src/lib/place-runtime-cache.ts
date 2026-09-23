@@ -17,6 +17,7 @@ export type PlaceRuntimeCacheEntry = {
   fallbackImageUrl?: string | null;
   photoName?: string | null;
   photoNames?: string[] | null;
+  reasonPlace?: import("@/lib/place-result").PlaceResult;
   at: number;
 };
 
@@ -33,7 +34,7 @@ function trimCache(): void {
 }
 
 export function readPlaceRuntimeCache(placeId: string): PlaceRuntimeCacheEntry | null {
-  const id = placeId.trim();
+  const id = placeId.trim().replace(/^places\//, "");
   if (!id) return null;
   const hit = CACHE.get(id);
   if (!hit) return null;
@@ -48,7 +49,7 @@ export function writePlaceRuntimeCache(
   placeId: string,
   patch: Omit<Partial<PlaceRuntimeCacheEntry>, "at">,
 ): void {
-  const id = placeId.trim();
+  const id = placeId.trim().replace(/^places\//, "");
   if (!id) return;
   const prev = readPlaceRuntimeCache(id);
   trimCache();
@@ -107,21 +108,19 @@ export function cachePlaceImages(
   writePlaceRuntimeCache(placeId, images);
 }
 
-export function cachePlaceOpeningFromResult(
-  place: {
-    id?: string | null;
-    businessStatus?: string | null;
-    openNow?: boolean | null;
-    normalizedOpeningStatus?: NormalizedOpeningStatusValue;
-    normalizedOpeningLabel?: string;
-    normalizedOpeningSource?: import("@/lib/normalized-opening-status").NormalizedOpeningSource;
-    openStatus?: PlaceOpenStatus;
-    openStatusLabel?: string;
-    todayHoursLabel?: string;
-    closingSoonNote?: string;
-    nextOpenHint?: string;
-  },
-): void {
+export function cachePlaceOpeningFromResult(place: {
+  id?: string | null;
+  businessStatus?: string | null;
+  openNow?: boolean | null;
+  normalizedOpeningStatus?: NormalizedOpeningStatusValue;
+  normalizedOpeningLabel?: string;
+  normalizedOpeningSource?: import("@/lib/normalized-opening-status").NormalizedOpeningSource;
+  openStatus?: PlaceOpenStatus;
+  openStatusLabel?: string;
+  todayHoursLabel?: string;
+  closingSoonNote?: string;
+  nextOpenHint?: string;
+}): void {
   const id = place.id?.trim();
   if (!id) return;
   writePlaceRuntimeCache(id, {
@@ -136,4 +135,21 @@ export function cachePlaceOpeningFromResult(
     closingSoonNote: place.closingSoonNote,
     nextOpenHint: place.nextOpenHint,
   });
+}
+
+/** Populate the existing runtime projection when canonical Details cache is read/written. */
+export function rememberPlaceReasonEvidence(place: import("@/lib/place-result").PlaceResult): void {
+  if (
+    !place.reviewEvidence ||
+    place.reviewEvidence.placeId !== place.id.trim().replace(/^places\//, "")
+  )
+    return;
+  const previous = readPlaceRuntimeCache(place.id)?.reasonPlace;
+  if (previous === place) return;
+  if (
+    previous?.reviewEvidence?.extractionVersion === 2 &&
+    place.reviewEvidence.extractionVersion !== 2
+  )
+    return;
+  writePlaceRuntimeCache(place.id, { reasonPlace: place });
 }

@@ -1,3 +1,4 @@
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import { settlePlacePhotoRequest } from "@/lib/place-photo-request";
 import { resolveSignedPhotoResponse } from "@/lib/place-photo-response";
 import { supabase } from "@/integrations/supabase/client";
@@ -6,6 +7,26 @@ import { extractGooglePlacePhotoName } from "@/lib/safe-image-url";
 
 const cache = new Map<string, { url: string; expiresAt: number }>();
 const inflight = new Map<string, Promise<string | null>>();
+
+/** Reuse only unexpired URLs from the existing signing authority (including larger covers). */
+export function readSignedPlacePhotoUrl(photoOrUrl: string, width: number): string | null {
+  const photo = photoOrUrl.startsWith("places/")
+    ? photoOrUrl.trim()
+    : extractGooglePlacePhotoName(photoOrUrl);
+  if (!photo) return null;
+  const requested = Math.min(1600, Math.max(120, Math.round(width)));
+  const exact = cache.get(`${photo}@${requested}`);
+  if (exact && exact.expiresAt > Date.now() + 30_000) return exact.url;
+  for (const [key, entry] of cache) {
+    if (
+      key.startsWith(`${photo}@`) &&
+      Number(key.slice(photo.length + 1)) >= requested &&
+      entry.expiresAt > Date.now() + 30_000
+    )
+      return entry.url;
+  }
+  return null;
+}
 
 export async function getSignedPlacePhotoUrl(
   photoOrUrl: string,
@@ -34,12 +55,12 @@ export async function getSignedPlacePhotoUrl(
   });
   let state = fresh();
   // Never log the request body, token, response body, URL or exception message.
-  const report = () => console.info("[PLACE_PHOTO_SIGNING]", { ...input, ...state });
+  const report = () => devVerboseInfo("[PLACE_PHOTO_SIGNING]", { ...input, ...state });
   if (!photo) { state.fallbackReason = "invalid_photo_metadata"; report(); return null; }
   const key = `${photo}@${normalizedWidth}`;
-  const existing = cache.get(key);
-  if (existing && existing.expiresAt > Date.now() + 30_000) {
-    state.stage = "signed_cache"; state.signedUrlReturned = true; report(); return existing.url;
+  const existing = readSignedPlacePhotoUrl(photoOrUrl, width);
+  if (existing) {
+    state.stage = "signed_cache"; state.signedUrlReturned = true; report(); return existing;
   }
   const pending = inflight.get(key);
   if (pending) return pending;

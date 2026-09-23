@@ -1,11 +1,20 @@
 import {
+  notePlacesRateLimited,
+  runPlacesApiDeduped,
+  type PlacesRequestOwner,
+} from "@/lib/places-api-guard";
+import {
   searchTripStops,
   resolveTripStop,
   type TripStopSuggestion,
   type ResolvedTripStop,
 } from "@/lib/trip-stop-search.functions";
 import { getGoogleMapsBrowserKey } from "@/lib/google-maps-client";
-import { placesAutocompleteUrl, placeDetailsUrl, PLACE_DETAILS_FIELD_MASK } from "@/lib/google-maps-api";
+import {
+  placesAutocompleteUrl,
+  placeDetailsUrl,
+  PLACE_DETAILS_FIELD_MASK,
+} from "@/lib/google-maps-api";
 import type { Locale } from "@/lib/i18n/types";
 import { localeToGoogleLanguageCode } from "@/lib/i18n/places-language";
 import type { TripPlaceInput } from "@/lib/trip/trip-place-input";
@@ -26,23 +35,39 @@ export async function unifiedSearchTripStops(
   locale: Locale,
   center?: { lat: number; lng: number },
   sessionToken?: string,
+  requestOwner?: PlacesRequestOwner,
 ): Promise<{ suggestions: TripStopSuggestion[]; error: string | null }> {
-  try {
-    const result = await searchFn({
-      data: {
-        query,
-        locale,
-        ...(center ? { lat: center.lat, lng: center.lng } : {}),
-        ...(sessionToken ? { sessionToken } : {}),
-      },
-    });
-    if (result.suggestions.length > 0) return result;
-    if (result.error) return { suggestions: [], error: result.error };
-  } catch (e) {
-    console.warn("[TripStop] server search failed", e);
-  }
+  const browserKey = getGoogleMapsBrowserKey();
+  // Explicit Explore requests use the same guarded provider boundary on native.
+  if (!requestOwner || !browserKey)
+    try {
+      const invoke = () =>
+        searchFn({
+          data: {
+            query,
+            locale,
+            ...(center ? { lat: center.lat, lng: center.lng } : {}),
+            ...(sessionToken ? { sessionToken } : {}),
+          },
+        });
+      const result = requestOwner
+        ? await runPlacesApiDeduped(
+            `autocomplete:${locale}:${query.trim().toLowerCase()}:${center?.lat.toFixed(3)}:${center?.lng.toFixed(3)}`,
+            "autocomplete",
+            invoke,
+            requestOwner,
+          )
+        : await invoke();
+      if (!result) return { suggestions: [], error: "autocomplete_cancelled" };
+      if (result.suggestions.length > 0) return result;
+      if (result.error) return { suggestions: [], error: result.error };
+    } catch (e) {
+      console.warn("[TripStop] server search failed", e);
+    }
 
-  const key = getGoogleMapsBrowserKey();
+  if (requestOwner?.exploreSession?.controller.signal.aborted)
+    return { suggestions: [], error: "autocomplete_cancelled" };
+  const key = browserKey;
   if (!key) {
     return {
       suggestions: [],
@@ -65,17 +90,30 @@ export async function unifiedSearchTripStops(
   if (sessionToken) body.sessionToken = sessionToken;
 
   try {
-    const res = await fetch(placesAutocompleteUrl(), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Goog-Api-Key": key,
-        "X-Goog-FieldMask":
-          "suggestions.placePrediction.placeId,suggestions.placePrediction.text,suggestions.placePrediction.structuredFormat,suggestions.placePrediction.types",
-      },
-      body: JSON.stringify(body),
-    });
+    const invoke = (signal?: AbortSignal) =>
+      fetch(placesAutocompleteUrl(), {
+        signal,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": key,
+          "X-Goog-FieldMask":
+            "suggestions.placePrediction.placeId,suggestions.placePrediction.text,suggestions.placePrediction.structuredFormat,suggestions.placePrediction.types",
+        },
+        body: JSON.stringify(body),
+      });
+    const response = requestOwner
+      ? await runPlacesApiDeduped(
+          `autocomplete:${locale}:${query.trim().toLowerCase()}:${center?.lat.toFixed(3)}:${center?.lng.toFixed(3)}`,
+          "autocomplete",
+          invoke,
+          requestOwner,
+        )
+      : await invoke();
+    if (!response) return { suggestions: [], error: "autocomplete_cancelled" };
+    const res = response.clone();
     if (!res.ok) {
+      if (requestOwner && (res.status === 429 || res.status === 503)) notePlacesRateLimited();
       const text = await res.text();
       return { suggestions: [], error: text.slice(0, 180) || "autocomplete_failed" };
     }

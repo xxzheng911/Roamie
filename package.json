@@ -178,6 +178,11 @@
     "verify:hsinchu-combos": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-hsinchu-combination-no-placeholders.mjs",
     "verify:place-map-flow": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-place-map-rate-limit-flow.mjs",
     "verify:saved-scroll": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-saved-scroll-contract.mjs",
+    "verify:recommendation-reason-authority": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-recommendation-reason-authority.mjs",
+    "verify:explore-native-search": "node scripts/verify-explore-native-search.mjs",
+    "verify:explore-request-storm": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-explore-request-storm.mjs",
+    "verify:explore-progressive-search": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-explore-progressive-search.mjs",
+    "verify:favorites-photo-runtime": "node scripts/verify-favorites-photo-runtime.mjs",
     "verify:favorites-refresh-race": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-favorites-refresh-race.mjs",
     "verify:itinerary-insufficient-credits": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-itinerary-insufficient-credits.mjs",
     "verify:production-debug-boundary": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-production-debug-boundary.mjs",
@@ -239,7 +244,10 @@
     "mascot:cutout": ".venv-rembg/bin/python scripts/process-mascot-cutouts.py",
     "mascot:cutout:flood": "node scripts/process-mascot-cutouts.mjs",
     "ios:permissions": "node scripts/sync-ios-permission-strings.mjs",
-    "cap:add:android": "npx cap add android"
+    "cap:add:android": "npx cap add android",
+    "verify:recommendation-review-runtime": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-recommendation-review-runtime.mjs",
+    "verify:recommendation-review-browser": "node scripts/verify-recommendation-review-browser.mjs",
+    "verify:place-identity-runtime": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-place-identity-runtime.mjs"
   },
   "dependencies": {
     "@capacitor-community/apple-sign-in": "^7.1.0",

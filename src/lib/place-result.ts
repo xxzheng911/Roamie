@@ -5,6 +5,7 @@ import type { NormalizedOpeningSource } from "@/lib/normalized-opening-status";
 /** 探索 / 地圖推薦地點（client-safe，不含 server 依賴） */
 export type PlaceResult = {
   id: string;
+  reviewEvidence?: import("@/lib/place-review-evidence").PlaceReviewEvidence;
   /** Server planner provenance; never substitute the generic planner id at delivery. */
   googlePlaceId?: string | null;
   /** Stable in-memory candidate identity used across repair/replan. */
@@ -18,6 +19,8 @@ export type PlaceResult = {
   userRatingCount: number | null;
   photoName: string | null;
   primaryType: string | null;
+  primaryTypeDisplayName?: { text?: string; languageCode?: string } | null;
+  rawTypes?: string[];
   /** Google Places types（含 primaryType 以外的次要類型） */
   types?: string[] | null;
   businessStatus: string | null;
@@ -40,6 +43,7 @@ export type PlaceResult = {
   /** 探索地圖分層品質（1=營業中, 2=待確認, 3=休息中） */
   exploreQualityTier?: 1 | 2 | 3 | null;
   /** Google regularOpeningHours（行程排程營業時間驗證用） */
+  currentOpeningHours?: PlaceHoursData["currentOpeningHours"];
   regularOpeningHours?: PlaceHoursData["regularOpeningHours"];
   utcOffsetMinutes?: number | null;
   /** Primary destination vs user-requested nearby extension (箱根／橫濱…) */

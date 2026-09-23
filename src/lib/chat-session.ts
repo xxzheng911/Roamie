@@ -16,6 +16,7 @@ import { buildPlaceMapsUrl } from "@/lib/maps-navigation";
 import type { PlaceResult } from "@/lib/place-result";
 import {
   buildPlaceRecommendationReason,
+  resolveRecommendationReasonPlace,
   type UserProfileForReason,
 } from "@/lib/build-place-recommendation-reason";
 import { buildDiversePlaceRecommendationReasons } from "@/lib/place-reason-diversity";
@@ -759,26 +760,24 @@ export function mapPlaceResultToChatItem(
   const lng = p.lng ?? undefined;
   const googleMapsUrl =
     lat != null && lng != null ? buildPlaceMapsUrl(lat, lng, p.name) : undefined;
-  const reason =
-    ctx.reason?.trim() ||
-    buildPlaceRecommendationReason(
-      p,
-      ctx.userProfile ?? null,
-      // Incomplete weather objects (e.g. far-future trips) must not crash reason builders.
-      safeWeatherForReason(ctx.weather),
-      ctx.currentTime,
-      {
-        mood: ctx.mood,
-        preferenceEvidenceSource: ctx.preferenceEvidenceSource,
-        categoryLabel: ctx.categoryLabel,
-        categoryIntent: ctx.categoryIntent,
-        distanceMeters: ctx.distanceMeters,
-        distanceSource: ctx.distanceSource,
-        hasWalkingRouteEvidence: ctx.hasWalkingRouteEvidence,
-        isSavedFavorite: ctx.isSavedFavorite,
-      },
-      ctx.locale,
-    );
+  const reason = buildPlaceRecommendationReason(
+    p,
+    ctx.userProfile ?? null,
+    // Incomplete weather objects (e.g. far-future trips) must not crash reason builders.
+    safeWeatherForReason(ctx.weather),
+    ctx.currentTime,
+    {
+      mood: ctx.mood,
+      preferenceEvidenceSource: ctx.preferenceEvidenceSource,
+      categoryLabel: ctx.categoryLabel,
+      categoryIntent: ctx.categoryIntent,
+      distanceMeters: ctx.distanceMeters,
+      distanceSource: ctx.distanceSource,
+      hasWalkingRouteEvidence: ctx.hasWalkingRouteEvidence,
+      isSavedFavorite: ctx.isSavedFavorite,
+    },
+    ctx.locale,
+  );
   const { city, country } = parseCityCountryFromAddress(p.address);
   const locale = ctx.locale ?? effectiveAppLocale();
   const resolvedName = resolvePlaceDisplayName(
@@ -795,40 +794,44 @@ export function mapPlaceResultToChatItem(
   );
   const displayName = resolvedName.localizedDisplayName || p.name;
   const typeMetadata = recommendationTypeMetadataFromPlace(p);
-  const base = normalizeRecommendationItem({
-    name: displayName,
-    placeName: displayName,
-    localizedDisplayName: displayName,
-    originalName: resolvedName.originalName || p.originalName || p.name,
-    type: typeMetadata.primaryType ?? p.primaryType ?? "地點",
-    primaryType: typeMetadata.primaryType,
-    description: p.address ?? "附近推薦",
-    reason,
-    // Legacy local-card mapper retains template for compatibility; detailed
-    // evidence/fallback provenance is emitted by the reason resolver telemetry.
-    reasonSource: "template",
-    estimatedTime: "1-2 小時",
-    address: p.address ?? "",
-    lat: lat ?? null,
-    lng: lng ?? null,
-    googleMapsUrl: googleMapsUrl ?? "",
-    googlePlaceId: p.id,
-    photoName: p.photoName,
-    rating: p.rating,
-    userRatingCount: p.userRatingCount,
-    businessStatus: p.businessStatus,
-    normalizedOpeningStatus: p.normalizedOpeningStatus,
-    openStatus: p.openStatus,
-    openNow: p.openNow,
-    openStatusLabel: p.openStatusLabel || undefined,
-    todayHoursLabel: p.todayHoursLabel || undefined,
-    closingSoonNote: p.closingSoonNote || undefined,
-    nextOpenHint: p.nextOpenHint || undefined,
-    types: typeMetadata.types,
-    destinationScope: p.destinationScope,
-    extensionDestination: p.extensionDestination,
-    sourceRegionCandidate: p.sourceRegionCandidate,
-  });
+  const base = normalizeRecommendationItem(
+    {
+      name: displayName,
+      placeName: displayName,
+      localizedDisplayName: displayName,
+      originalName: resolvedName.originalName || p.originalName || p.name,
+      type: typeMetadata.primaryType ?? p.primaryType ?? "地點",
+      primaryType: typeMetadata.primaryType,
+      description: p.address ?? "附近推薦",
+      reason,
+      // Legacy local-card mapper retains template for compatibility; detailed
+      // evidence/fallback provenance is emitted by the reason resolver telemetry.
+      reasonSource: "template",
+      estimatedTime: "1-2 小時",
+      address: p.address ?? "",
+      lat: lat ?? null,
+      lng: lng ?? null,
+      googleMapsUrl: googleMapsUrl ?? "",
+      googlePlaceId: p.id,
+      reviewEvidence: p.reviewEvidence,
+      photoName: p.photoName,
+      rating: p.rating,
+      userRatingCount: p.userRatingCount,
+      businessStatus: p.businessStatus,
+      normalizedOpeningStatus: p.normalizedOpeningStatus,
+      openStatus: p.openStatus,
+      openNow: p.openNow,
+      openStatusLabel: p.openStatusLabel || undefined,
+      todayHoursLabel: p.todayHoursLabel || undefined,
+      closingSoonNote: p.closingSoonNote || undefined,
+      nextOpenHint: p.nextOpenHint || undefined,
+      types: typeMetadata.types,
+      destinationScope: p.destinationScope,
+      extensionDestination: p.extensionDestination,
+      sourceRegionCandidate: p.sourceRegionCandidate,
+    },
+    locale,
+  );
   return {
     ...base,
     placeId: p.id,
@@ -871,7 +874,7 @@ export function mapPlaceResultsToChatItems(
   return entries.map((entry, index) =>
     mapPlaceResultToChatItem(entry.place, {
       ...entry.ctx,
-      reason: entry.ctx.reason?.trim() || reasons[index],
+      reason: reasons[index],
     }),
   );
 }
@@ -975,7 +978,20 @@ export function updateSelectedPlaceReason(
   reason: string,
 ): ChatPlanningSession {
   const patch = (p: ChatPlaceItem) =>
-    p.name === placeName ? { ...p, reason, reasonSource: "ai" as const } : p;
+    p.name === placeName
+      ? {
+          ...p,
+          reason: buildPlaceRecommendationReason(
+            resolveRecommendationReasonPlace(p),
+            null,
+            null,
+            undefined,
+            undefined,
+            effectiveAppLocale(),
+          ),
+          reasonSource: "evidence" as const,
+        }
+      : p;
   return {
     ...session,
     selectedPlaces: session.selectedPlaces.map(patch),

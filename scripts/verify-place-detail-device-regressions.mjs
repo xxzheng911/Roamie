@@ -1,3 +1,8 @@
+import {
+  buildPlaceRecommendationReason,
+  resolveRecommendationReasonPlace,
+} from "../src/lib/build-place-recommendation-reason";
+import { effectiveAppLocale } from "../src/lib/i18n/effective-app-locale";
 import assert from "node:assert/strict";
 import { recommendationToPlaceSnapshot } from "../src/lib/recommendation-place-handoff.ts";
 import {
@@ -44,11 +49,24 @@ test("Explore / Chat recommendation handoff keeps one reason", () => {
   const snapshot = recommendationToPlaceSnapshot(recommendation);
   assert.ok(snapshot);
   const detail = handoffToPlaceDetailData(pickToPlaceDetailHandoff(snapshot));
-  assert.equal(snapshot.reason, recommendation.reason);
-  assert.equal(detail.reason, recommendation.reason);
+  assert.equal(
+    snapshot.reason,
+    buildPlaceRecommendationReason(
+      resolveRecommendationReasonPlace(recommendation),
+      null,
+      null,
+      undefined,
+      undefined,
+      effectiveAppLocale(),
+    ),
+  );
+  assert.equal(
+    detail.reason,
+    buildPlaceRecommendationReason(resolveRecommendationReasonPlace(recommendation), null),
+  );
   assert.equal(
     resolvePlaceDetailReasonWithSource(pickToPlaceDetailHandoff(snapshot), snapshot).source,
-    "recommendation_session",
+    "place_metadata_fallback",
   );
 });
 
@@ -65,7 +83,10 @@ test("metadata fallback contains no fabricated review claim", () => {
   const resolved = resolvePlaceDetailReasonWithSource(handoff);
   assert.equal(resolved.source, "place_metadata_fallback");
   assert.match(resolved.reason, /Google 評分 4\.5/);
-  assert.doesNotMatch(resolved.reason, /服務好|價格合理|氣氛好|不少高分評論|這地點離你很近|先依地點資料/);
+  assert.doesNotMatch(
+    resolved.reason,
+    /服務好|價格合理|氣氛好|不少高分評論|這地點離你很近|先依地點資料/,
+  );
 });
 
 test("transport origin is live GPS, cached valid location, or unavailable", () => {

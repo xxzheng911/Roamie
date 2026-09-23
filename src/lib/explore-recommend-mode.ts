@@ -1,3 +1,4 @@
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import { isTaiwanCoordinates } from "@/lib/geo-region";
 import { shouldLogExploreEvent } from "@/lib/explore-request-guard";
@@ -29,7 +30,7 @@ const CITY_PLACE_TYPES = new Set([
 ]);
 
 const CITY_LABEL_RE =
-  /^(東京都|东京都|大阪府|大阪市|大阪|京都府|京都|首爾|首爾特別市|Seoul|Tokyo|Osaka|Kyoto|Taipei|台北市|高雄市|高雄|Bangkok|曼谷|香港|Hong Kong)/i;
+  /^(東京都|东京都|大阪府|大阪市|大阪|京都府|京都|首爾|首爾特別市|Seoul|Tokyo|Osaka|Kyoto|Taipei|台北市|高雄市|高雄|Bangkok|曼谷|香港|Hong Kong)$/i;
 
 export function inferExploreCityLabel(
   lat: number,
@@ -75,6 +76,8 @@ export function isCityRecommendSelection(input: CityRecommendSelection): boolean
     ...(input.primaryType ? [input.primaryType] : []),
   ].map((t) => t.trim().toLowerCase());
 
+  // Google POI evidence takes precedence over a city name in a landmark label.
+  if (types.some((t) => t === "point_of_interest" || t === "establishment")) return false;
   if (types.some((t) => CITY_PLACE_TYPES.has(t))) return true;
 
   const label = input.label?.trim() ?? "";
@@ -204,7 +207,7 @@ export function logExploreRecommendMode(
   mode: ExploreRecommendMode,
   selectedPlaceType: string | null,
 ): void {
-  console.info(
+  devVerboseInfo(
     `[EXPLORE_RECOMMEND_MODE] mode=${mode} selectedPlaceType=${selectedPlaceType ?? "unknown"}`,
   );
 }
@@ -219,11 +222,11 @@ export function logExplorePlacesRaw(
   if (quiet) return;
   const key = `raw:${locationKey}:${categoryId}:${locale}`;
   if (!shouldLogExploreEvent(key)) return;
-  console.info(`[EXPLORE_PLACES_RAW] count=${count}`);
+  devVerboseInfo(`[EXPLORE_PLACES_RAW] count=${count}`);
 }
 
 export function logExploreFilterDrop(name: string, reason: string): void {
-  console.info(`[EXPLORE_FILTER_DROP] name=${name} reason=${reason}`);
+  devVerboseInfo(`[EXPLORE_FILTER_DROP] name=${name} reason=${reason}`);
 }
 
 export function logExploreFilterResult(
@@ -237,5 +240,5 @@ export function logExploreFilterResult(
   if (quiet) return;
   const key = `filter:${locationKey}:${categoryId}:${locale}:${rawCount}:${finalCount}`;
   if (!shouldLogExploreEvent(key)) return;
-  console.info(`[EXPLORE_FILTER_RESULT] rawCount=${rawCount} finalCount=${finalCount}`);
+  devVerboseInfo(`[EXPLORE_FILTER_RESULT] rawCount=${rawCount} finalCount=${finalCount}`);
 }

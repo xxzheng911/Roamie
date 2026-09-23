@@ -24,6 +24,7 @@ function itemToPlace(item: RoamieItineraryItem): PlaceResult {
     lng: item.lng ?? null,
     rating: item.rating ?? null,
     userRatingCount: item.userRatingCount ?? null,
+    reviewEvidence: item.reviewEvidence,
     photoName: item.photoName ?? null,
     primaryType: item.placeType ?? null,
     types: item.types ?? (item.placeType ? [item.placeType] : null),

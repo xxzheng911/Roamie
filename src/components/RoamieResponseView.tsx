@@ -1,3 +1,4 @@
+import { PlaceRecommendationReason } from "@/components/PlaceRecommendationReason";
 import { chatMoodDisplay } from "@/lib/chat-runtime-copy";
 import { useI18n } from "@/hooks/use-i18n";
 import type { KeyboardEvent, MouseEvent } from "react";
@@ -320,7 +321,9 @@ export function RoamieResponseView({
                 </div>
                 <p className="mt-1 text-sm text-muted-foreground">{r.description}</p>
                 {r.reason?.trim() && r.reason.trim() !== r.description?.trim() && (
-                  <p className="mt-1.5 text-xs text-foreground/75">{r.reason}</p>
+                  <p className="mt-1.5 text-xs text-foreground/75">
+                    <PlaceRecommendationReason place={r} />
+                  </p>
                 )}
                 <PlaceHoursBadge
                   place={r}

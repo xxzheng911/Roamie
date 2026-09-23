@@ -198,6 +198,7 @@ function itemFromCandidate(
     photoName: candidate.photoName,
     rating: candidate.rating,
     userRatingCount: candidate.userRatingCount,
+    reviewEvidence: candidate.reviewEvidence,
     businessStatus: candidate.businessStatus,
     openStatusLabel: candidate.openStatusLabel,
     todayHoursLabel: candidate.todayHoursLabel,

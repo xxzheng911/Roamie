@@ -1,10 +1,17 @@
+import {
+  hasPlaceReviewCapability,
+  UNIFIED_PLACE_SCREEN_CACHE_TTL_MS,
+} from "@/lib/unified-place-cache";
+import { extractPlaceReviewEvidence, type GoogleReviewSample } from "@/lib/place-review-evidence";
+import { writePlaceRuntimeCache } from "@/lib/place-runtime-cache";
+import { getExploreRequestSession } from "@/lib/explore-request-session";
+import type { PlacesRequestOwner } from "@/lib/places-api-guard";
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import {
   PLACES_FIELD_MASK,
-  PLACE_DETAILS_FIELD_MASK,
   PLACE_DETAILS_SCREEN_FIELD_MASK,
   placesSearchNearbyUrl,
   placesSearchTextUrl,
@@ -43,11 +50,9 @@ import {
 } from "@/lib/places-api-guard";
 import {
   buildUnifiedPlaceDetailsCacheKey,
-  readUnifiedPlaceDetailsCache,
   writeUnifiedPlaceDetailsCache,
-  isPlaceDetailsCacheComplete,
+  isPlaceDetailsMinimallyCacheable,
   getUnifiedPlaceCacheOrFetch,
-  UNIFIED_PLACE_INTRO_CACHE_TTL_MS,
   mergePlaceFactualFields,
   readCachedPlaceResultById,
 } from "@/lib/unified-place-cache";
@@ -80,6 +85,7 @@ export type RawPlaceHours = PlaceHoursData & {
   userRatingCount?: number;
   photos?: Array<{ name: string }>;
   primaryType?: string;
+  primaryTypeDisplayName?: { text?: string; languageCode?: string };
   types?: string[];
 };
 
@@ -95,6 +101,7 @@ const ExploreSearchInput = z.object({
   locale: z.enum(["zh-TW", "en", "ja", "ko"]).optional(),
   categoryId: z.string().max(32).optional(),
   placesCaller: z.string().max(80).optional(),
+  placesExploreSessionId: z.string().max(128).optional(),
   placesScreen: z
     .enum([
       "home",
@@ -273,7 +280,10 @@ async function postPlaces(
   const httpKey = buildPlacesHttpKey(callType, {
     lat: bucketPlacesCoordinate(circle?.center?.latitude),
     lng: bucketPlacesCoordinate(circle?.center?.longitude),
-    query: typeof body.textQuery === "string" ? body.textQuery : "",
+    query:
+      typeof body.textQuery === "string"
+        ? body.textQuery.trim().replace(/\s+/g, " ").toLowerCase()
+        : "",
     types: Array.isArray(body.includedTypes) ? body.includedTypes.join(",") : "",
     radius: (circle as { radius?: number } | undefined)?.radius,
     language: typeof body.languageCode === "string" ? body.languageCode : "",
@@ -304,11 +314,12 @@ async function postPlaces(
             : stats?.screen === "itinerary" || stats?.screen === "plan"
               ? "planner"
               : "other";
+  const exploreSession = getExploreRequestSession(stats?.exploreSessionId);
   try {
     guarded = await runPlacesApiDeduped(
       httpKey,
       callType,
-      async () => {
+      async (signal) => {
         recordPlacesHttpCall(callType, {
           functionName: "postPlaces",
           requestKey: httpKey,
@@ -316,7 +327,7 @@ async function postPlaces(
           screen: stats?.screen,
           category: stats?.category,
         });
-        console.info("[PLACES_PROVIDER_REQUEST]", {
+        devVerboseInfo("[PLACES_PROVIDER_REQUEST]", {
           requestId: `places_${ownerRequestId}`,
           recommendationRequestId: stats?.recommendationRequestId ?? "",
           round: stats?.round ?? 0,
@@ -337,6 +348,7 @@ async function postPlaces(
         let res: Response;
         try {
           res = await fetch(url, {
+            signal,
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -346,7 +358,7 @@ async function postPlaces(
             body: JSON.stringify(body),
           });
         } catch (error) {
-          console.info("[PLACES_PROVIDER_RESULT]", {
+          devVerboseInfo("[PLACES_PROVIDER_RESULT]", {
             requestId: `places_${ownerRequestId}`,
             recommendationRequestId: stats?.recommendationRequestId ?? "",
             lane: stats?.lane ?? callType,
@@ -365,7 +377,7 @@ async function postPlaces(
         if (!res.ok) {
           const text = await res.text();
           const detail = parseGoogleError(text);
-          console.info("[PLACES_PROVIDER_RESULT]", {
+          devVerboseInfo("[PLACES_PROVIDER_RESULT]", {
             requestId: `places_${ownerRequestId}`,
             recommendationRequestId: stats?.recommendationRequestId ?? "",
             lane: stats?.lane ?? callType,
@@ -396,7 +408,7 @@ async function postPlaces(
         }
 
         const json = (await res.json()) as { places?: RawPlace[]; nextPageToken?: string };
-        console.info("[PLACES_PROVIDER_RESULT]", {
+        devVerboseInfo("[PLACES_PROVIDER_RESULT]", {
           requestId: `places_${ownerRequestId}`,
           recommendationRequestId: stats?.recommendationRequestId ?? "",
           lane: stats?.lane ?? callType,
@@ -416,10 +428,20 @@ async function postPlaces(
       {
         requestId: `places_${ownerRequestId}`,
         surface: ownerSurface,
-        priority: ownerSurface === "home_nearby" ? "background" : "foreground",
+        priority:
+          ownerSurface === "explore"
+            ? exploreSession?.mode === "search" || stats?.caller === "map.freeTextSearch"
+              ? "foreground"
+              : "background"
+            : ownerSurface === "home_nearby"
+              ? "background"
+              : "foreground",
+        exploreSession,
+        category: stats?.category,
         requestType: callType === "nearby" ? "searchNearby" : "searchText",
         lane: stats?.lane,
-        generationRequestId: stats?.recommendationRequestId,
+        generationRequestId:
+          exploreSession?.mode === "search" ? exploreSession.id : stats?.recommendationRequestId,
         intent: stats?.intentCategory ?? "",
         queryFamily: placesQueryFamily(callType, body),
         attempt: stats?.round ?? 0,
@@ -519,6 +541,7 @@ type PlacesSearchStats = {
   round?: number;
   scopeSource?: string;
   recommendationRequestId?: string;
+  exploreSessionId?: string;
 };
 
 function buildSearchStats(data: z.infer<typeof ExploreSearchInput>): PlacesSearchStats {
@@ -534,6 +557,7 @@ function buildSearchStats(data: z.infer<typeof ExploreSearchInput>): PlacesSearc
     round: data.placesRound,
     scopeSource: data.placesScopeSource,
     recommendationRequestId: data.placesRecommendationRequestId,
+    exploreSessionId: data.placesExploreSessionId,
   };
 }
 
@@ -565,7 +589,7 @@ async function searchText(
     requestId,
   } = await postPlaces(placesSearchTextUrl(), body, apiKey, "text", stats);
   if (error) {
-    console.info("[PLACES_PROVIDER_MAPPING]", {
+    devVerboseInfo("[PLACES_PROVIDER_MAPPING]", {
       requestId,
       recommendationRequestId: stats?.recommendationRequestId ?? "",
       lane: stats?.lane ?? "text_search",
@@ -582,7 +606,7 @@ async function searchText(
     intentCategory: stats?.intentCategory,
     searchMode: stats?.searchMode,
   });
-  console.info("[PLACES_PROVIDER_MAPPING]", {
+  devVerboseInfo("[PLACES_PROVIDER_MAPPING]", {
     requestId,
     recommendationRequestId: stats?.recommendationRequestId ?? "",
     lane: stats?.lane ?? "text_search",
@@ -908,6 +932,9 @@ async function runExploreSearch(
 
   if (result.error) return result;
 
+  // Explicit Explore text hits are search authority, not nearby recommendations.
+  if (data.placesCaller === "map.freeTextSearch" && data.mode === "text") return result;
+
   const chatDestinationText =
     data.placesScreen === "chat" && data.mode === "text" && data.query.trim().length > 0;
   const skipDistanceFilter = data.skipLocationBias === true && data.searchMode === "destination";
@@ -973,78 +1000,10 @@ export const searchPlaces = createServerFn({ method: "POST" })
 
 type PlaceDetailsRaw = RawPlace & {
   editorialSummary?: { text?: string };
-  reviews?: Array<{ text?: { text?: string } }>;
+  reviews?: GoogleReviewSample[];
 };
 
-async function fetchPlaceDetailsForIntroNetwork(
-  placeId: string,
-  locale?: Locale,
-): Promise<{
-  place: PlaceResult;
-  editorialSummary: string | null;
-  reviewSnippets: string[];
-} | null> {
-  try {
-    const apiKey = await getServerMapsKey();
-    const languageCode = localeToGoogleLanguageCode(locale ?? "zh-TW");
-    const httpKey = buildPlacesHttpKey("details", { placeId, locale: locale ?? "zh-TW" });
-    recordPlacesHttpCall("details", {
-      functionName: "fetchPlaceDetailsForIntro",
-      requestKey: httpKey,
-      caller: getPlacesCallContext().caller,
-      screen: getPlacesCallContext().screen,
-    });
-    const res = await fetch(placeDetailsUrl(placeId, languageCode), {
-      headers: {
-        "X-Goog-Api-Key": apiKey,
-        "X-Goog-FieldMask": PLACE_DETAILS_FIELD_MASK,
-        "Accept-Language": languageCode,
-      },
-    });
-    if (!res.ok) return null;
-    const p = (await res.json()) as PlaceDetailsRaw;
-    const hours = rawPlaceToHoursData(p);
-    const availability = derivePlaceAvailability(hours, { context: "now" });
-    const fields = applyAvailabilityFields({}, availability);
-    const place: PlaceResult = {
-      id: p.id,
-      name: p.displayName?.text ?? "Unknown",
-      address: resolvePlaceDisplayAddress(
-        {
-          formattedAddress: p.formattedAddress,
-          shortFormattedAddress: p.shortFormattedAddress,
-          vicinity: p.vicinity,
-        },
-        { locale },
-      ),
-      lat: p.location?.latitude ?? null,
-      lng: p.location?.longitude ?? null,
-      rating: p.rating ?? null,
-      userRatingCount: p.userRatingCount ?? null,
-      photoName: p.photos?.[0]?.name ?? null,
-      primaryType: p.primaryType ?? null,
-      types: p.types ?? null,
-      businessStatus: availability.businessStatus,
-      openStatus: availability.openStatus,
-      openStatusLabel: fields.openStatusLabel,
-      todayHoursLabel: fields.todayHoursLabel,
-      closingSoonNote: fields.closingSoonNote,
-      nextOpenHint: fields.nextOpenHint,
-    };
-    return {
-      place,
-      editorialSummary: p.editorialSummary?.text?.trim() ?? null,
-      reviewSnippets: (p.reviews ?? [])
-        .map((r) => r.text?.text?.trim())
-        .filter((t): t is string => Boolean(t))
-        .slice(0, 3),
-    };
-  } catch (e) {
-    console.warn("[Roamie Places] place details failed", placeId, e);
-    return null;
-  }
-}
-
+/** Intro and Detail share one reviews-capable request/cache, including concurrent callers. */
 export async function fetchPlaceDetailsForIntro(
   placeId: string,
   locale?: Locale,
@@ -1053,17 +1012,8 @@ export async function fetchPlaceDetailsForIntro(
   editorialSummary: string | null;
   reviewSnippets: string[];
 } | null> {
-  const normalizedLocale = locale ?? "zh-TW";
-  const cacheKey = buildUnifiedPlaceDetailsCacheKey(placeId, normalizedLocale, {}, "intro_v1");
-  return getUnifiedPlaceCacheOrFetch(
-    cacheKey,
-    () => fetchPlaceDetailsForIntroNetwork(placeId, locale),
-    {
-      ttlMs: UNIFIED_PLACE_INTRO_CACHE_TTL_MS,
-      shouldCache: (result) => Boolean(result?.place?.id),
-      validate: (result) => Boolean(result?.place?.id),
-    },
-  );
+  const place = await fetchPlaceDetailsForScreen(placeId, locale);
+  return place ? { place, editorialSummary: null, reviewSnippets: [] } : null;
 }
 
 export type PlaceDetailsScreenResult = PlaceResult & {
@@ -1104,6 +1054,10 @@ function mapPlaceDetailsScreenRaw(
     locale ?? "zh-TW",
   );
   const basePlace: PlaceResult = {
+    reviewEvidence: extractPlaceReviewEvidence(p.id, p.reviews ?? []),
+    currentOpeningHours: p.currentOpeningHours,
+    regularOpeningHours: p.regularOpeningHours,
+    utcOffsetMinutes: p.utcOffsetMinutes,
     id: p.id,
     name: resolvedName.localizedDisplayName,
     originalName: resolvedName.originalName,
@@ -1121,6 +1075,8 @@ function mapPlaceDetailsScreenRaw(
     userRatingCount: p.userRatingCount ?? null,
     photoName: p.photos?.[0]?.name ?? null,
     primaryType: p.primaryType ?? null,
+    primaryTypeDisplayName: p.primaryTypeDisplayName ?? null,
+    rawTypes: p.types ? [...p.types] : undefined,
     types: p.types ?? null,
     businessStatus: p.businessStatus ?? null,
     openStatus: "unknown",
@@ -1147,175 +1103,220 @@ function mapPlaceDetailsScreenRaw(
 /** 瀏覽器直連 Google Places Details（Capacitor bundle 無 server 時） */
 export async function fetchPlaceDetailsForScreenWithKey(
   placeId: string,
-  apiKey: string,
+  apiKey: string | undefined,
   locale?: Locale,
   cacheScope?: { cityLabel?: string; country?: string; lat?: number; lng?: number },
-  telemetryOptions?: { requestPath?: PlaceDetailRequestPath },
+  telemetryOptions?: { requestPath?: PlaceDetailRequestPath; requestOwner?: PlacesRequestOwner },
 ): Promise<PlaceDetailsScreenResult | null> {
+  placeId = placeId.trim().replace(/^places\//, "");
   const cacheKey = buildUnifiedPlaceDetailsCacheKey(
     placeId,
     locale ?? "zh-TW",
     cacheScope,
-    "screen_v1",
+    "screen_reviews_v2",
   );
-  const cached = readUnifiedPlaceDetailsCache(cacheKey);
-  if (cached?.place) {
-    logPlacesCacheHit(cacheKey);
-    return cached.place;
-  }
+  const entry = await getUnifiedPlaceCacheOrFetch<{
+    place: PlaceDetailsScreenResult | null;
+    error: string | null;
+  }>(
+    cacheKey,
+    async () => ({
+      place: await fetchScreenDetailsNetwork(
+        placeId,
+        apiKey || (await getServerMapsKey()),
+        locale,
+        telemetryOptions,
+      ),
+      error: null,
+    }),
+    {
+      shouldCache: (value) => value.place !== null,
+      validate: (value) =>
+        isPlaceDetailsMinimallyCacheable(value.place) && hasPlaceReviewCapability(value.place),
+      ttlMs: UNIFIED_PLACE_SCREEN_CACHE_TTL_MS,
+      signal: telemetryOptions?.requestOwner?.exploreSession?.controller.signal,
+      onDedupe: () => {
+        const session = telemetryOptions?.requestOwner?.exploreSession;
+        if (session) session.dedupedRequests += 1;
+      },
+    },
+  );
+  if (entry.place && !telemetryOptions?.requestOwner?.exploreSession?.controller.signal.aborted)
+    writePlaceRuntimeCache(entry.place.id, { reasonPlace: entry.place });
+  return entry.place;
+}
 
-  logPlacesCacheMiss(cacheKey);
-
+async function fetchScreenDetailsNetwork(
+  placeId: string,
+  apiKey: string,
+  locale?: Locale,
+  telemetryOptions?: { requestPath?: PlaceDetailRequestPath; requestOwner?: PlacesRequestOwner },
+): Promise<PlaceDetailsScreenResult | null> {
   const httpKey = buildPlacesHttpKey("details", { placeId, locale: locale ?? "zh-TW" });
-  const guarded = await runPlacesApiDeduped(httpKey, "details", async () => {
-    recordPlacesHttpCall("details", {
-      functionName: "fetchPlaceDetailsForScreenWithKey",
-      requestKey: httpKey,
-      caller: getPlacesCallContext().caller,
-      screen: getPlacesCallContext().screen,
-    });
-
-    let failureTelemetryLogged = false;
-    try {
-      const languageCode = localeToGoogleLanguageCode(locale ?? "zh-TW");
-      const requestPath = telemetryOptions?.requestPath ?? "server";
-      const res = await fetch(placeDetailsUrl(placeId, languageCode), {
-        headers: {
-          "X-Goog-Api-Key": apiKey,
-          "X-Goog-FieldMask": PLACE_DETAILS_SCREEN_FIELD_MASK,
-          "Accept-Language": languageCode,
-        },
+  const guarded = await runPlacesApiDeduped(
+    httpKey,
+    "details",
+    async (signal) => {
+      recordPlacesHttpCall("details", {
+        functionName: "fetchPlaceDetailsForScreenWithKey",
+        requestKey: httpKey,
+        caller: getPlacesCallContext().caller,
+        screen: getPlacesCallContext().screen,
       });
-      if (!res.ok) {
-        const detail = await res.text().catch(() => "");
-        const googleError = parseGooglePlaceDetailError(detail);
-        logPlaceDetailRequestFailure({
-          placeId,
-          requestPath,
-          languageCode,
-          fieldMask: PLACE_DETAILS_SCREEN_FIELD_MASK,
-          cacheStatus: "miss",
-          serverAttempted: requestPath === "server",
-          clientFallbackAttempted: requestPath === "capacitor_client",
-          httpStatus: res.status,
-          httpOk: res.ok,
-          googleErrorCode: googleError.code,
-          googleErrorStatus: googleError.status,
-          googleErrorMessage: googleError.message,
-          parserResult: "parsed",
-          failureKind: classifyPlaceDetailFailure({
-            httpStatus: res.status,
-            googleErrorStatus: googleError.status,
-          }),
-          shape: inspectPlaceDetailResponseShape(null),
-        });
-        failureTelemetryLogged = true;
-        console.warn("[Roamie Places] place details client HTTP", res.status, detail.slice(0, 200));
-        if (res.status === 429 || res.status === 503) {
-          throw new Error(`places_details_http_${res.status}`);
-        }
-        return null;
-      }
-      let p: PlaceDetailsScreenRaw;
+
+      let failureTelemetryLogged = false;
       try {
-        p = (await res.json()) as PlaceDetailsScreenRaw;
-      } catch (parseError) {
-        const exceptionName = parseError instanceof Error ? parseError.name : "UnknownError";
-        const exceptionMessage =
-          parseError instanceof Error ? parseError.message : String(parseError);
-        logPlaceDetailRequestFailure({
-          placeId,
-          requestPath,
-          languageCode,
-          fieldMask: PLACE_DETAILS_SCREEN_FIELD_MASK,
-          cacheStatus: "miss",
-          serverAttempted: requestPath === "server",
-          clientFallbackAttempted: requestPath === "capacitor_client",
-          httpStatus: res.status,
-          httpOk: res.ok,
-          googleErrorCode: null,
-          googleErrorStatus: "",
-          googleErrorMessage: "",
-          parserResult: "failed",
-          failureKind: classifyPlaceDetailFailure({
-            httpStatus: res.status,
-            parserResult: "failed",
-            exceptionName,
-            exceptionMessage,
-          }),
-          exceptionName,
-          exceptionMessage,
-          shape: inspectPlaceDetailResponseShape(null),
-        });
-        failureTelemetryLogged = true;
-        throw parseError;
-      }
-      const responseShape = inspectPlaceDetailResponseShape(p);
-      if (
-        !responseShape.responsePlaceIdPresent ||
-        !responseShape.responseDisplayNamePresent ||
-        !responseShape.responseLocationPresent
-      ) {
-        const emptyResponse = Object.keys(p).length === 0;
-        logPlaceDetailRequestFailure({
-          placeId,
-          requestPath,
-          languageCode,
-          fieldMask: PLACE_DETAILS_SCREEN_FIELD_MASK,
-          cacheStatus: "miss",
-          serverAttempted: requestPath === "server",
-          clientFallbackAttempted: requestPath === "capacitor_client",
-          httpStatus: res.status,
-          httpOk: res.ok,
-          googleErrorCode: null,
-          googleErrorStatus: "",
-          googleErrorMessage: "",
-          parserResult: emptyResponse ? "empty_response" : "invalid_payload",
-          failureKind: emptyResponse ? "empty_response" : "invalid_payload",
-          shape: responseShape,
-        });
-        failureTelemetryLogged = true;
-      }
-      return mapPlaceDetailsScreenRaw(p, locale);
-    } catch (e) {
-      const exceptionName = e instanceof Error ? e.name : "UnknownError";
-      const exceptionMessage = e instanceof Error ? e.message : String(e);
-      if (!failureTelemetryLogged) {
         const languageCode = localeToGoogleLanguageCode(locale ?? "zh-TW");
         const requestPath = telemetryOptions?.requestPath ?? "server";
-        logPlaceDetailRequestFailure({
-          placeId,
-          requestPath,
-          languageCode,
-          fieldMask: PLACE_DETAILS_SCREEN_FIELD_MASK,
-          cacheStatus: "miss",
-          serverAttempted: requestPath === "server",
-          clientFallbackAttempted: requestPath === "capacitor_client",
-          httpStatus: 0,
-          httpOk: false,
-          googleErrorCode: null,
-          googleErrorStatus: "",
-          googleErrorMessage: "",
-          parserResult: "parsed",
-          failureKind: classifyPlaceDetailFailure({
-            httpStatus: 0,
+        const res = await fetch(placeDetailsUrl(placeId, languageCode), {
+          signal,
+          headers: {
+            "X-Goog-Api-Key": apiKey,
+            "X-Goog-FieldMask": PLACE_DETAILS_SCREEN_FIELD_MASK,
+            "Accept-Language": languageCode,
+          },
+        });
+        if (!res.ok) {
+          const detail = await res.text().catch(() => "");
+          const googleError = parseGooglePlaceDetailError(detail);
+          logPlaceDetailRequestFailure({
+            placeId,
+            requestPath,
+            languageCode,
+            fieldMask: PLACE_DETAILS_SCREEN_FIELD_MASK,
+            cacheStatus: "miss",
+            serverAttempted: requestPath === "server",
+            clientFallbackAttempted: requestPath === "capacitor_client",
+            httpStatus: res.status,
+            httpOk: res.ok,
+            googleErrorCode: googleError.code,
+            googleErrorStatus: googleError.status,
+            googleErrorMessage: googleError.message,
+            parserResult: "parsed",
+            failureKind: classifyPlaceDetailFailure({
+              httpStatus: res.status,
+              googleErrorStatus: googleError.status,
+            }),
+            shape: inspectPlaceDetailResponseShape(null),
+          });
+          failureTelemetryLogged = true;
+          console.warn(
+            "[Roamie Places] place details client HTTP",
+            res.status,
+            detail.slice(0, 200),
+          );
+          if (res.status === 429 || res.status === 503) {
+            throw new Error(`places_details_http_${res.status}`);
+          }
+          return null;
+        }
+        let p: PlaceDetailsScreenRaw;
+        try {
+          p = (await res.json()) as PlaceDetailsScreenRaw;
+        } catch (parseError) {
+          const exceptionName = parseError instanceof Error ? parseError.name : "UnknownError";
+          const exceptionMessage =
+            parseError instanceof Error ? parseError.message : String(parseError);
+          logPlaceDetailRequestFailure({
+            placeId,
+            requestPath,
+            languageCode,
+            fieldMask: PLACE_DETAILS_SCREEN_FIELD_MASK,
+            cacheStatus: "miss",
+            serverAttempted: requestPath === "server",
+            clientFallbackAttempted: requestPath === "capacitor_client",
+            httpStatus: res.status,
+            httpOk: res.ok,
+            googleErrorCode: null,
+            googleErrorStatus: "",
+            googleErrorMessage: "",
+            parserResult: "failed",
+            failureKind: classifyPlaceDetailFailure({
+              httpStatus: res.status,
+              parserResult: "failed",
+              exceptionName,
+              exceptionMessage,
+            }),
             exceptionName,
             exceptionMessage,
-          }),
-          exceptionName,
-          exceptionMessage,
-          shape: inspectPlaceDetailResponseShape(null),
-        });
+            shape: inspectPlaceDetailResponseShape(null),
+          });
+          failureTelemetryLogged = true;
+          throw parseError;
+        }
+        const responseShape = inspectPlaceDetailResponseShape(p);
+        if (
+          !responseShape.responsePlaceIdPresent ||
+          !responseShape.responseDisplayNamePresent ||
+          !responseShape.responseLocationPresent
+        ) {
+          const emptyResponse = Object.keys(p).length === 0;
+          logPlaceDetailRequestFailure({
+            placeId,
+            requestPath,
+            languageCode,
+            fieldMask: PLACE_DETAILS_SCREEN_FIELD_MASK,
+            cacheStatus: "miss",
+            serverAttempted: requestPath === "server",
+            clientFallbackAttempted: requestPath === "capacitor_client",
+            httpStatus: res.status,
+            httpOk: res.ok,
+            googleErrorCode: null,
+            googleErrorStatus: "",
+            googleErrorMessage: "",
+            parserResult: emptyResponse ? "empty_response" : "invalid_payload",
+            failureKind: emptyResponse ? "empty_response" : "invalid_payload",
+            shape: responseShape,
+          });
+          failureTelemetryLogged = true;
+        }
+        return mapPlaceDetailsScreenRaw(p, locale);
+      } catch (e) {
+        if (
+          telemetryOptions?.requestOwner &&
+          (signal?.aborted ||
+            (e instanceof Error && /places_details_http_(429|503)/.test(e.message)))
+        )
+          throw e;
+        const exceptionName = e instanceof Error ? e.name : "UnknownError";
+        const exceptionMessage = e instanceof Error ? e.message : String(e);
+        if (!failureTelemetryLogged) {
+          const languageCode = localeToGoogleLanguageCode(locale ?? "zh-TW");
+          const requestPath = telemetryOptions?.requestPath ?? "server";
+          logPlaceDetailRequestFailure({
+            placeId,
+            requestPath,
+            languageCode,
+            fieldMask: PLACE_DETAILS_SCREEN_FIELD_MASK,
+            cacheStatus: "miss",
+            serverAttempted: requestPath === "server",
+            clientFallbackAttempted: requestPath === "capacitor_client",
+            httpStatus: 0,
+            httpOk: false,
+            googleErrorCode: null,
+            googleErrorStatus: "",
+            googleErrorMessage: "",
+            parserResult: "parsed",
+            failureKind: classifyPlaceDetailFailure({
+              httpStatus: 0,
+              exceptionName,
+              exceptionMessage,
+            }),
+            exceptionName,
+            exceptionMessage,
+            shape: inspectPlaceDetailResponseShape(null),
+          });
+        }
+        console.warn("[Roamie Places] place details client failed", placeId, e);
+        return null;
       }
-      console.warn("[Roamie Places] place details client failed", placeId, e);
-      return null;
-    }
-  });
+    },
+    telemetryOptions?.requestOwner,
+  );
 
   if (guarded) {
     const lowerCapability = readCachedPlaceResultById(placeId, locale ?? "zh-TW");
     const merged = mergePlaceFactualFields(lowerCapability, guarded);
-    writeUnifiedPlaceDetailsCache(cacheKey, merged, null);
     return merged;
   }
   return guarded;
@@ -1326,8 +1327,7 @@ export async function fetchPlaceDetailsForScreen(
   locale?: Locale,
 ): Promise<PlaceDetailsScreenResult | null> {
   try {
-    const apiKey = await getServerMapsKey();
-    return await fetchPlaceDetailsForScreenWithKey(placeId, apiKey, locale, undefined, {
+    return await fetchPlaceDetailsForScreenWithKey(placeId, undefined, locale, undefined, {
       requestPath: "server",
     });
   } catch (e) {

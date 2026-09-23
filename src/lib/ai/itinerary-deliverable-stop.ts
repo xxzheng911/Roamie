@@ -1,3 +1,4 @@
+import type { PlaceReviewEvidence } from "@/lib/place-review-evidence";
 import type { RoamieItineraryItem } from "@/lib/ai/types";
 import { normalizeItineraryItem } from "@/lib/ai/types";
 import { isHardGooglePlaceId } from "@/lib/ai/planning-place-id";
@@ -23,6 +24,7 @@ export type DeliverableItineraryStopCandidate = {
   photoName?: string | null;
   rating?: number | null;
   userRatingCount?: number | null;
+  reviewEvidence?: PlaceReviewEvidence;
   businessStatus?: string | null;
   openStatusLabel?: string;
   todayHoursLabel?: string;
@@ -62,6 +64,7 @@ export function createDeliverableItineraryStop(
     photoName: place.photoName,
     rating: place.rating,
     userRatingCount: place.userRatingCount,
+    reviewEvidence: place.reviewEvidence,
     businessStatus: place.businessStatus,
     openStatusLabel: place.openStatusLabel,
     todayHoursLabel: place.todayHoursLabel,

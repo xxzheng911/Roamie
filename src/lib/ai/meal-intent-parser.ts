@@ -1,3 +1,4 @@
+import { buildPlaceRecommendationReason } from "@/lib/build-place-recommendation-reason";
 import type { PlaceResult } from "@/lib/place-result";
 import type { SearchAttempt } from "@/lib/ai/chat-place-recommendation";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
@@ -80,7 +81,9 @@ function extractCity(text: string): string | undefined {
     /([\u4e00-\u9fff]{2,8}(?:市|縣|區)?)(?:有|的|附近|推薦|午餐|晚餐|餐廳|美食)/,
   );
   if (m?.[1]) return normalizeDestinationLabel(m[1].replace(/市$/, ""));
-  const dest = text.match(/(高雄|台北|台中|台南|桃園|新北|基隆|新竹|嘉義|屏東|花蓮|台東|金門|澎湖|馬祖)/);
+  const dest = text.match(
+    /(高雄|台北|台中|台南|桃園|新北|基隆|新竹|嘉義|屏東|花蓮|台東|金門|澎湖|馬祖)/,
+  );
   return dest?.[1] ? normalizeDestinationLabel(dest[1]) : undefined;
 }
 
@@ -143,10 +146,7 @@ export function resolveExplicitMealIntent(
   return parseMealIntentFromText(text, refDate);
 }
 
-export function validateMealRecommendationSlot(
-  place: PlaceResult,
-  slot: MealSlot,
-): boolean {
+export function validateMealRecommendationSlot(place: PlaceResult, slot: MealSlot): boolean {
   const name = place.name ?? "";
   const blob = [name, place.address, ...(place.types ?? []), place.primaryType]
     .filter(Boolean)
@@ -288,10 +288,8 @@ export function preserveMealRecommendationReason(
   place: PlaceResult,
   intent: ParsedMealIntent,
 ): string {
-  const groundedReason = reason?.trim();
-  return groundedReason
-    ? sanitizeMealReasonText(groundedReason, intent.slot)
-    : buildMealRecommendationDescription(place, intent);
+  // Keep meal scheduling metadata separate from factual Place prose.
+  return reason?.trim() || buildPlaceRecommendationReason(place, null);
 }
 
 export function sanitizeMealSummaryText(summary: string, slot: MealSlot): string {

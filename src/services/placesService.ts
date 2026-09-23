@@ -1,3 +1,4 @@
+import type { ExploreRequestSession } from "@/lib/explore-request-session";
 import type { Locale } from "@/lib/i18n/types";
 import type { TripPlaceInput } from "@/lib/trip/trip-place-input";
 import { resolveCanonicalPlaceIdentity } from "@/lib/place-canonical-identity";
@@ -8,7 +9,11 @@ import {
 } from "@/lib/unified-place-cache";
 import { createRequestCache } from "@/services/requestCache";
 import { unifiedResolveTripStop, unifiedSearchTripStops } from "@/lib/trip-stop-search-unified";
-import { resolveTripStop, searchTripStops, type TripStopSuggestion } from "@/lib/trip-stop-search.functions";
+import {
+  resolveTripStop,
+  searchTripStops,
+  type TripStopSuggestion,
+} from "@/lib/trip-stop-search.functions";
 
 export type PlaceLite = {
   placeId: string;
@@ -48,9 +53,7 @@ function normalizeGooglePlaceId(raw: string): string {
   return raw.replace(/^places\//, "").trim();
 }
 
-export function isTripPlaceInput(
-  place: TripPlaceInput | PlaceLite,
-): place is TripPlaceInput {
+export function isTripPlaceInput(place: TripPlaceInput | PlaceLite): place is TripPlaceInput {
   return (
     "placeName" in place &&
     "title" in place &&
@@ -167,6 +170,7 @@ export async function searchPlaces(
     locale?: Locale;
     center?: { lat: number; lng: number };
     sessionToken?: string;
+    requestSession?: ExploreRequestSession;
     searchFn?: SearchPlacesFn;
   },
 ): Promise<{ suggestions: TripStopSuggestion[]; error: string | null }> {
@@ -174,8 +178,34 @@ export async function searchPlaces(
   const key = searchKey(query, locale, options?.center);
   const searchFn = options?.searchFn ?? searchTripStops;
 
-  return autocompleteCache.getOrFetch(key, () =>
-    unifiedSearchTripStops(searchFn, query, locale, options?.center, options?.sessionToken),
+  const session = options?.requestSession;
+  return autocompleteCache.getOrFetch(
+    key,
+    () =>
+      unifiedSearchTripStops(
+        searchFn,
+        query,
+        locale,
+        options?.center,
+        options?.sessionToken,
+        session
+          ? {
+              requestId: session.id,
+              surface: "explore",
+              priority: "foreground",
+              requestType: "autocomplete",
+              generationRequestId: session.id,
+              exploreSession: session,
+            }
+          : undefined,
+      ),
+    {
+      signal: session?.controller.signal,
+      onDedupe: () => {
+        if (session) session.dedupedRequests += 1;
+      },
+      shouldCache: (value) => !session?.controller.signal.aborted && !value.error,
+    },
   );
 }
 

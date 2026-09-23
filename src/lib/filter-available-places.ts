@@ -21,6 +21,7 @@ export type PlaceOpenStatus =
 export type PlaceHoursData = {
   businessStatus?: string | null;
   currentOpeningHours?: {
+    periods?: NonNullable<PlaceHoursData["regularOpeningHours"]>["periods"];
     openNow?: boolean;
     nextCloseTime?: string;
     nextOpenTime?: string;
@@ -234,8 +235,7 @@ export function getTodayHoursFromDescriptions(data: PlaceHoursData, at: Date): s
   const line = desc[idx];
   if (!line) return "";
 
-  const colon = line.indexOf(":");
-  const hoursPart = colon >= 0 ? line.slice(colon + 1).trim() : line.trim();
+  const hoursPart = line.replace(/^[^\d:：]+[:：]\s*/, "").trim();
   return hoursPart || line;
 }
 

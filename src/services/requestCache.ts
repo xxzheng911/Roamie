@@ -13,6 +13,7 @@ export type RequestCacheOptions = {
  */
 export function createRequestCache(options: RequestCacheOptions) {
   const memory = new Map<string, CacheEntry<unknown>>();
+  const inflightSignals = new Map<string, AbortSignal | undefined>();
   const inflight = new Map<string, Promise<unknown>>();
   const lsPrefix = `roamie:cache:${options.prefix}:`;
 
@@ -58,13 +59,16 @@ export function createRequestCache(options: RequestCacheOptions) {
   async function getOrFetch<T>(
     key: string,
     fetcher: () => Promise<T>,
-    options?: { shouldCache?: (value: T) => boolean },
+    options?: { shouldCache?: (value: T) => boolean; signal?: AbortSignal; onDedupe?: () => void },
   ): Promise<T> {
     const cached = getCached<T>(key);
     if (cached !== null) return cached;
 
     const pending = inflight.get(key) as Promise<T> | undefined;
-    if (pending) return pending;
+    if (pending && !inflightSignals.get(key)?.aborted) {
+      options?.onDedupe?.();
+      return pending;
+    }
 
     const promise = fetcher()
       .then((data) => {
@@ -74,9 +78,13 @@ export function createRequestCache(options: RequestCacheOptions) {
         return data;
       })
       .finally(() => {
-        inflight.delete(key);
+        if (inflight.get(key) === promise) {
+          inflight.delete(key);
+          inflightSignals.delete(key);
+        }
       });
 
+    inflightSignals.set(key, options?.signal);
     inflight.set(key, promise);
     return promise;
   }
@@ -84,6 +92,7 @@ export function createRequestCache(options: RequestCacheOptions) {
   function clear(): void {
     memory.clear();
     inflight.clear();
+    inflightSignals.clear();
     if (!options.persist || typeof window === "undefined") return;
     try {
       const keys: string[] = [];

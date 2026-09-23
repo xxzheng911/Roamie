@@ -1,3 +1,7 @@
+import {
+  buildPlaceRecommendationReason,
+  resolveRecommendationReasonPlace,
+} from "@/lib/build-place-recommendation-reason";
 import { isCurrentGeneratedCopy } from "@/lib/generated-locale";
 import type { Locale } from "@/lib/i18n/types";
 import { translate } from "@/lib/i18n/translate";
@@ -27,9 +31,14 @@ export function recommendationDisplayForLocale(
       recommendations: record.payload.recommendations.map((place) => ({
         ...place,
         description: "",
-        reason: translate(locale, "productionUi.placeCategory", {
-          category: getLocalizedPlaceCategoryLabel(place, locale),
-        }),
+        reason: buildPlaceRecommendationReason(
+          resolveRecommendationReasonPlace(place),
+          null,
+          null,
+          undefined,
+          undefined,
+          locale,
+        ),
         reasonSource: "template",
         estimatedTime: "",
         openStatusLabel: "",

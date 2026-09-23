@@ -1,3 +1,7 @@
+import { mergePlaceIdentityFields } from "@/lib/place-identity";
+import { PlaceReviewEvidenceSchema } from "@/lib/place-review-evidence";
+import { rememberPlaceReasonEvidence } from "@/lib/place-runtime-cache";
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import { placesRegionCodeFromCoordinates } from "@/lib/geo-region";
 import { normalizedLocationKey } from "@/lib/location-key";
@@ -9,7 +13,12 @@ export const UNIFIED_PLACE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 export const UNIFIED_PLACE_INTRO_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 export const UNIFIED_PLACE_SCREEN_CACHE_TTL_MS = 30 * 60 * 1000;
 
-export type PlaceDetailsCapability = "search_v1" | "anchor_v1" | "screen_v1" | "intro_v1";
+export type PlaceDetailsCapability =
+  | "search_v1"
+  | "anchor_v1"
+  | "screen_v1"
+  | "intro_v1"
+  | "screen_reviews_v2";
 
 const STORAGE_PREFIX = "roamie:unified-place:v1:";
 const MAX_PERSISTED_ENTRIES = 120;
@@ -33,6 +42,7 @@ type CacheEnvelope<T> = {
 
 const memory = new Map<string, CacheEnvelope<unknown>>();
 const inflight = new Map<string, Promise<unknown>>();
+const inflightSignals = new Map<string, AbortSignal | undefined>();
 
 let forceRefreshNext = false;
 
@@ -109,7 +119,7 @@ export function buildUnifiedPlaceDetailsCacheKey(
   placeId: string,
   language: string,
   _scope: Omit<UnifiedPlaceCacheScope, "placeId" | "category" | "language"> = {},
-  capability: PlaceDetailsCapability = "screen_v1",
+  capability: PlaceDetailsCapability = "screen_reviews_v2",
 ): string {
   const canonicalPlaceId = normalizePlaceId(placeId);
   return `details|${canonicalPlaceId}|${normalizeLanguage(language)}|${capability}`;
@@ -122,7 +132,7 @@ function logPlaceCacheAccess(
 ): void {
   if (!key.startsWith("details|")) return;
   const [, id, locale, capability] = key.split("|");
-  console.info("[PLACE_CACHE_ACCESS]", {
+  devVerboseInfo("[PLACE_CACHE_ACCESS]", {
     canonicalPlaceId: id.slice(0, 12),
     capability,
     locale,
@@ -255,10 +265,19 @@ export async function getUnifiedPlaceCacheOrFetch<T>(
     shouldCache?: (data: T) => boolean;
     validate?: (data: T) => boolean;
     ttlMs?: number;
+    signal?: AbortSignal;
+    onDedupe?: () => void;
   },
 ): Promise<T> {
   if (options?.forceRefresh) {
     invalidateUnifiedPlaceCache(key);
+  }
+
+  const pending = inflight.get(key) as Promise<T> | undefined;
+  if (pending && !inflightSignals.get(key)?.aborted) {
+    options?.onDedupe?.();
+    logPlaceCacheAccess(key, "inflight_join", "memory");
+    return pending;
   }
 
   const cached = readUnifiedPlaceCache<T>(key, {
@@ -268,23 +287,21 @@ export async function getUnifiedPlaceCacheOrFetch<T>(
   });
   if (cached !== null) return cached;
 
-  const pending = inflight.get(key) as Promise<T> | undefined;
-  if (pending) {
-    logPlaceCacheAccess(key, "inflight_join", "memory");
-    return pending;
-  }
-
   const promise = fetcher()
     .then((data) => {
-      if (options?.shouldCache?.(data) ?? true) {
+      if (!options?.signal?.aborted && (options?.shouldCache?.(data) ?? true)) {
         writeUnifiedPlaceCache(key, data);
       }
       return data;
     })
     .finally(() => {
-      inflight.delete(key);
+      if (inflight.get(key) === promise) {
+        inflight.delete(key);
+        inflightSignals.delete(key);
+      }
     });
 
+  inflightSignals.set(key, options?.signal);
   inflight.set(key, promise);
   return promise;
 }
@@ -347,11 +364,16 @@ export function readUnifiedPlaceDetailsCache(
   key: string,
   options?: { ignoreCache?: boolean },
 ): UnifiedPlaceDetailsCacheEntry | null {
-  return readUnifiedPlaceCache<UnifiedPlaceDetailsCacheEntry>(key, {
+  const entry = readUnifiedPlaceCache<UnifiedPlaceDetailsCacheEntry>(key, {
     ignoreCache: options?.ignoreCache,
-    ttlMs: key.endsWith("|screen_v1") ? UNIFIED_PLACE_SCREEN_CACHE_TTL_MS : undefined,
-    validate: (entry) => !entry.place || isPlaceDetailsMinimallyCacheable(entry.place),
+    ttlMs: /\|screen_(?:v1|reviews_v2)$/.test(key) ? UNIFIED_PLACE_SCREEN_CACHE_TTL_MS : undefined,
+    validate: (entry) =>
+      !!entry.place &&
+      isPlaceDetailsMinimallyCacheable(entry.place) &&
+      (!key.endsWith("|screen_reviews_v2") || hasPlaceReviewCapability(entry.place)),
   });
+  if (entry?.place) rememberPlaceReasonEvidence(entry.place);
+  return entry;
 }
 
 export function writeUnifiedPlaceDetailsCache(
@@ -361,6 +383,7 @@ export function writeUnifiedPlaceDetailsCache(
 ): void {
   if (!place) return;
   writeUnifiedPlaceCache(key, { place, error });
+  rememberPlaceReasonEvidence(place);
 }
 
 /** Enrichment wins, except that an empty response must not erase known factual identity fields. */
@@ -377,7 +400,7 @@ export function mergePlaceFactualFields<T extends PlaceResult>(
     lat: enriched.lat ?? existing.lat,
     lng: enriched.lng ?? existing.lng,
     address: enriched.address?.trim() || existing.address,
-    types: enriched.types?.length ? enriched.types : existing.types,
+    ...mergePlaceIdentityFields(existing, enriched),
     businessStatus: enriched.businessStatus ?? existing.businessStatus,
   } as T;
 }
@@ -400,11 +423,13 @@ export function readCachedPlaceResultById(
   capability: Exclude<PlaceDetailsCapability, "intro_v1"> = "search_v1",
 ): PlaceResult | null {
   const candidates: PlaceDetailsCapability[] =
-    capability === "screen_v1"
-      ? ["screen_v1"]
-      : capability === "anchor_v1"
-        ? ["screen_v1", "anchor_v1"]
-        : ["screen_v1", "anchor_v1", "search_v1"];
+    capability === "screen_reviews_v2"
+      ? ["screen_reviews_v2"]
+      : capability === "screen_v1"
+        ? ["screen_reviews_v2", "screen_v1"]
+        : capability === "anchor_v1"
+          ? ["screen_reviews_v2", "screen_v1", "anchor_v1"]
+          : ["screen_reviews_v2", "screen_v1", "anchor_v1", "search_v1"];
   for (const candidate of candidates) {
     const hit = readUnifiedPlaceDetailsCache(
       buildUnifiedPlaceDetailsCacheKey(placeId, language, scope, candidate),
@@ -412,4 +437,15 @@ export function readCachedPlaceResultById(
     if (hit?.place) return hit.place;
   }
   return null;
+}
+
+/** A successful reviews-capable response, including an explicitly empty sample. */
+export function hasPlaceReviewCapability(place: PlaceResult | null | undefined): boolean {
+  if (!place) return false;
+  const parsed = PlaceReviewEvidenceSchema.safeParse(place.reviewEvidence);
+  return (
+    parsed.success &&
+    parsed.data.extractionVersion === 2 &&
+    parsed.data.placeId === place.id.replace(/^places\//, "")
+  );
 }

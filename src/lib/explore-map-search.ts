@@ -1,3 +1,5 @@
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
+import type { ExploreRequestSession } from "@/lib/explore-request-session";
 import type { Locale } from "@/lib/i18n/types";
 import type { PlaceResult } from "@/lib/place-result";
 import type { TripStopSuggestion } from "@/lib/trip-stop-search.functions";
@@ -19,10 +21,7 @@ import {
   resolveRecommendationDistanceEvidence,
 } from "@/lib/recommendation-distance-evidence";
 import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
-import {
-  isPinnableSearchSelection,
-  normalizeExplorePlaceId,
-} from "@/lib/explore-selected-place";
+import { isPinnableSearchSelection, normalizeExplorePlaceId } from "@/lib/explore-selected-place";
 
 export type ExploreMapSearchCard = PlaceResult & {
   reason: string;
@@ -49,10 +48,11 @@ export async function runExploreMapPlaceSearch(
     center?: { lat: number; lng: number };
     searchFn: SearchFn;
     sessionToken?: string;
+    requestSession?: ExploreRequestSession;
   },
 ): Promise<{ suggestions: TripStopSuggestion[]; error: string | null }> {
   const trimmed = query.trim();
-  console.info(`[EXPLORE_SEARCH_START] query=${trimmed}`);
+  devVerboseInfo(`[EXPLORE_SEARCH_START] query=${trimmed}`);
   if (!trimmed) {
     return { suggestions: [], error: null };
   }
@@ -63,8 +63,9 @@ export async function runExploreMapPlaceSearch(
       center: options.center,
       sessionToken: options.sessionToken,
       searchFn: options.searchFn,
+      requestSession: options.requestSession,
     });
-    console.info(`[EXPLORE_SEARCH_RESULTS] count=${result.suggestions.length}`);
+    devVerboseInfo(`[EXPLORE_SEARCH_RESULTS] count=${result.suggestions.length}`);
     if (result.error && result.suggestions.length === 0) {
       console.warn(`[EXPLORE_SEARCH_ERROR] status=search message=${result.error}`);
     }
@@ -229,7 +230,7 @@ export async function resolveExploreSelectedPlacePin(
   }
 
   const { card } = await resolveExploreMapSuggestion(suggestion, options);
-  if (!card?.lat || !card.lng) return null;
+  if (card?.lat == null || card.lng == null) return null;
   const label = suggestion.label?.trim();
   return {
     ...card,

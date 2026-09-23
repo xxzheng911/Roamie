@@ -1,4 +1,5 @@
-import { memo, useMemo, useEffect } from "react";
+import { PlaceRecommendationReason } from "@/components/PlaceRecommendationReason";
+import { memo, useMemo } from "react";
 import { Heart, Loader2, Plus, Star } from "lucide-react";
 import { PlaceCoverImage } from "@/components/media/PlaceCoverImage";
 import { PlaceImage } from "@/components/media/PlaceImage";
@@ -233,7 +234,9 @@ const HomeNearbyCardItem = memo(function HomeNearbyCardItem({
           <p className="mt-0.5 text-[11px] text-muted-foreground">
             {[typeName, distance].filter(Boolean).join(" · ")}
           </p>
-          <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-foreground/80">{vibe}</p>
+          <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-foreground/80">
+            <PlaceRecommendationReason place={p} presentation="compact" />
+          </p>
         </div>
       </div>
     </article>
@@ -286,15 +289,6 @@ export function HomeNearbyPlaceCards({
       ),
     );
   }, [places, anchor, canShowDistance, locale, savedNames, goodForNow, busyId, navigatingPlaceId]);
-
-  useEffect(() => {
-    for (const place of places) console.info("[HOME_NEARBY_IMAGE_INPUT]", {
-      placeId: place.id, locale, cacheLayer: "home-card-props", renderState,
-      hasPhotoName: Boolean(place.photoName), hasPhotoUrl: "photoUrl" in place && Boolean(place.photoUrl),
-      hasGeneratedImageUrl: Boolean(place.generatedImageUrl), hasFallbackImageUrl: Boolean(place.fallbackImageUrl),
-      imageSourceSelected: place.photoName ? "google-photo" : homeNearbyImageUrl(place) ? "existing-url" : "async-place-image",
-    });
-  }, [places, locale, renderState]);
 
   if (showSkeleton) {
     return (

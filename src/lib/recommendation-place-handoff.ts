@@ -1,3 +1,8 @@
+import {
+  buildPlaceRecommendationReason,
+  resolveRecommendationReasonPlace,
+} from "@/lib/build-place-recommendation-reason";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
 import { sanitizePlaceImageUrl } from "@/lib/safe-image-url";
@@ -23,7 +28,9 @@ function inferExploreCategoryId(type: string): string {
 }
 
 /** 將聊天／推薦頁的地點轉成地圖詳情 handoff（含完整 snapshot，避免重搜對不到） */
-export function recommendationToPlaceSnapshot(rec: RoamieRecommendationItem): HomeNearbyPick | null {
+export function recommendationToPlaceSnapshot(
+  rec: RoamieRecommendationItem,
+): HomeNearbyPick | null {
   const name = rec.placeName?.trim() || rec.name.trim();
   const id = rec.googlePlaceId?.trim();
   if (!id) return null;
@@ -58,7 +65,15 @@ export function recommendationToPlaceSnapshot(rec: RoamieRecommendationItem): Ho
     todayHoursLabel: rec.todayHoursLabel ?? "",
     closingSoonNote: rec.closingSoonNote ?? "",
     nextOpenHint: rec.nextOpenHint ?? "",
-    reason: rec.reason?.trim() || rec.description?.trim() || "",
+    reviewEvidence: rec.reviewEvidence,
+    reason: buildPlaceRecommendationReason(
+      resolveRecommendationReasonPlace(rec),
+      null,
+      null,
+      undefined,
+      undefined,
+      effectiveAppLocale(),
+    ),
     categoryId,
     displayCategory: resolvePlaceDisplayCategory(placeTypeMetadata),
     coverImageUrl: photoName

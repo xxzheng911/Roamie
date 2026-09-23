@@ -1,3 +1,9 @@
+import { mergePlaceIdentityFields } from "@/lib/place-identity";
+import { hasPlaceReviewCapability } from "@/lib/unified-place-cache";
+import {
+  buildPlaceRecommendationReason,
+  resolveRecommendationReasonPlace,
+} from "@/lib/build-place-recommendation-reason";
 import type { PlaceDetailData } from "@/components/map/PlaceDetailSheet";
 import {
   type PlaceDetailHandoff,
@@ -21,7 +27,6 @@ import {
   buildUnifiedPlaceDetailsCacheKey,
   readUnifiedPlaceDetailsCache,
   writeUnifiedPlaceDetailsCache,
-  isPlaceDetailsCacheComplete,
 } from "@/lib/unified-place-cache";
 import {
   resolvePlaceDisplayAddress,
@@ -195,35 +200,32 @@ export type PlaceDetailReasonSource =
 export function buildPlaceMetadataReason(
   place: Pick<PlaceResult, "rating" | "userRatingCount" | "openStatusLabel" | "todayHoursLabel">,
 ): string {
-  const facts: string[] = [];
-  if (place.rating != null) {
-    facts.push(
-      place.userRatingCount != null && place.userRatingCount > 0
-        ? `目前 Google 評分 ${place.rating.toFixed(1)}（${place.userRatingCount} 則評價）`
-        : `目前 Google 評分 ${place.rating.toFixed(1)}`,
-    );
-  }
-  const hours = place.todayHoursLabel?.trim() || place.openStatusLabel?.trim();
-  if (hours && !/待確認|unknown/i.test(hours)) facts.push(hours);
-  if (facts.length > 0) return `${facts.join("，")}。`;
-  return "目前可確認的地點資訊有限，請以 Google Maps 的最新資訊為準。";
+  return buildPlaceRecommendationReason(resolveRecommendationReasonPlace(place), null);
 }
 
 export function resolvePlaceDetailReasonWithSource(
   handoff: PlaceDetailHandoff,
   snap?: PlaceDetailHandoff["snapshot"],
+  locale: Locale = "zh-TW",
 ): { reason: string; source: PlaceDetailReasonSource } {
-  const explicit = snap?.reason?.trim() || handoff.reason?.trim();
-  if (explicit && !GENERIC_DETAIL_REASONS.has(explicit)) {
-    return { reason: explicit, source: "recommendation_session" };
-  }
-  const metadata = snap ?? {
-    rating: handoff.rating ?? null,
-    userRatingCount: handoff.userRatingCount ?? null,
-    openStatusLabel: handoff.openStatusLabel ?? handoff.normalizedOpeningLabel ?? "",
-    todayHoursLabel: "",
+  snap = snap ?? handoff.snapshot;
+  const place = resolveRecommendationReasonPlace({
+    ...handoff,
+    ...snap,
+    id: handoff.googlePlaceId || handoff.placeId,
+    primaryType: snap?.primaryType ?? handoff.category,
+  });
+  return {
+    reason: buildPlaceRecommendationReason(
+      place,
+      null,
+      null,
+      undefined,
+      { presentation: "detail" },
+      locale,
+    ),
+    source: place.reviewEvidence?.signals.length ? "review_evidence" : "place_metadata_fallback",
   };
-  return { reason: buildPlaceMetadataReason(metadata), source: "place_metadata_fallback" };
 }
 
 export function resolvePlaceDetailReason(
@@ -231,8 +233,7 @@ export function resolvePlaceDetailReason(
   locale: Locale = "zh-TW",
   snap?: PlaceDetailHandoff["snapshot"],
 ): string {
-  void locale;
-  return resolvePlaceDetailReasonWithSource(handoff, snap).reason;
+  return resolvePlaceDetailReasonWithSource(handoff, snap, locale).reason;
 }
 
 export function hasCanonicalPlaceDetailReason(
@@ -367,7 +368,7 @@ export async function resolveGooglePlaceIdForDetail(
   return null;
 }
 
-export async function fetchGooglePlaceDetailsForHandoff(
+async function fetchGooglePlaceDetailsForHandoffNetwork(
   placeId: string,
   locale: Locale,
   fetchPlaceDetailsFn: (args: {
@@ -383,7 +384,12 @@ export async function fetchGooglePlaceDetailsForHandoff(
   error: string | null;
   boundaryTelemetry?: PlaceDetailBoundaryTelemetry;
 }> {
-  const cacheKey = buildUnifiedPlaceDetailsCacheKey(placeId, locale, cacheScope, "screen_v1");
+  const cacheKey = buildUnifiedPlaceDetailsCacheKey(
+    placeId,
+    locale,
+    cacheScope,
+    "screen_reviews_v2",
+  );
   const cached = readUnifiedPlaceDetailsCache(cacheKey);
   if (cached?.place) {
     return { place: cached.place, error: null };
@@ -391,7 +397,7 @@ export async function fetchGooglePlaceDetailsForHandoff(
 
   const server = await fetchPlaceDetailsFn({ data: { placeId, locale } });
   if (server.place) {
-    if (isPlaceDetailsCacheComplete(server.place)) {
+    if (hasPlaceReviewCapability(server.place)) {
       writeUnifiedPlaceDetailsCache(cacheKey, server.place, null);
     }
     return server;
@@ -455,12 +461,20 @@ export function mergeFetchedPlace(
   const merged: PlaceDetailViewModel = {
     ...base,
     ...fetched,
+    ...mergePlaceIdentityFields(base, fetched),
     id: fetched.id || base.id,
     name: fetched.name || base.name,
     address: resolvedAddress,
     lat: fetched.lat ?? base.lat,
     lng: fetched.lng ?? base.lng,
-    reason: preserveRecommendationReason ? base.reason : buildPlaceMetadataReason(fetched),
+    reason: buildPlaceRecommendationReason(
+      { ...base, ...fetched, ...mergePlaceIdentityFields(base, fetched) },
+      null,
+      null,
+      undefined,
+      { presentation: "detail" },
+      locale,
+    ),
     website: fetched.website,
     phone: fetched.phone,
     coverImageUrl: coverImageUrl ?? undefined,
@@ -498,4 +512,22 @@ export function mergeFetchedPlace(
   }
 
   return finalized;
+}
+
+// Cross-surface callers share the same pending capability upgrade (including server transport).
+const pendingReviewDetails = new Map<
+  string,
+  ReturnType<typeof fetchGooglePlaceDetailsForHandoffNetwork>
+>();
+export function fetchGooglePlaceDetailsForHandoff(
+  ...args: Parameters<typeof fetchGooglePlaceDetailsForHandoffNetwork>
+): ReturnType<typeof fetchGooglePlaceDetailsForHandoffNetwork> {
+  const key = buildUnifiedPlaceDetailsCacheKey(args[0], args[1], args[4], "screen_reviews_v2");
+  const pending = pendingReviewDetails.get(key);
+  if (pending) return pending;
+  const request = fetchGooglePlaceDetailsForHandoffNetwork(...args).finally(() => {
+    if (pendingReviewDetails.get(key) === request) pendingReviewDetails.delete(key);
+  });
+  pendingReviewDetails.set(key, request);
+  return request;
 }

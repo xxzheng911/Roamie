@@ -7,7 +7,7 @@ import { enrichRoamieResponse } from "@/lib/enrich-roamie-places.server";
 import { mergeAiWithVerifiedCandidates } from "@/lib/recommendation/merge-verified.server";
 import { preparePlacesFirstContext } from "@/lib/recommendation/pipeline.server";
 import { buildRuleBasedRecommendSummary } from "@/lib/recommendation/fallback-summary";
-import { ROAMIE_JSON_SCHEMA, normalizeRoamieResponse, type RoamieResponse } from "./types";
+import { ROAMIE_JSON_SCHEMA, normalizeAiGeneratedResponse, type RoamieResponse } from "./types";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { mergeBoundsForStage, stageAllowsPlacesFirst } from "@/lib/ai/conversation-stage";
 import { MAX_ITINERARY_DAYS, MIN_ITINERARY_DAYS } from "@/lib/ai/itinerary-days";
@@ -227,7 +227,7 @@ export async function callRoamieAI(ctx: RoamieRequestContext): Promise<RoamieRes
   const content = result.choices?.[0]?.message?.content;
   if (!content) throw new Error("AI 回應格式錯誤，請再試一次。");
 
-  let parsed = normalizeRoamieResponse(JSON.parse(content) as Record<string, unknown>);
+  let parsed = normalizeAiGeneratedResponse(JSON.parse(content) as Record<string, unknown>);
 
   if (prep.candidates.length) {
     parsed = mergeAiWithVerifiedCandidates(parsed, prep.candidates, mergeOptionsForContext(ctx));
@@ -412,7 +412,9 @@ export function streamRoamieAI(
         let finalPayload = assembled;
         if (assembled.trim()) {
           try {
-            let parsed = normalizeRoamieResponse(JSON.parse(assembled) as Record<string, unknown>);
+            let parsed = normalizeAiGeneratedResponse(
+              JSON.parse(assembled) as Record<string, unknown>,
+            );
             if (prep.candidates.length) {
               parsed = mergeAiWithVerifiedCandidates(
                 parsed,
@@ -482,5 +484,5 @@ export function streamRoamieAI(
 export function validateAssembledJson(raw: string): RoamieResponse {
   const trimmed = raw.trim();
   if (!trimmed) throw new Error("AI 沒有回應，請再試一次。");
-  return normalizeRoamieResponse(JSON.parse(trimmed) as Record<string, unknown>);
+  return normalizeAiGeneratedResponse(JSON.parse(trimmed) as Record<string, unknown>);
 }

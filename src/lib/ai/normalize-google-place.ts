@@ -28,6 +28,7 @@ export type GooglePlaceRaw = {
   photos?: Array<{ name?: string | null }> | null;
   photoName?: string | null;
   primaryType?: string | null;
+  primaryTypeDisplayName?: { text?: string; languageCode?: string } | null;
   types?: string[] | null;
   type?: string | null;
   businessStatus?: string | null;
@@ -79,7 +80,7 @@ function resolveRawCoordinates(raw: GooglePlaceRaw): { lat: number | null; lng: 
   };
 }
 
-function resolveRawTypes(raw: GooglePlaceRaw, name: string): string[] {
+function resolveRawTypes(raw: GooglePlaceRaw): string[] {
   const fromArray = (raw.types ?? [])
     .map((t) => (t ?? "").trim().toLowerCase())
     .filter(Boolean);
@@ -88,14 +89,8 @@ function resolveRawTypes(raw: GooglePlaceRaw, name: string): string[] {
   const primary = (raw.primaryType ?? raw.type ?? "").trim().toLowerCase();
   if (primary) return [primary];
 
-  const blob = name.toLowerCase();
-  if (/博物|museum/i.test(blob)) return ["museum"];
-  if (/咖啡|cafe|coffee/i.test(blob)) return ["cafe"];
-  if (/餐|restaurant|food|小吃/i.test(blob)) return ["restaurant"];
-  if (/公園|park/i.test(blob)) return ["park"];
-  if (/夜市|market/i.test(blob)) return ["market"];
-  if (/商圈|shopping/i.test(blob)) return ["shopping_mall"];
-  return ["tourist_attraction"];
+  // Name hints belong to the semantic authority and require compatible provider evidence.
+  return [];
 }
 
 function resolveRawHours(raw: GooglePlaceRaw): PlaceHoursData {
@@ -126,8 +121,10 @@ export function normalizeGooglePlace(
 
   const id = resolveRawPlaceId(raw);
   const { lat, lng } = resolveRawCoordinates(raw);
-  const types = resolveRawTypes(raw, name);
-  const primaryType = (raw.primaryType ?? raw.type ?? types[0] ?? "tourist_attraction").trim().toLowerCase();
+  const types = resolveRawTypes(raw);
+  // Only an explicit provider primaryType carries primary identity authority.
+  // Legacy type and types[] remain candidate evidence via resolveRawTypes.
+  const primaryType = raw.primaryType?.trim().toLowerCase() || null;
   const hours = resolveRawHours(raw);
   const locale = options?.locale ?? effectiveAppLocale();
   const resolvedName = resolvePlaceDisplayName(
@@ -183,7 +180,9 @@ export function normalizeGooglePlace(
       options?.existing?.photoName ??
       null,
     primaryType,
-    types: types.length ? types : [primaryType],
+    primaryTypeDisplayName: raw.primaryTypeDisplayName,
+    rawTypes: raw.types ? [...raw.types] : undefined,
+    types: types.length ? types : primaryType ? [primaryType] : [],
     businessStatus: raw.businessStatus ?? options?.existing?.businessStatus ?? null,
     openStatus: options?.existing?.openStatus ?? "unknown",
     openStatusLabel: options?.existing?.openStatusLabel ?? "",

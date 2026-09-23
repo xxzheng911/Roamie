@@ -1,3 +1,4 @@
+import { PlaceReviewEvidenceSchema } from "@/lib/place-review-evidence";
 import { z } from "zod";
 import { createServerFn } from "@tanstack/react-start";
 import { requireItineraryCredits } from "@/integrations/supabase/security-middleware";
@@ -278,6 +279,7 @@ const PlaceSchema = z
     photoName: z.string().nullable().optional(),
     rating: z.number().nullable().optional(),
     userRatingCount: z.number().nullable().optional(),
+    reviewEvidence: PlaceReviewEvidenceSchema.optional(),
     businessStatus: z.string().nullable().optional(),
     openStatusLabel: z.string().optional(),
     todayHoursLabel: z.string().optional(),
@@ -308,6 +310,7 @@ const PlaceSchema = z
     photoName: raw.photoName,
     rating: raw.rating,
     userRatingCount: raw.userRatingCount,
+    reviewEvidence: raw.reviewEvidence,
     businessStatus: raw.businessStatus,
     openStatusLabel: raw.openStatusLabel,
     todayHoursLabel: raw.todayHoursLabel,
@@ -402,6 +405,7 @@ function enrichItineraryFromSelectedPlaces(
             photoName: item.photoName ?? match.photoName,
             rating: item.rating ?? match.rating,
             userRatingCount: item.userRatingCount ?? match.userRatingCount,
+            reviewEvidence: item.reviewEvidence ?? match.reviewEvidence,
             businessStatus: item.businessStatus ?? match.businessStatus,
             openStatusLabel: item.openStatusLabel || match.openStatusLabel,
             todayHoursLabel: item.todayHoursLabel || match.todayHoursLabel,
@@ -1021,6 +1025,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
           lng: item.lng ?? null,
           rating: item.rating ?? null,
           userRatingCount: item.userRatingCount ?? null,
+          reviewEvidence: item.reviewEvidence,
           photoName: item.photoName ?? null,
           primaryType: item.placeType ?? null,
           types: item.types ?? (item.placeType ? [item.placeType] : null),
@@ -1187,6 +1192,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
       lng: place.lng ?? null,
       rating: place.rating ?? null,
       userRatingCount: place.userRatingCount ?? null,
+      reviewEvidence: place.reviewEvidence,
       photoName: place.photoName ?? null,
       primaryType: place.primaryType ?? place.type ?? null,
       types: place.types?.length ? place.types : place.type ? [place.type] : null,

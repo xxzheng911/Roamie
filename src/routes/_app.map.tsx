@@ -1,3 +1,15 @@
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
+import {
+  beginExploreRequestSession,
+  canRunExploreBrowse,
+  assertExploreSessionActive,
+  markExplorePrimaryResult,
+  reportExploreSearchSession,
+  shouldRefreshExploreFromMap,
+  EXPLORE_SEARCH_DEBOUNCE_MS,
+  type ExploreRequestSession,
+} from "@/lib/explore-request-session";
+import { exploreSearchPresentation } from "@/lib/explore-search-presentation";
 import { createFileRoute, useNavigate, useRouterState } from "@tanstack/react-router";
 import { Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -26,12 +38,7 @@ import {
   type MapExploreSearchResultItem,
 } from "@/components/map/MapExploreSearchResults";
 import { searchTripStops, resolveTripStop } from "@/lib/trip-stop-search.functions";
-import {
-  exploreSuggestionDistanceLabel,
-  resolveExploreMapSuggestion,
-  resolveExploreMapSuggestionsToCards,
-  runExploreMapPlaceSearch,
-} from "@/lib/explore-map-search";
+import { runExploreMapPlaceSearch } from "@/lib/explore-map-search";
 import {
   logExploreFinalRecommendations,
   logExplorePrimaryPlace,
@@ -40,7 +47,6 @@ import {
   resolveExplorePrimaryPlace,
   stripPrimaryFromNearby,
 } from "@/lib/explore-primary-place";
-import { pickExploreCitySuggestion } from "@/lib/explore-city-popular-places";
 import { listPlaces, toggleSavePlace, type SavedPlace } from "@/lib/places-storage";
 import { searchPlaces } from "@/lib/places.functions";
 import { recordAnalyticsEvent } from "@/lib/analytics/record";
@@ -235,7 +241,7 @@ function finalizeMapResults(
   locationKey: string,
   cityLabel?: string | null,
 ): MapPlaceCard[] {
-  const eligiblePrimary = primary && isPlaceOperationalForRecommendation(primary) ? primary : null;
+  const eligiblePrimary = primary; // Direct search authority bypasses recommendation eligibility.
   const nearbyOnly = stripPrimaryFromNearby(eligiblePrimary, cards).filter(
     isPlaceOperationalForRecommendation,
   );
@@ -368,6 +374,9 @@ function MapView() {
   const lastMapSearchSessionRef = useRef<string | null>(null);
   const lastWeatherFetchCenterRef = useRef<{ lat: number; lng: number } | null>(null);
   const searchRequestIdRef = useRef(0);
+  const searchTargetRequestRef = useRef(0);
+  const exploreSessionRef = useRef<ExploreRequestSession | null>(null);
+  const [browseCenter, setBrowseCenter] = useState<{ lat: number; lng: number } | null>(null);
   const prevQueryRef = useRef("");
   const prevCatIdRef = useRef(cat.id);
   const pendingImmediateSearchRef = useRef(false);
@@ -410,7 +419,9 @@ function MapView() {
   const primaryPlaceRef = useRef<MapPlaceCard | null>(null);
   const [locationLabel, setLocationLabel] = useState(() => t("common.nearby"));
   const [results, setResults] = useState<MapPlaceCard[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [backgroundRecommendationLoading, setLoading] = useState(true);
+  const [primarySearchLoading, setPrimarySearchLoading] = useState(false);
+  const loading = primarySearchLoading || backgroundRecommendationLoading;
   const [error, setError] = useState<string | null>(null);
   const [networkOnline, setNetworkOnline] = useState(isBrowserOnline);
   const offlineWarningShownRef = useRef(false);
@@ -451,6 +462,9 @@ function MapView() {
           setMapUnavailable(false);
           setSearchTrigger((value) => value + 1);
         } else {
+          exploreSessionRef.current?.controller.abort();
+          searchTargetRequestRef.current += 1;
+          setPrimarySearchLoading(false);
           searchRequestIdRef.current += 1;
           exploreSearchRequestRef.current += 1;
           setLoading(false);
@@ -517,6 +531,8 @@ function MapView() {
   }, []);
 
   const recommendCenter = useMemo(() => {
+    if (browseCenter && !query.trim())
+      return { ...browseCenter, label: locationLabel, source: "userGesture" as const };
     if (searchSelectedCenter) {
       return {
         lat: searchSelectedCenter.lat,
@@ -540,6 +556,8 @@ function MapView() {
       source: "userLocation" as const,
     };
   }, [
+    browseCenter,
+    query,
     searchSelectedCenter,
     effectiveLocation?.isReadyForPlaces,
     effectiveLocation?.lat,
@@ -565,7 +583,7 @@ function MapView() {
   }, [searchSelectedCenter]);
 
   useEffect(() => {
-    console.info("[EXPLORE_CATEGORY_AUTHORITY]", {
+    devVerboseInfo("[EXPLORE_CATEGORY_AUTHORITY]", {
       uiLabel: cat.label,
       selectedCategory: cat.id,
       selectedPlaceType: selectedPlaceTypeLabel ?? "unknown",
@@ -577,32 +595,60 @@ function MapView() {
 
   useEffect(() => {
     primaryPlaceRef.current = primaryPlace;
+    if (primaryPlace && exploreSessionRef.current)
+      markExplorePrimaryResult(exploreSessionRef.current);
   }, [primaryPlace]);
 
-  const handleSearchQueryChange = useCallback((value: string) => {
-    setQuery(value);
-    if (!value.trim()) {
-      setSearchSelectedCenter(null);
-      setPrimaryPlace(null);
-      primaryPlaceRef.current = null;
-      setSearchDropdownOpen(false);
-      setSearchSuggestions([]);
-      lastMapSearchSessionRef.current = null;
-      clearExploreMapSearchSession();
-      return;
-    }
-    setSearchDropdownOpen(true);
-    setSearchSelectedCenter((prev) => (prev && value.trim() !== prev.label ? null : prev));
-    if (value.trim()) {
-      setPrimaryPlace((prev) => {
-        if (prev && value.trim() !== prev.name) {
-          primaryPlaceRef.current = null;
-          return null;
-        }
-        return prev;
-      });
-    }
-  }, []);
+  useEffect(
+    () => () => {
+      exploreSessionRef.current?.controller.abort();
+      searchTargetRequestRef.current += 1;
+      searchRequestIdRef.current += 1;
+      exploreSearchRequestRef.current += 1;
+    },
+    [],
+  );
+
+  const handleSearchQueryChange = useCallback(
+    (value: string) => {
+      exploreSessionRef.current = beginExploreRequestSession(
+        value.trim() ? "search" : "browse",
+        value.trim(),
+      );
+      searchTargetRequestRef.current += 1;
+      searchRequestIdRef.current += 1;
+      exploreSearchRequestRef.current += 1;
+      setPrimarySearchLoading(false);
+      setResolvingSearchId(null);
+      setLoading(false);
+      setSearchingPlaces(Boolean(value.trim()));
+      setResults([]);
+      setQuery(value);
+      if (!value.trim()) {
+        setBrowseCenter(mapCenter);
+        setSearchSelectedCenter(null);
+        setPrimaryPlace(null);
+        primaryPlaceRef.current = null;
+        setSearchDropdownOpen(false);
+        setSearchSuggestions([]);
+        lastMapSearchSessionRef.current = null;
+        clearExploreMapSearchSession();
+        return;
+      }
+      setSearchDropdownOpen(true);
+      setSearchSelectedCenter((prev) => (prev && value.trim() !== prev.label ? null : prev));
+      if (value.trim()) {
+        setPrimaryPlace((prev) => {
+          if (prev && value.trim() !== prev.name) {
+            primaryPlaceRef.current = null;
+            return null;
+          }
+          return prev;
+        });
+      }
+    },
+    [mapCenter],
+  );
 
   const applyEffectiveLocationToMap = useCallback(
     (lat: number, lng: number, isFallback: boolean) => {
@@ -648,14 +694,17 @@ function MapView() {
     searchSelectedCenter,
   ]);
 
-  const handleMapLoadError = useCallback((message: string) => {
-    setMapUnavailable(true);
-    if (!mapErrorToastedRef.current) {
-      mapErrorToastedRef.current = true;
-      toast.message(t("map.mapLoadFallback"), { duration: 5000 });
-      console.warn("[Roamie Map]", message);
-    }
-  }, [t]);
+  const handleMapLoadError = useCallback(
+    (message: string) => {
+      setMapUnavailable(true);
+      if (!mapErrorToastedRef.current) {
+        mapErrorToastedRef.current = true;
+        toast.message(t("map.mapLoadFallback"), { duration: 5000 });
+        console.warn("[Roamie Map]", message);
+      }
+    },
+    [t],
+  );
 
   const refreshSaved = () => {
     listPlaces()
@@ -720,7 +769,16 @@ function MapView() {
     if (searchDropdownOpen) return;
 
     const center = { lat: recommendCenter.lat, lng: recommendCenter.lng };
-    const isFreeText = !!query.trim() && !searchSelectedCenter;
+    const isFreeText = !!query.trim();
+    // Selection already resolved its direct Google Place. Never hydrate ALL in search mode.
+    if (
+      !canRunExploreBrowse(query, exploreSessionRef.current?.mode === "search") &&
+      (searchSelectedCenter ||
+        (primaryPlaceRef.current && exploreSessionRef.current?.primaryResultMs != null))
+    ) {
+      setLoading(false);
+      return;
+    }
     const categoryId = isFreeText ? "search" : cat.id;
     const cityMeta = {
       cityPlaceId: searchSelectedCenter?.placeId,
@@ -734,7 +792,8 @@ function MapView() {
       cityPlaceId: cityMeta.cityPlaceId,
       cityLabel: cityMeta.cityLabel,
       freeTextQuery: isFreeText ? query : null,
-      nearbyLocationKey: effectiveLocation?.locationKey,
+      nearbyLocationKey:
+        recommendCenter.source === "userGesture" ? undefined : effectiveLocation?.locationKey,
     });
     const forceRefresh = consumeExploreMapForceRefresh();
 
@@ -747,7 +806,7 @@ function MapView() {
       lastMapSearchSessionRef.current === sessionKey && !queryDirty && !catDirty && !forceRefresh;
     if (cat.id === "all") {
       const aggregateCacheHit = Boolean(readMapPlacesCache(cacheKey)?.places.length);
-      console.info("[EXPLORE_ALL_HYDRATION_ENTRY]", {
+      devVerboseInfo("[EXPLORE_ALL_HYDRATION_ENTRY]", {
         selectedCategory: cat.id,
         scopeKey: locationKey,
         cacheHit: aggregateCacheHit,
@@ -869,26 +928,39 @@ function MapView() {
             }),
             null,
           );
-          console.info("[EXPLORE_SHARED_NEARBY_HIT]", { count: shared.length });
+          devVerboseInfo("[EXPLORE_SHARED_NEARBY_HIT]", { count: shared.length });
         }
       }
     }
 
-    console.info(
+    devVerboseInfo(
       `[EXPLORE_RECOMMEND_CENTER] source=${recommendCenter.source} lat=${center.lat} lng=${center.lng}`,
     );
-    console.info(
+    devVerboseInfo(
       `[EXPLORE_RECOMMEND_REQUEST] category=${cat.id} lat=${center.lat} lng=${center.lng}`,
     );
     logExploreRecommendMode(cityRecommendMode, selectedPlaceTypeLabel);
 
     const debounceMs = pendingImmediateSearchRef.current ? 0 : isFreeText ? 450 : 0;
     pendingImmediateSearchRef.current = false;
+    const session =
+      isFreeText &&
+      exploreSessionRef.current?.mode === "search" &&
+      !exploreSessionRef.current.controller.signal.aborted
+        ? exploreSessionRef.current
+        : beginExploreRequestSession(isFreeText ? "search" : "browse", query.trim());
+    exploreSessionRef.current = session;
+    const scopedSearchPlacesFn: typeof searchPlacesFn = (args) => {
+      assertExploreSessionActive(session, args.data.categoryId);
+      return searchPlacesFn({ data: { ...args.data, placesExploreSessionId: session.id } });
+    };
+    const requestId = ++searchRequestIdRef.current;
+    let settled = false;
     const handle = setTimeout(() => {
       lastMapSearchSessionRef.current = sessionKey;
-      const requestId = ++searchRequestIdRef.current;
       const text = query.trim() || cat.query;
-      setLoading(true);
+      setLoading(!isFreeText);
+      if (isFreeText) setPrimarySearchLoading(true);
       setError(null);
       const searchQuery = isFreeText
         ? text
@@ -923,11 +995,11 @@ function MapView() {
               await ensureExploreRawPool(
                 center,
                 cityRecommendMode,
-                searchPlacesFn,
+                scopedSearchPlacesFn,
                 locale,
                 undefined,
                 "explore",
-                cityMeta,
+                { ...cityMeta, requestSession: session },
               );
             }
             const cachedBefore = readMapPlacesCache(cacheKey, { ignoreCache: forceRefresh });
@@ -939,7 +1011,23 @@ function MapView() {
                 locale,
                 reasonProfile: reasonProfileRef.current,
                 saved: savedRef.current,
-                searchPlacesFn,
+                searchPlacesFn: scopedSearchPlacesFn,
+                requestSession: session,
+                onProgress: (cards) => {
+                  if (requestId !== searchRequestIdRef.current || session.controller.signal.aborted)
+                    return;
+                  setResults(
+                    finalizeMapResults(
+                      exploreCardsToMapCards(cards, cardOpts),
+                      center,
+                      reasonProfileRef.current,
+                      cat.id,
+                      weatherRef.current,
+                      null,
+                      locationKey,
+                    ),
+                  );
+                },
                 forHome: false,
                 recommendMode: cityRecommendMode,
                 cityLabel: inferExploreCityLabel(
@@ -958,6 +1046,7 @@ function MapView() {
                 : getMapPlacesCachedOrRun(cacheKey, runCategorySearch, {
                     silent: true,
                     forceRefresh,
+                    signal: session.controller.signal,
                   }),
               cityRecommendMode === "city" ? 45_000 : 20_000,
             );
@@ -971,11 +1060,13 @@ function MapView() {
             };
 
             const primary = await withSearchTimeout(
-              searchPlacesFn({
+              scopedSearchPlacesFn({
                 data: {
                   ...basePayload,
                   query: searchQuery,
                   mode: "text",
+                  skipLocationBias: true,
+                  searchMode: "destination",
                   locale,
                   ...placesStatsPayload({
                     placesCaller: "map.freeTextSearch",
@@ -990,6 +1081,33 @@ function MapView() {
             emptyError = primary.error ?? null;
 
             if (requestId !== searchRequestIdRef.current) return;
+            setPrimarySearchLoading(false);
+
+            const direct = apiPlaces.find(
+              (p) =>
+                p.id &&
+                Number.isFinite(p.lat) &&
+                Number.isFinite(p.lng) &&
+                isPinnableSearchSelection({ label: p.name, types: p.types, placeId: p.id }),
+            );
+            if (direct) {
+              const card = {
+                ...buildUnifiedPlaceCard({
+                  place: direct,
+                  categoryId: "all",
+                  userLocation: null,
+                  locale,
+                }),
+                coverImageUrl: undefined,
+                id: normalizeExplorePlaceId(direct.id),
+                isPrimaryExplorePlace: true,
+                isSelectedExplorePin: true,
+              };
+              primaryPlaceRef.current = card;
+              setPrimaryPlace(card);
+              setResults([card]);
+              setMapCenter({ lat: direct.lat!, lng: direct.lng! });
+            }
 
             const selection = filterAndSelectExploreMapPlaces(apiPlaces, {
               cat: filterCat,
@@ -1065,7 +1183,7 @@ function MapView() {
           } else {
             setError(null);
             if (!isFreeText) {
-              console.info("[explore] map places empty", { category: cat.id, emptyError });
+              devVerboseInfo("[explore] map places empty", { category: cat.id, emptyError });
             }
           }
 
@@ -1123,10 +1241,12 @@ function MapView() {
 
       void runSearch()
         .catch((e) => {
+          if (requestId !== searchRequestIdRef.current || session.controller.signal.aborted) return;
+          if (e instanceof DOMException && e.name === "AbortError") return;
           if (isNetworkFailureError(e)) {
             setNetworkOnline(false);
             setError(t("map.offline"));
-            setResults([]);
+            setResults(primaryPlaceRef.current ? [primaryPlaceRef.current] : []);
             if (!offlineWarningShownRef.current) {
               offlineWarningShownRef.current = true;
               console.warn("[EXPLORE_NETWORK_UNAVAILABLE] recoverable=true");
@@ -1137,13 +1257,13 @@ function MapView() {
           const note = t("map.demoPlacesNote");
           if (query.trim()) {
             setError(msg);
-            setResults([]);
+            setResults(primaryPlaceRef.current ? [primaryPlaceRef.current] : []);
           } else if (allowDemoPlaceFallback()) {
             setError(`${msg} · ${note}`);
             setResults(mockMapCards(center, cat));
           } else {
             setError(msg);
-            setResults([]);
+            setResults(primaryPlaceRef.current ? [primaryPlaceRef.current] : []);
           }
           if (sheetMode === "list") {
             setSelectedPlace(null);
@@ -1151,10 +1271,22 @@ function MapView() {
           }
         })
         .finally(() => {
-          if (searchRequestIdRef.current === requestId) setLoading(false);
+          settled = true;
+          if (isFreeText && !session.controller.signal.aborted && !primaryPlaceRef.current)
+            reportExploreSearchSession(session, "empty_or_failed");
+          if (searchRequestIdRef.current === requestId) {
+            setLoading(false);
+            if (isFreeText) setPrimarySearchLoading(false);
+          }
         });
     }, debounceMs);
-    return () => clearTimeout(handle);
+    return () => {
+      clearTimeout(handle);
+      if (!settled) session.controller.abort();
+      if (!settled && lastMapSearchSessionRef.current === sessionKey)
+        lastMapSearchSessionRef.current = null;
+      if (searchRequestIdRef.current === requestId) searchRequestIdRef.current += 1;
+    };
   }, [
     query,
     cat.id,
@@ -1191,6 +1323,12 @@ function MapView() {
       return;
     }
 
+    const session =
+      exploreSessionRef.current?.mode === "search" &&
+      !exploreSessionRef.current.controller.signal.aborted
+        ? exploreSessionRef.current
+        : beginExploreRequestSession("search", trimmed);
+    exploreSessionRef.current = session;
     const requestId = ++exploreSearchRequestRef.current;
     setSearchingPlaces(true);
     setError(null);
@@ -1202,6 +1340,7 @@ function MapView() {
           locale,
           center,
           searchFn: searchTripStopsFn,
+          requestSession: session,
         });
         if (requestId !== exploreSearchRequestRef.current) return;
 
@@ -1217,25 +1356,6 @@ function MapView() {
           return;
         }
 
-        const cards = await resolveExploreMapSuggestionsToCards(suggestions, {
-          locale,
-          resolveFn: resolveTripStopFn,
-          userLocation: center,
-          weather,
-          reasonProfile,
-          limit: 10,
-        });
-        if (requestId !== exploreSearchRequestRef.current) return;
-
-        setSearchSuggestions((prev) =>
-          prev.map((item) => {
-            const card = cards.find((c) => c.id === item.placeId);
-            return {
-              ...item,
-              distanceLabel: exploreSuggestionDistanceLabel(item, center, card),
-            };
-          }),
-        );
         setSearchingPlaces(false);
         if (error && suggestions.length === 0) {
           setError(error ?? t("uiCoverage.noResults"));
@@ -1252,9 +1372,12 @@ function MapView() {
         console.warn(`[EXPLORE_SEARCH_ERROR] status=exception message=${msg}`);
         setSearchingPlaces(false);
       });
-    }, 320);
+    }, EXPLORE_SEARCH_DEBOUNCE_MS);
 
-    return () => window.clearTimeout(handle);
+    return () => {
+      window.clearTimeout(handle);
+      if (exploreSearchRequestRef.current === requestId) exploreSearchRequestRef.current += 1;
+    };
   }, [
     query,
     geoReady,
@@ -1263,24 +1386,16 @@ function MapView() {
     userLocation.lng,
     locale,
     searchTripStopsFn,
-    resolveTripStopFn,
-    weather,
-    reasonProfile,
     networkOnline,
     t,
     exploreSearchRevision,
     searchDropdownOpen,
   ]);
 
-  const displayResults = useMemo(() => {
+  const resultPresentation = useMemo(() => {
     const filterCat = cat;
     const sortCenter = { lat: recommendCenter.lat, lng: recommendCenter.lng };
     const primary = primaryPlace;
-
-    if (loading && !searchDropdownOpen) {
-      if (primary) return [primary];
-      return [];
-    }
 
     const base =
       results.length > 0
@@ -1290,7 +1405,12 @@ function MapView() {
           : [];
     const nearbyOnly = stripPrimaryFromNearby(primary, base);
     const sorted = sortMapCards(nearbyOnly, sortCenter, reasonProfile, filterCat.id, weather);
-    return mergeExploreRecommendations(primary, sorted);
+    return exploreSearchPresentation({
+      primary,
+      recommendations: sorted,
+      primarySearchLoading,
+      backgroundRecommendationLoading: backgroundRecommendationLoading || searchingPlaces,
+    });
   }, [
     results,
     cat,
@@ -1301,12 +1421,18 @@ function MapView() {
     reasonProfile,
     weather,
     primaryPlace,
+    primarySearchLoading,
+    backgroundRecommendationLoading,
+    searchingPlaces,
   ]);
+  const displayResults = resultPresentation.places;
 
   const handleCategorySelect = useCallback(
     (c: ExploreCategory) => {
       if (c.id === cat.id) return;
+      searchRequestIdRef.current += 1;
       setCat(c);
+      if (!canRunExploreBrowse(query, exploreSessionRef.current?.mode === "search")) return;
       const center = { lat: recommendCenter.lat, lng: recommendCenter.lng };
       setMapCenter(center);
       clearExploreSelectionState();
@@ -1324,7 +1450,8 @@ function MapView() {
         mode: cityRecommendMode,
         cityPlaceId: cityMeta.cityPlaceId,
         cityLabel: cityMeta.cityLabel,
-        nearbyLocationKey: effectiveLocation?.locationKey,
+        nearbyLocationKey:
+          recommendCenter.source === "userGesture" ? undefined : effectiveLocation?.locationKey,
       });
       const cachedHit = readMapPlacesCache(cacheKey);
       if (cachedHit?.places.length) {
@@ -1405,6 +1532,7 @@ function MapView() {
     },
     [
       cat.id,
+      query,
       recommendCenter.lat,
       recommendCenter.lng,
       recommendCenter.source,
@@ -1695,10 +1823,15 @@ function MapView() {
   };
 
   const locateMe = () => {
+    exploreSessionRef.current?.controller.abort();
+    setBrowseCenter(null);
+    searchTargetRequestRef.current += 1;
+    searchRequestIdRef.current += 1;
+    setPrimarySearchLoading(false);
     setLocating(true);
     void requestDeviceLocation()
       .then((loc) => {
-        console.info("[explore] relocate", {
+        devVerboseInfo("[explore] relocate", {
           lat: loc.lat,
           lng: loc.lng,
           usedFallback: loc.usedFallback,
@@ -1728,39 +1861,30 @@ function MapView() {
   };
 
   const applyExploreSearchTarget = useCallback(
-    async (item: MapExploreSearchResultItem) => {
+    async (item: MapExploreSearchResultItem, requestId: number) => {
       const types = item.types ?? undefined;
       const primaryType = item.types?.[0] ?? null;
-      const shouldHavePrimary = isPinnableSearchSelection({
-        label: item.label,
-        types,
-        primaryType,
-        placeId: item.placeId,
+      const session = exploreSessionRef.current!;
+      const shouldHavePrimary = true;
+      const primaryCard = await resolveExplorePrimaryPlace(item, {
+        locale,
+        resolveFn: resolveTripStopFn,
+        userLocation: reliableUserLocation,
+        weather,
+        reasonProfile,
+        fetchPlaceDetailsFn: fetchExplorePlaceDetailsFn,
+        requestOwner: {
+          requestId: session.id,
+          surface: "explore",
+          priority: "foreground",
+          requestType: "details",
+          generationRequestId: session.id,
+          exploreSession: session,
+        },
       });
+      const resolved = primaryCard;
 
-      const primaryCard = shouldHavePrimary
-        ? await resolveExplorePrimaryPlace(item, {
-            locale,
-            resolveFn: resolveTripStopFn,
-            userLocation: reliableUserLocation,
-            weather,
-            reasonProfile,
-            fetchPlaceDetailsFn: fetchExplorePlaceDetailsFn,
-          })
-        : null;
-
-      const resolved =
-        primaryCard ??
-        (
-          await resolveExploreMapSuggestion(item, {
-            locale,
-            resolveFn: resolveTripStopFn,
-            userLocation: reliableUserLocation,
-            weather,
-            reasonProfile,
-          })
-        ).card;
-
+      if (requestId !== searchTargetRequestRef.current) return false;
       if (!resolved || resolved.lat == null || resolved.lng == null) {
         toast.error(t("location.resolveFailed"));
         return false;
@@ -1818,6 +1942,7 @@ function MapView() {
         setPrimaryPlace(null);
       }
 
+      setPrimarySearchLoading(false);
       setSearchSelectedCenter({
         lat: resolved.lat,
         lng: resolved.lng,
@@ -1827,6 +1952,7 @@ function MapView() {
         placeId: selectedPlaceId,
       });
       setSearchDropdownOpen(false);
+      setSearchingPlaces(false);
       setSearchSuggestions([]);
       setSearchFocused(false);
       searchBarRef.current?.dismiss();
@@ -1839,7 +1965,9 @@ function MapView() {
       focusMapOnPlace(resolved.lat, resolved.lng);
 
       void fetchWeather({ data: { lat: resolved.lat, lng: resolved.lng } })
-        .then((r) => setWeather(r.weather))
+        .then((r) => {
+          if (requestId === searchTargetRequestRef.current) setWeather(r.weather);
+        })
         .catch(() => {});
 
       setSelectedPlace(null);
@@ -1847,84 +1975,13 @@ function MapView() {
       setSheetMode("list");
       sheetRef.current?.expand();
 
-      const recommendMode = resolveExploreRecommendMode({
-        label: selectedLabel,
-        types: types ?? resolved.types ?? undefined,
-        primaryType: resolved.primaryType ?? primaryType,
-      });
-      const { cacheKey, sessionKey, locationKey } = buildMapExploreCacheKeys({
-        center: { lat: resolved.lat, lng: resolved.lng },
-        categoryId: cat.id,
-        locale,
-        mode: recommendMode,
-        cityPlaceId: selectedPlaceId,
-        cityLabel: selectedLabel,
-      });
-      const forceRefresh = consumeExploreMapForceRefresh();
-      const skipCacheForPrimary = shouldHavePrimary && !!mapCard;
-      const cachedHit =
-        !forceRefresh && recommendMode === "city" && !skipCacheForPrimary
-          ? readMapPlacesCache(cacheKey)
-          : null;
-
-      if (recommendMode === "city") {
-        writeExploreMapSearchSession({
-          center: {
-            lat: resolved.lat,
-            lng: resolved.lng,
-            label: selectedLabel,
-            types: types ?? resolved.types ?? undefined,
-            primaryType: resolved.primaryType ?? primaryType,
-            placeId: selectedPlaceId,
-          },
-          query: selectedLabel,
-          categoryId: cat.id,
-          locale,
-          savedAt: Date.now(),
-        });
-      }
-
-      if (cachedHit?.places.length) {
-        lastMapSearchSessionRef.current = sessionKey;
-        prevQueryRef.current = selectedLabel;
-        prevCatIdRef.current = cat.id;
-        pendingImmediateSearchRef.current = false;
-        const cardOpts = {
-          weather: weatherRef.current,
-          reasonProfile: reasonProfileRef.current,
-          locale,
-        };
-        const enriched = exploreCardsToMapCards(cachedHit.places as ExplorePlaceCard[], cardOpts);
-        const finalResults = finalizeMapResults(
-          enriched,
-          { lat: resolved.lat, lng: resolved.lng },
-          reasonProfileRef.current,
-          cat.id,
-          weatherRef.current,
-          shouldHavePrimary ? mapCard : null,
-          locationKey,
-          searchSelectedCenter?.label ?? resolved.label,
-        );
-        syncExploreMapSheetFeedback({ setError });
-        setResults(finalResults);
-        setLoading(false);
-        setError(null);
-        return true;
-      }
-
-      lastMapSearchSessionRef.current = null;
-      prevQueryRef.current = "";
-      prevCatIdRef.current = "";
-      pendingImmediateSearchRef.current = true;
-      setSearchTrigger((n) => n + 1);
-      setLoading(true);
-      setResults([]);
+      setResults([mapCard]);
+      setLoading(false);
       setError(null);
       return true;
     },
     [
       locale,
-      cat.id,
       resolveTripStopFn,
       reliableUserLocation,
       weather,
@@ -1938,65 +1995,63 @@ function MapView() {
 
   const handleExploreSearchSelect = useCallback(
     async (item: MapExploreSearchResultItem) => {
+      exploreSessionRef.current = beginExploreRequestSession("search", item.label);
+      exploreSearchRequestRef.current += 1;
+      setSearchingPlaces(false);
+      setLoading(false);
+      const requestId = ++searchTargetRequestRef.current;
+      searchRequestIdRef.current += 1;
+      setPrimarySearchLoading(true);
       setResolvingSearchId(item.placeId);
       try {
-        await applyExploreSearchTarget(item);
+        await applyExploreSearchTarget(item, requestId);
+      } catch {
+        if (requestId === searchTargetRequestRef.current) toast.error(t("location.resolveFailed"));
       } finally {
-        setResolvingSearchId(null);
+        if (requestId === searchTargetRequestRef.current) {
+          setResolvingSearchId(null);
+          setPrimarySearchLoading(false);
+        }
       }
     },
-    [applyExploreSearchTarget],
+    [applyExploreSearchTarget, t],
   );
 
-  const handleExploreSearchSubmit = useCallback(async () => {
+  const handleExploreSearchSubmit = useCallback(() => {
     const trimmed = query.trim();
     if (!trimmed) return;
+    exploreSessionRef.current = beginExploreRequestSession("search", trimmed);
+    searchTargetRequestRef.current += 1;
+    searchRequestIdRef.current += 1;
+    exploreSearchRequestRef.current += 1;
+    setSearchSelectedCenter(null);
+    setPrimaryPlace(null);
+    primaryPlaceRef.current = null;
+    setResults([]);
+    setSearchDropdownOpen(false);
+    setSearchingPlaces(false);
+    setResolvingSearchId(null);
+    setPrimarySearchLoading(true);
+    setLoading(false);
+    lastMapSearchSessionRef.current = null;
+    pendingImmediateSearchRef.current = true;
+    setSearchTrigger((n) => n + 1);
+    searchBarRef.current?.dismiss();
+  }, [query]);
 
-    const existingPrimary = primaryPlaceRef.current;
-    if (
-      existingPrimary &&
-      searchSelectedCenter?.label === trimmed &&
-      normalizeExplorePlaceId(searchSelectedCenter.placeId) ===
-        normalizeExplorePlaceId(existingPrimary.id)
-    ) {
-      setExploreMapForceRefreshNext();
+  const handleUserMapCenterChange = useCallback(
+    (center: { lat: number; lng: number }) => {
+      if (!shouldRefreshExploreFromMap("userGesture", query)) return;
+      if (!locationMovedEnough(browseCenter ?? recommendCenter, center, 500)) return;
+      exploreSessionRef.current?.controller.abort();
+      searchRequestIdRef.current += 1;
+      setBrowseCenter(center);
+      setMapCenter(center);
       lastMapSearchSessionRef.current = null;
-      pendingImmediateSearchRef.current = true;
       setSearchTrigger((n) => n + 1);
-      return;
-    }
-
-    setResolvingSearchId("submit");
-    try {
-      const center = effectiveLocation?.isReadyForPlaces
-        ? { lat: effectiveLocation.lat, lng: effectiveLocation.lng }
-        : userLocation;
-      const { suggestions, error } = await runExploreMapPlaceSearch(trimmed, {
-        locale,
-        center,
-        searchFn: searchTripStopsFn,
-      });
-      const item = pickExploreCitySuggestion(trimmed, suggestions);
-      if (!item) {
-        toast.error(error ?? t("location.resolveFailed"));
-        return;
-      }
-      await applyExploreSearchTarget(item);
-    } finally {
-      setResolvingSearchId(null);
-    }
-  }, [
-    query,
-    searchSelectedCenter,
-    effectiveLocation?.isReadyForPlaces,
-    effectiveLocation?.lat,
-    effectiveLocation?.lng,
-    userLocation,
-    locale,
-    searchTripStopsFn,
-    applyExploreSearchTarget,
-    t,
-  ]);
+    },
+    [query, browseCenter, recommendCenter],
+  );
 
   const savedNames = useMemo(() => new Set(saved.map((s) => s.name)), [saved]);
 
@@ -2031,6 +2086,7 @@ function MapView() {
             onPlaceMarkerClick={onMarkerClick}
             onLoadError={handleMapLoadError}
             onMapClick={handleMapClick}
+            onUserCenterChange={handleUserMapCenterChange}
             onMapReady={(map) => {
               mapInstanceRef.current = map;
             }}
@@ -2107,9 +2163,9 @@ function MapView() {
                     {exploreCategorySheetTitle(cat.id, locale)}
                   </p>
                   <p className="mt-0.5 text-xs text-muted-foreground">
-                    {searchSelectedCenter
-                      ? `「${searchSelectedCenter.label}」· ${loading ? t("common.search") : t("uiCoverage.resultCount", { count: displayResults.length })}`
-                      : `${loading ? t("common.search") : t("uiCoverage.resultCount", { count: displayResults.length })}`}
+                    {query.trim()
+                      ? `「${query.trim()}」· ${resultPresentation.fullLoading ? t("common.search") : t("uiCoverage.resultCount", { count: displayResults.length })}`
+                      : `${resultPresentation.fullLoading ? t("common.search") : t("uiCoverage.resultCount", { count: displayResults.length })}`}
                     {saved.length > 0
                       ? ` · ${t("uiCoverage.savedCount", { count: saved.length })}`
                       : ""}
@@ -2140,7 +2196,8 @@ function MapView() {
               <MapExplorePlaceCards
                 ref={cardsRef}
                 places={displayResults}
-                loading={loading}
+                loading={resultPresentation.fullLoading}
+                backgroundLoading={resultPresentation.backgroundLoading}
                 categoryKey={cat.id}
                 emptyMessage={null}
                 highlightIndex={selectedPlaceIndex}

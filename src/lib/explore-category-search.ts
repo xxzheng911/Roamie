@@ -1,3 +1,5 @@
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
+import { canRunExploreBrowse, type ExploreRequestSession } from "@/lib/explore-request-session";
 import type { Locale } from "@/lib/i18n/types";
 import type { PlaceResult } from "@/lib/place-result";
 import type { SavedPlace } from "@/lib/places-storage";
@@ -97,6 +99,7 @@ export type SearchPlacesInput = {
   /** 探索分類 id（cache / log 用） */
   categoryId?: string;
   placesCaller?: string;
+  placesExploreSessionId?: string;
   placesScreen?: PlacesScreen;
   /** 統一 Place Cache scope（選填） */
   cacheCountry?: string;
@@ -485,6 +488,7 @@ const rawPoolInFlight = new Map<string, Promise<PlaceResult[]>>();
 
 type ExploreCityMeta = {
   cityPlaceId?: string | null;
+  requestSession?: ExploreRequestSession;
   cityLabel?: string;
 };
 
@@ -550,7 +554,8 @@ export async function ensureExploreRawPool(
   const existing = readExploreRawPool(key);
   if (existing?.length) return existing;
 
-  const inflight = rawPoolInFlight.get(key);
+  const flightKey = key + (cityMeta.requestSession ? `:${cityMeta.requestSession.id}` : "");
+  const inflight = rawPoolInFlight.get(flightKey);
   if (inflight) return inflight;
 
   const allCat = getExploreCategoryById("all");
@@ -594,10 +599,10 @@ export async function ensureExploreRawPool(
     if (places.length) writeExploreRawPool(key, places);
     return places;
   })().finally(() => {
-    rawPoolInFlight.delete(key);
+    rawPoolInFlight.delete(flightKey);
   });
 
-  rawPoolInFlight.set(key, promise);
+  rawPoolInFlight.set(flightKey, promise);
   return promise;
 }
 
@@ -646,6 +651,8 @@ async function searchExploreAllPlacesMerged(ctx: {
   recommendMode: ExploreRecommendMode;
   cityLabel?: string;
   cityPlaceId?: string | null;
+  requestSession?: ExploreRequestSession;
+  onProgress?: (cards: ExplorePlaceCard[]) => void;
 }): Promise<ExplorePlaceCard[]> {
   const { userLocation, locale, recommendMode } = ctx;
   const timeBucket = exploreTimeBucket();
@@ -688,7 +695,7 @@ async function searchExploreAllPlacesMerged(ctx: {
     return categorySearchInFlight.has(key);
   });
   const hydrationPlan = resolveExploreAllHydrationPlan(cachedSubIds, inFlightSubIds);
-  console.info("[EXPLORE_ALL_HYDRATION]", {
+  devVerboseInfo("[EXPLORE_ALL_HYDRATION]", {
     requiredCategories: hydrationPlan.requiredCategories,
     cachedCategories: hydrationPlan.cachedCategories,
     inFlightCategories: hydrationPlan.inFlightCategories,
@@ -700,24 +707,30 @@ async function searchExploreAllPlacesMerged(ctx: {
   });
 
   const failedSubIds: string[] = [];
-  await Promise.all(
-    missingSubIds.map(async (subId) => {
-      const subCat = getExploreCategoryById(subId);
-      if (!subCat) return;
-      try {
-        cardsByCategory[subId] = await searchExploreCategoryPlaces(subCat, {
-          ...ctx,
-          forHome: false,
-          recommendMode,
-          cityLabel,
-          cityPlaceId: ctx.cityPlaceId,
-        });
-      } catch {
-        failedSubIds.push(subId);
-        cardsByCategory[subId] = [];
-      }
-    }),
-  );
+  for (const subId of missingSubIds) {
+    if (ctx.requestSession?.controller.signal.aborted) break;
+    const subCat = getExploreCategoryById(subId);
+    if (!subCat) continue;
+    try {
+      cardsByCategory[subId] = await searchExploreCategoryPlaces(subCat, {
+        ...ctx,
+        forHome: false,
+        recommendMode,
+        cityLabel,
+        cityPlaceId: ctx.cityPlaceId,
+      });
+    } catch {
+      failedSubIds.push(subId);
+      cardsByCategory[subId] = [];
+    }
+    const progressive = mergeExploreAllCategoryResults(cardsByCategory, {
+      origin: userLocation,
+      timeBucket,
+      cityMode: recommendMode === "city",
+    });
+    if (progressive.length && !ctx.requestSession?.controller.signal.aborted)
+      ctx.onProgress?.(progressive);
+  }
 
   let merged = mergeExploreAllCategoryResults(cardsByCategory, {
     origin: userLocation,
@@ -761,7 +774,7 @@ async function searchExploreAllPlacesMerged(ctx: {
   if (merged.length > 0) {
     writeMapPlacesCache(allKey, merged, null);
   }
-  console.info("[EXPLORE_ALL_HYDRATION]", {
+  devVerboseInfo("[EXPLORE_ALL_HYDRATION]", {
     requiredCategories: EXPLORE_ALL_SUBCATEGORY_IDS,
     cachedCategories: cachedSubIds,
     inFlightCategories: [],
@@ -865,8 +878,16 @@ export async function searchExploreCategoryPlaces(
     recommendMode?: ExploreRecommendMode;
     cityLabel?: string;
     cityPlaceId?: string | null;
+    requestSession?: ExploreRequestSession;
+    onProgress?: (cards: ExplorePlaceCard[]) => void;
   },
 ): Promise<ExplorePlaceCard[]> {
+  if (
+    ctx.requestSession &&
+    (!canRunExploreBrowse(ctx.requestSession.query, ctx.requestSession.mode === "search") ||
+      ctx.requestSession.controller.signal.aborted)
+  )
+    return [];
   const { userLocation, weather, locale, reasonProfile, saved, searchPlacesFn } = ctx;
   const forHome = ctx.forHome === true;
   const recommendMode = forHome ? "nearby" : (ctx.recommendMode ?? "nearby");
@@ -882,15 +903,16 @@ export async function searchExploreCategoryPlaces(
           userLocation.lng,
         )
       : undefined;
-  const flightKey = categorySearchFlightKey(
-    locationKey,
-    cat.id,
-    locale,
-    forHome,
-    recommendMode,
-    timeBucket,
-    cityScopeKey,
-  );
+  const flightKey =
+    categorySearchFlightKey(
+      locationKey,
+      cat.id,
+      locale,
+      forHome,
+      recommendMode,
+      timeBucket,
+      cityScopeKey,
+    ) + (ctx.requestSession ? `:${ctx.requestSession.id}` : "");
 
   if (!forHome && cat.id === "all") {
     const inflightAll = categorySearchInFlight.get(flightKey);
@@ -905,6 +927,8 @@ export async function searchExploreCategoryPlaces(
       recommendMode,
       cityLabel: ctx.cityLabel,
       cityPlaceId: ctx.cityPlaceId,
+      requestSession: ctx.requestSession,
+      onProgress: ctx.onProgress,
     }).finally(() => {
       categorySearchInFlight.delete(flightKey);
     });
@@ -913,7 +937,9 @@ export async function searchExploreCategoryPlaces(
   }
 
   if (!forHome) {
-    const requestKey = buildExploreRequestKey(cat.id, locationKey, locale, timeBucket);
+    const requestKey =
+      buildExploreRequestKey(cat.id, locationKey, locale, timeBucket) +
+      (ctx.requestSession ? `:${ctx.requestSession.id}` : "");
     const mapKey = buildCategoryMapCacheKey(cat.id, userLocation, locale, recommendMode, cityMeta);
     const mapCached = readMapPlacesCache(mapKey);
     if (mapCached?.places.length) {
@@ -929,7 +955,8 @@ export async function searchExploreCategoryPlaces(
 
   const requestKey = forHome
     ? null
-    : buildExploreRequestKey(cat.id, locationKey, locale, timeBucket);
+    : buildExploreRequestKey(cat.id, locationKey, locale, timeBucket) +
+      (ctx.requestSession ? `:${ctx.requestSession.id}` : "");
 
   const promise = (async () => {
     return searchExploreCategoryPlacesInner(cat, {
@@ -963,6 +990,8 @@ async function searchExploreCategoryPlacesInner(
     recommendMode: ExploreRecommendMode;
     cityLabel?: string;
     cityPlaceId?: string | null;
+    requestSession?: ExploreRequestSession;
+    onProgress?: (cards: ExplorePlaceCard[]) => void;
     quiet?: boolean;
   },
 ): Promise<ExplorePlaceCard[]> {
@@ -970,7 +999,8 @@ async function searchExploreCategoryPlacesInner(
   const locationKey = normalizedLocationKey(userLocation.lat, userLocation.lng);
   const exploreRequestKey = forHome
     ? null
-    : buildExploreRequestKey(cat.id, locationKey, locale, exploreTimeBucket());
+    : buildExploreRequestKey(cat.id, locationKey, locale, exploreTimeBucket()) +
+      (ctx.requestSession ? `:${ctx.requestSession.id}` : "");
   const requestThrottled =
     exploreRequestKey != null && shouldThrottleExploreRequest(exploreRequestKey);
   const quiet = ctx.quiet === true || requestThrottled;
@@ -1262,7 +1292,7 @@ async function searchExploreCategoryPlacesInner(
   }
 
   if (enriched.length === 0 && !quiet) {
-    console.info("[explore] no places for category", cat.id);
+    devVerboseInfo("[explore] no places for category", cat.id);
   }
 
   const filteredEnriched =
@@ -1316,6 +1346,8 @@ export async function searchExploreAllPlaces(ctx: {
   recommendMode?: ExploreRecommendMode;
   cityLabel?: string;
   cityPlaceId?: string | null;
+  requestSession?: ExploreRequestSession;
+  onProgress?: (cards: ExplorePlaceCard[]) => void;
 }): Promise<ExplorePlaceCard[]> {
   const allCat = getExploreCategoryById("all");
   if (!allCat) return [];

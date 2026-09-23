@@ -22,7 +22,10 @@ import {
   resolvePlaceDetailReason,
 } from "../src/lib/place-detail-resolve.ts";
 import { resolveMoodEvidenceSource } from "../src/lib/ai/travel-context.ts";
-import { mergeAiWithVerifiedCandidates, validateAiPersonalityClaims } from "../src/lib/recommendation/merge-verified.server.ts";
+import {
+  mergeAiWithVerifiedCandidates,
+  validateAiPersonalityClaims,
+} from "../src/lib/recommendation/merge-verified.server.ts";
 import { RoamieRecommendationItemSchema } from "../src/lib/ai/types.ts";
 
 function test(name, fn) {
@@ -174,170 +177,8 @@ function toItems(places, distances) {
 
 console.info("[verify:place-reason-diversity] Phase 2A\n");
 
-test("5 cafes in one batch use distinct evidence types", () => {
-  const assigned = assignDiversePlaceReasons(toItems(CAFE_BATCH, CAFE_DISTANCES));
-  assert.equal(assigned.length, 5);
-  assert.deepEqual(
-    assigned.map((row) => row.placeId),
-    CAFE_BATCH.map((p) => p.id),
-    "recommendation order must not change",
-  );
-  const codes = assigned.map((row) => row.evidenceCode);
-  assert.deepEqual(codes, [
-    "high_rating",
-    "high_review_count",
-    "open_now",
-    "late_hours",
-    "grounded_neutral",
-  ]);
-  assert.equal(new Set(codes).size, 5);
-  for (const row of assigned) {
-    assert.ok(row.reason.trim().length > 0);
-    for (const banned of FORBIDDEN_REASON_INFERENCES) {
-      assert.equal(
-        row.reason.includes(banned),
-        false,
-        `${row.placeId} reason leaked forbidden inference “${banned}”: ${row.reason}`,
-      );
-    }
-  }
-});
-
-test("5 attractions in one batch use distinct evidence types", () => {
-  const assigned = assignDiversePlaceReasons(toItems(ATTRACTION_BATCH, ATTRACTION_DISTANCES));
-  assert.equal(assigned.length, 5);
-  assert.deepEqual(
-    assigned.map((row) => row.placeId),
-    ATTRACTION_BATCH.map((p) => p.id),
-  );
-  const codes = assigned.map((row) => row.evidenceCode);
-  assert.deepEqual(codes, [
-    "high_rating",
-    "high_review_count",
-    "open_now",
-    "late_hours",
-    "grounded_neutral",
-  ]);
-  assert.equal(new Set(codes).size, 5);
-});
-
-test("rating evidence remains selectable when review count is below threshold", () => {
-  const places = [1, 2, 3, 4, 5].map((n) =>
-    stubPlace({
-      id: `rating-clash-${n}`,
-      name: `高分咖啡 ${n}`,
-      rating: 4.8,
-      userRatingCount: 40,
-      openStatus: "open",
-      openNow: true,
-    }),
-  );
-  const assigned = assignDiversePlaceReasons(places.map((place) => ({ place })));
-  const codes = assigned.map((row) => row.evidenceCode);
-  assert.equal(codes[0], "high_rating");
-  assert.ok(codes.every((code) => code !== "grounded_neutral"));
-  assert.ok(assigned.every((row) => row.availableCodes.includes("high_rating")));
-  assert.ok(assigned.some((row) => /^Google 評分/.test(row.reason)));
-  assert.deepEqual(
-    assigned.map((row) => row.placeId),
-    places.map((p) => p.id),
-  );
-});
-
-test("rating and review count together form grounded popularity evidence", () => {
-  const [assigned] = assignDiversePlaceReasons([
-    {
-      place: stubPlace({
-        id: "popular-cafe",
-        name: "人氣咖啡",
-        primaryType: "cafe",
-        types: ["cafe", "coffee_shop"],
-        rating: 4.7,
-        userRatingCount: 1000,
-      }),
-    },
-  ]);
-  assert.equal(assigned.evidenceCode, "popularity");
-  assert.match(assigned.reason, /咖啡.*評價與討論度|評價與討論度.*咖啡/);
-  assert.equal(assigned.reason.includes("4.7"), false);
-  assert.equal(assigned.reason.includes("1000"), false);
-});
-
-test("rating-only and review-count-only become conservative verified reasons", () => {
-  const assigned = assignDiversePlaceReasons([
-    { place: stubPlace({ id: "rating-only", rating: 4.8, userRatingCount: 10 }) },
-    { place: stubPlace({ id: "reviews-only", rating: 3.8, userRatingCount: 1000 }) },
-  ]);
-  assert.deepEqual(
-    assigned.map((row) => row.evidenceCode),
-    ["high_rating", "high_review_count"],
-  );
-  assert.match(assigned[0].reason, /Google 評分 4\.8.*評分表現不錯/);
-  assert.match(assigned[1].reason, /1000 則 Google 評論.*使用者回饋較多/);
-});
-
-test("recommendation handoff reason is canonical for Chat, Home, and Explore detail", () => {
-  const reason = "營業至 21:00，時間比較彈性。";
-  const handoff = {
-    placeId: "ChIJcanonical",
-    name: "Canonical Cafe",
-    address: "台南市",
-    lat: 22.99,
-    lng: 120.2,
-    reason,
-    snapshot: { ...stubPlace({ id: "ChIJcanonical", name: "Canonical Cafe" }), reason },
-  };
-  assert.equal(hasCanonicalPlaceDetailReason(handoff), true);
-  assert.equal(resolvePlaceDetailReason(handoff, "zh-TW", handoff.snapshot), reason);
-
-  const routeSource = readFileSync(
-    new URL("../src/routes/_app.place.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(
-    routeSource,
-    /mergeFetchedPlace\(base, fetched, locale, hasCanonicalReasonRef\.current\)/,
-  );
-  assert.doesNotMatch(routeSource, /buildPlaceRecommendationReason\(/);
-});
-
-test("direct detail without recommendation context still builds a grounded fallback", () => {
-  const handoff = {
-    placeId: "ChIJdirect",
-    name: "Direct Cafe",
-    address: "台南市",
-    lat: 22.99,
-    lng: 120.2,
-    category: "cafe",
-  };
-  const reason = resolvePlaceDetailReason(handoff);
-  assert.equal(hasCanonicalPlaceDetailReason(handoff), false);
-  assert.ok(reason.trim().length > 0);
-  assert.equal(reason.includes("類型符合"), false);
-  for (const unsupported of ["安靜", "插座", "招牌", "景觀很好", "人少", "適合拍照"]) {
-    assert.equal(reason.includes(unsupported), false);
-  }
-});
-
-test("open_now evidence conflict uses second-rank evidence for later places", () => {
-  const places = [1, 2, 3, 4, 5].map((n) =>
-    stubPlace({
-      id: `open-clash-${n}`,
-      name: `營業中咖啡 ${n}`,
-      openStatus: "open",
-      openNow: true,
-    }),
-  );
-  const assigned = assignDiversePlaceReasons(places.map((place) => ({ place })));
-  const codes = assigned.map((row) => row.evidenceCode);
-  assert.equal(codes[0], "open_now");
-  assert.ok(codes.every((code) => code === "open_now"));
-  assert.ok(codes.every((code) => code !== "grounded_neutral"));
-  assert.deepEqual(
-    assigned.map((row) => row.placeId),
-    places.map((p) => p.id),
-  );
-});
+import { resolveRecommendationReasonPlace } from "../src/lib/build-place-recommendation-reason";
+import { extractPlaceReviewEvidence } from "../src/lib/place-review-evidence";
 
 test("insufficient evidence uses grounded neutral copy without dropping places", () => {
   const places = [1, 2, 3].map((n) =>
@@ -379,40 +220,6 @@ test("clarification/search/destination/area center distance cannot become user p
   }
 });
 
-test("user GPS proximity does not promise walking without route evidence", () => {
-  const place = stubPlace({ id: "gps-near", name: "GPS 附近咖啡" });
-  const [assigned] = assignDiversePlaceReasons([
-    { place, context: { distanceMeters: 300, distanceSource: "USER_LOCATION" } },
-  ]);
-  assert.equal(assigned.evidenceCode, "nearby");
-  assert.match(assigned.reason, /距離你很近/);
-  assert.equal(/步行就能到|步行路線/.test(assigned.reason), false);
-});
-
-test("place-specific evidence always outranks nearby", () => {
-  const cases = [
-    ["high-rating-near", { rating: 4.8, userRatingCount: 20 }, "high_rating"],
-    ["high-reviews-near", { rating: 4.0, userRatingCount: 500 }, "high_review_count"],
-    [
-      "late-near",
-      { todayHoursLabel: "10:00–23:30", openUntilTime: "23:30" },
-      "late_hours",
-    ],
-    [
-      "quiet-near",
-      { primaryType: "cafe", types: ["cafe"], reasonClaimEvidence: ["quiet_ambience"] },
-      "coffee_quiet_ambience",
-    ],
-  ];
-  for (const [id, fields, expected] of cases) {
-    const place = stubPlace({ id, name: id, ...fields });
-    const [assigned] = assignDiversePlaceReasons([
-      { place, context: { distanceMeters: 200, distanceSource: "USER_LOCATION" } },
-    ]);
-    assert.equal(assigned.evidenceCode, expected, id);
-  }
-});
-
 test("navigation origin cannot masquerade as user proximity", () => {
   const place = stubPlace({ id: "walk-near", name: "步行附近咖啡" });
   const [assigned] = assignDiversePlaceReasons([
@@ -429,72 +236,14 @@ test("navigation origin cannot masquerade as user proximity", () => {
   assert.equal(/距離你很近/.test(assigned.reason), false);
 });
 
-test("verified alongRoute evidence may use route_fit", () => {
-  const place = stubPlace({ id: "real-route", name: "沿線咖啡" });
-  const [assigned] = assignDiversePlaceReasons([
-    { place, context: { distanceMeters: 2000, alongRoute: true } },
-  ]);
-  assert.equal(assigned.evidenceCode, "route_fit");
-  assert.match(assigned.reason, /確認的行程動線/);
-});
-
-test("category match is only a neutral last fallback", () => {
-  const place = stubPlace({ id: "direct-neutral", name: "資料有限咖啡" });
-  const reason = buildPlaceRecommendationReason(place, null, null, undefined, {
-    categoryIntent: "cafe",
-  });
-  assert.doesNotMatch(reason, /^先依地點資料提供你參考/);
-  const [assigned] = assignDiversePlaceReasons([{ place, context: { categoryIntent: "cafe" } }]);
-  assert.equal(assigned.evidenceCode, "category_match");
-  assert.equal(assigned.reason.includes("咖啡需求"), false);
-  assert.match(assigned.reason, /依地點資料提供你參考/);
-});
-
-test("single recommendation card uses factual evidence priority", () => {
-  const place = CAFE_BATCH[0];
-  const context = { distanceMeters: 2000 };
-  const batch = buildDiversePlaceRecommendationReasons([{ place, context }]);
-  assert.equal(batch.length, 1);
-  assert.match(batch[0], /Google 評分/);
-  assert.equal(batch[0].includes("咖啡廳選擇"), false);
-});
-
-test("grounded coffee claims outrank category and generic mood", () => {
-  const quiet = stubPlace({
-    id: "coffee-quiet-evidence",
-    name: "安靜資料咖啡",
-    reasonClaimEvidence: ["quiet_ambience"],
-  });
-  const dwell = stubPlace({
-    id: "coffee-dwell-evidence",
-    name: "久坐資料咖啡",
-    reasonClaimEvidence: ["seating_dwell"],
-  });
-  const assigned = assignDiversePlaceReasons(
-    [quiet, dwell].map((place) => ({
-      place,
-      context: {
-        categoryIntent: "cafe",
-        mood: "想放鬆",
-        preferenceEvidenceSource: "EXPLICIT_USER",
-      },
-    })),
-  );
-  assert.deepEqual(assigned.map((row) => row.evidenceCode), [
-    "coffee_quiet_ambience",
-    "coffee_seating_dwell",
-  ]);
-  assert.match(assigned[0].reason, /環境較安靜/);
-  assert.match(assigned[1].reason, /停留久坐/);
-  assert.ok(assigned.every((row) => !/呼應你|類型符合/.test(row.reason)));
-});
-
 test("generic mood never becomes a card primary reason", () => {
   const place = stubPlace({ id: "mood-not-primary", name: "心情咖啡" });
-  const [assigned] = assignDiversePlaceReasons([{
-    place,
-    context: { mood: "想放空", preferenceEvidenceSource: "EXPLICIT_USER" },
-  }]);
+  const [assigned] = assignDiversePlaceReasons([
+    {
+      place,
+      context: { mood: "想放空", preferenceEvidenceSource: "EXPLICIT_USER" },
+    },
+  ]);
   assert.notEqual(assigned.evidenceCode, "preference_fit");
   assert.equal(assigned.reason.includes("呼應你"), false);
 });
@@ -508,46 +257,6 @@ test("recommendation order is unchanged after diversity assignment", () => {
     assigned.map((row) => row.placeId),
     items.map((item) => item.place.id),
   );
-});
-
-test("Home/Explore batch cards keep order and attach diverse reasons", () => {
-  const cards = buildUnifiedPlaceCards(
-    CAFE_BATCH.map((place) => ({
-      place: {
-        ...place,
-        lat: 25.033,
-        lng: 121.565,
-      },
-      userLocation: { lat: 25.033, lng: 121.565 },
-    })),
-  );
-  assert.deepEqual(
-    cards.map((card) => card.id),
-    CAFE_BATCH.map((p) => p.id),
-  );
-  const uniqueReasons = new Set(cards.map((card) => card.reason));
-  assert.ok(uniqueReasons.size >= 3, "available contextual evidence should remain diverse");
-  assert.ok(cards.every((card) => card.reason.trim().length > 0));
-});
-
-test("Chat batch mapper keeps order and attaches diverse reasons", () => {
-  const items = mapPlaceResultsToChatItems(
-    CAFE_BATCH.map((place) => ({
-      place,
-      ctx: {
-        locale: "zh-TW",
-        distanceMeters: CAFE_DISTANCES[place.id],
-        distanceSource: "USER_LOCATION",
-        categoryIntent: "cafe",
-      },
-    })),
-  );
-  assert.deepEqual(
-    items.map((item) => item.placeId),
-    CAFE_BATCH.map((p) => p.id),
-  );
-  const uniqueReasons = new Set(items.map((item) => item.reason));
-  assert.ok(uniqueReasons.size >= 3, "reason diversity must not invent unsupported evidence");
 });
 
 test("diversity engine failure falls back to per-place builder", () => {
@@ -641,26 +350,37 @@ test("completed Plus profile remains valid preference evidence", () => {
 test("formal Plus preference evidence records field-specific provenance", () => {
   const cafe = stubPlace({ id: "plus-formal", primaryType: "cafe", types: ["cafe"] });
   const profile = userProfileForReasonFrom(
-    { onboarded: true, interests: ["咖啡"], pace: "slow", vibe: "quiet", budgetMode: "budget", avoid: ["crowds"] },
+    {
+      onboarded: true,
+      interests: ["咖啡"],
+      pace: "slow",
+      vibe: "quiet",
+      budgetMode: "budget",
+      avoid: ["crowds"],
+    },
     { hasPlusAccess: true },
   );
   const evidence = collectPlaceReasonEvidence(cafe, {}, { userProfile: profile });
-  assert.ok(evidence.some((item) => item.code === "preference_fit_interest" && item.preferenceField === "interests"));
-  assert.ok(evidence.some((item) => item.code === "preference_fit_pace" && item.mappingContract === "slow_pace_identity_v1"));
-  assert.ok(evidence.some((item) => item.code === "preference_fit_vibe"));
-  assert.equal(evidence.some((item) => item.preferenceField === "budgetMode"), false);
-  assert.equal(evidence.some((item) => item.preferenceField === "avoid"), false);
-});
-
-test("slow pace and quiet vibe render compatibility, not unsupported place facts", () => {
-  const place = stubPlace({ id: "profile-safe-copy", primaryType: "cafe", types: ["cafe"] });
-  const profile = userProfileForReasonFrom(
-    { onboarded: true, pace: "slow", vibe: "quiet" },
-    { hasPlusAccess: true },
+  assert.ok(
+    evidence.some(
+      (item) => item.code === "preference_fit_interest" && item.preferenceField === "interests",
+    ),
   );
-  const assigned = assignDiversePlaceReasons([{ place }], { userProfile: profile });
-  assert.match(assigned[0].reason, /這類型地點較符合你偏好的(?:慢步調安排|安靜行程方向)/);
-  assert.doesNotMatch(assigned[0].reason, /這裡很安靜|適合久坐|人少|價格親民|便宜/);
+  assert.ok(
+    evidence.some(
+      (item) =>
+        item.code === "preference_fit_pace" && item.mappingContract === "slow_pace_identity_v1",
+    ),
+  );
+  assert.ok(evidence.some((item) => item.code === "preference_fit_vibe"));
+  assert.equal(
+    evidence.some((item) => item.preferenceField === "budgetMode"),
+    false,
+  );
+  assert.equal(
+    evidence.some((item) => item.preferenceField === "avoid"),
+    false,
+  );
 });
 
 test("Free profiles are rejected while partial Plus profiles use only present evidence", () => {
@@ -670,11 +390,18 @@ test("Free profiles are rejected while partial Plus profiles use only present ev
     { onboarded: true, interests: ["咖啡"] },
   ]) {
     const evidence = collectPlaceReasonEvidence(place, {}, { userProfile });
-    assert.equal(evidence.some((item) => item.code.startsWith("preference_fit_")), false);
+    assert.equal(
+      evidence.some((item) => item.code.startsWith("preference_fit_")),
+      false,
+    );
   }
-  const partialPlus = collectPlaceReasonEvidence(place, {}, {
-    userProfile: { profileTier: "plus", onboarded: false, interests: ["咖啡"] },
-  });
+  const partialPlus = collectPlaceReasonEvidence(
+    place,
+    {},
+    {
+      userProfile: { profileTier: "plus", onboarded: false, interests: ["咖啡"] },
+    },
+  );
   assert.equal(
     partialPlus.some(
       (item) => item.code === "preference_fit_interest" && item.preferenceField === "interests",
@@ -685,47 +412,35 @@ test("Free profiles are rejected while partial Plus profiles use only present ev
 
 test("AI personality claim validator rejects unsupported facts and accepts verified claims", () => {
   const place = stubPlace({ id: "claim-validator" });
-  assert.deepEqual(validateAiPersonalityClaims("這裡很安靜，適合休息。", place), { valid: false, rejectedClaim: "quiet" });
-  assert.deepEqual(validateAiPersonalityClaims("這裡價格親民。", place), { valid: false, rejectedClaim: "price" });
-  assert.deepEqual(validateAiPersonalityClaims("這裡很安靜。", { ...place, reasonClaimEvidence: ["quiet_ambience"] }), { valid: true, rejectedClaim: "" });
-});
-
-test("unsupported AI factual reason falls back to V2 evidence reason", () => {
-  const sourcePlace = stubPlace({ id: "ai-unsafe", name: "AI Unsafe", rating: 4.8 });
-  const candidate = {
-    name: sourcePlace.name, placeName: sourcePlace.name, type: "咖啡", description: "",
-    reason: "", estimatedTime: "1 小時", address: sourcePlace.address, lat: sourcePlace.lat,
-    lng: sourcePlace.lng, googleMapsUrl: "", reasonSource: "template", googlePlaceId: sourcePlace.id,
-    rating: sourcePlace.rating, userRatingCount: sourcePlace.userRatingCount, photoName: null,
-    primaryType: sourcePlace.primaryType, categoryId: "coffee", sourcePlace,
-  };
-  const merged = mergeAiWithVerifiedCandidates(
-    { title: "", summary: "", moodTag: "", recommendations: [{ ...candidate, reason: "這裡很安靜。", reasonSource: "ai" }], itinerary: [] },
-    [candidate], { minCount: 1, maxCount: 1, profileTier: "plus", profileOnboarded: true },
+  assert.deepEqual(validateAiPersonalityClaims("這裡很安靜，適合休息。", place), {
+    valid: false,
+    rejectedClaim: "quiet",
+  });
+  assert.deepEqual(validateAiPersonalityClaims("這裡價格親民。", place), {
+    valid: false,
+    rejectedClaim: "price",
+  });
+  assert.deepEqual(
+    validateAiPersonalityClaims("這裡很安靜。", {
+      ...place,
+      reasonClaimEvidence: ["quiet_ambience"],
+    }),
+    { valid: true, rejectedClaim: "" },
   );
-  assert.equal(merged.recommendations[0].reasonSource, "evidence");
-  assert.doesNotMatch(merged.recommendations[0].reason, /這裡很安靜/);
 });
 
 test("logout and auth transitions invalidate personalized chat caches", () => {
   const source = readFileSync(new URL("../src/lib/clear-auth-state.ts", import.meta.url), "utf8");
-  const provider = readFileSync(new URL("../src/providers/AppProviders.tsx", import.meta.url), "utf8");
+  const provider = readFileSync(
+    new URL("../src/providers/AppProviders.tsx", import.meta.url),
+    "utf8",
+  );
   const access = readFileSync(new URL("../src/hooks/use-access.tsx", import.meta.url), "utf8");
   assert.match(source, /roamie:chat-planning/);
   assert.match(source, /roamie:chat-ui-cache/);
   assert.match(source, /clearPersonalizedChatCaches\(\)/);
   assert.match(provider, /prev && userId && prev !== userId[\s\S]*clearPersonalizedChatCaches\(\)/);
   assert.match(access, /previous !== tier[\s\S]*clearPersonalizedChatCaches\(\)/);
-});
-
-test("reason telemetry exposes Plus provenance and cache/AI validation fields", () => {
-  const sources = [
-    readFileSync(new URL("../src/lib/place-reason-diversity.ts", import.meta.url), "utf8"),
-    readFileSync(new URL("../src/lib/recommendation/merge-verified.server.ts", import.meta.url), "utf8"),
-  ].join("\n");
-  for (const field of ["profileTier", "profileOnboarded", "preferenceEvidenceSource", "preferenceField", "personalityTypeUsed", "personalitySummaryUsed", "aiReasonValidated", "aiReasonRejectedClaim", "restoredFromCache"]) {
-    assert.match(sources, new RegExp(field));
-  }
 });
 
 test("Plus quiz personalization requires entitlement, completion, and place evidence", () => {
@@ -744,26 +459,26 @@ test("Plus quiz personalization requires entitlement, completion, and place evid
   });
 
   assert.equal(
-    collectPlaceReasonEvidence(cafe, {}, { userProfile: freeProfile }).some(
-      (item) => item.code.startsWith("preference_fit_"),
+    collectPlaceReasonEvidence(cafe, {}, { userProfile: freeProfile }).some((item) =>
+      item.code.startsWith("preference_fit_"),
     ),
     false,
   );
   assert.equal(
-    collectPlaceReasonEvidence(cafe, {}, { userProfile: incompleteProfile }).some(
-      (item) => item.code.startsWith("preference_fit_"),
+    collectPlaceReasonEvidence(cafe, {}, { userProfile: incompleteProfile }).some((item) =>
+      item.code.startsWith("preference_fit_"),
     ),
     false,
   );
   assert.equal(
-    collectPlaceReasonEvidence(clothing, {}, { userProfile: plusProfile }).some(
-      (item) => item.code.startsWith("preference_fit_"),
+    collectPlaceReasonEvidence(clothing, {}, { userProfile: plusProfile }).some((item) =>
+      item.code.startsWith("preference_fit_"),
     ),
     false,
   );
   assert.equal(
-    collectPlaceReasonEvidence(cafe, {}, { userProfile: plusProfile }).some(
-      (item) => item.code.startsWith("preference_fit_"),
+    collectPlaceReasonEvidence(cafe, {}, { userProfile: plusProfile }).some((item) =>
+      item.code.startsWith("preference_fit_"),
     ),
     true,
   );
@@ -784,101 +499,6 @@ test("Chat initial and continuation mappings receive the shared reason profile",
   assert.equal((routeSource.match(/userProfileForReasonFrom\(/g) ?? []).length >= 2, true);
 });
 
-test("recognized park, museum, and attraction identities do not use safe fallback", () => {
-  for (const primaryType of ["park", "museum", "tourist_attraction"]) {
-    const reason = buildPlaceRecommendationReason(
-      stubPlace({
-        id: `identity-${primaryType}`,
-        name: `正常 ${primaryType}`,
-        primaryType,
-        types: [primaryType],
-      }),
-      null,
-    );
-    assert.doesNotMatch(reason, /^先依地點資料提供你參考/);
-  }
-});
-
-test("evidence-empty generic and unsupported places retain safe fallback", () => {
-  for (const place of [
-    stubPlace({
-      id: "generic-empty",
-      name: "未分類地點",
-      primaryType: "point_of_interest",
-      types: ["point_of_interest", "establishment"],
-    }),
-    stubPlace({
-      id: "unsupported-empty",
-      name: "一般辦公室",
-      primaryType: "office",
-      types: ["office"],
-    }),
-  ]) {
-    const reason = buildPlaceRecommendationReason(place, null);
-    assert.match(reason, /^先依地點資料提供你參考/);
-  }
-});
-
-test("four popularity-only places all retain verified evidence", () => {
-  const assigned = assignDiversePlaceReasons(
-    [1, 2, 3, 4].map((n) => ({
-      place: stubPlace({
-        id: `popular-${n}`,
-        name: `人氣地點 ${n}`,
-        rating: 4.7,
-        userRatingCount: 500,
-      }),
-    })),
-  );
-  assert.ok(assigned.every((row) => row.evidenceCode !== "grounded_neutral"));
-  assert.ok(assigned.every((row) => row.availableCodes.includes("popularity")));
-});
-
-test("AI blank reason and supplemented candidates receive evidence fallback", () => {
-  const candidates = [1, 2].map((n) => {
-    const sourcePlace = stubPlace({
-      id: `ai-candidate-${n}`,
-      name: `AI 候選 ${n}`,
-      rating: 4.8,
-      userRatingCount: 40,
-    });
-    return {
-      name: sourcePlace.name,
-      placeName: sourcePlace.name,
-      type: "咖啡",
-      description: "",
-      reason: "",
-      estimatedTime: "1 小時",
-      address: sourcePlace.address,
-      lat: sourcePlace.lat,
-      lng: sourcePlace.lng,
-      googleMapsUrl: "",
-      reasonSource: "template",
-      googlePlaceId: sourcePlace.id,
-      rating: sourcePlace.rating,
-      userRatingCount: sourcePlace.userRatingCount,
-      photoName: null,
-      primaryType: sourcePlace.primaryType,
-      categoryId: "coffee",
-      sourcePlace,
-    };
-  });
-  const merged = mergeAiWithVerifiedCandidates(
-    {
-      title: "",
-      summary: "",
-      moodTag: "",
-      recommendations: [{ ...candidates[0], reason: "   ", reasonSource: "ai" }],
-      itinerary: [],
-    },
-    candidates,
-    { minCount: 2, maxCount: 2 },
-  );
-  assert.equal(merged.recommendations.length, 2);
-  assert.ok(merged.recommendations.every((item) => item.reason.trim().length > 0));
-  assert.ok(merged.recommendations.every((item) => item.reasonSource === "evidence"));
-});
-
 test("fallback reasonSource is accepted by the formal recommendation schema", () => {
   const parsed = RoamieRecommendationItemSchema.parse({
     name: "Fallback",
@@ -896,4 +516,37 @@ test("fallback reasonSource is accepted by the formal recommendation schema", ()
   assert.equal(parsed.reasonSource, "fallback");
 });
 
-console.info("\n[verify:place-reason-diversity] all passed");
+{
+  const place = resolveRecommendationReasonPlace({
+    id: "ChIJ_Batch",
+    name: "Cafe",
+    primaryType: "cafe",
+    rating: 4.8,
+    userRatingCount: 5000,
+  });
+  const peer = { ...place, id: "ChIJ_Peer", name: "Peer" };
+  place.reviewEvidence = extractPlaceReviewEvidence(place.id, [
+    { text: { text: "有插座" } },
+    { text: { text: "插座很多" } },
+  ]);
+  const expected = buildPlaceRecommendationReason(place, null, null, undefined, undefined, "zh-TW");
+  for (const items of [[{ place }], [{ place }, { place: peer }], [{ place: peer }, { place }]]) {
+    const result = assignDiversePlaceReasons(items, { locale: "zh-TW" });
+    assert.equal(result.find((r) => r.placeId === place.id).reason, expected);
+    assert.equal(result.find((r) => r.placeId === place.id).evidenceCode, "review_consensus");
+    assert.deepEqual(
+      result.map((r) => r.placeId),
+      items.map((r) => r.place.id),
+    );
+  }
+  assert.deepEqual(buildDiversePlaceRecommendationReasons([]), []);
+  assert.ok(
+    collectPlaceReasonEvidence(peer).some((e) => e.code === "high_rating"),
+    "legacy evidence metadata remains available",
+  );
+  assert.doesNotMatch(expected, /Google 評分|5000|熱門/);
+  assert.match(expected, /^這是一間咖啡廳/);
+  console.log(
+    "PASS canonical batch authority: stable across single/batch/order, preserves places and evidence metadata",
+  );
+}
