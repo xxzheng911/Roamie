@@ -70,7 +70,7 @@ test("1 identity leads", () => assert.match(reason(rich), /^這是一間咖啡�
 test("2 multiple positive evidence", () => assert.match(reason(rich), /多則.*插座/));
 test("3 single mention wording", () => {
   const r = reason(withReviews(["停車很方便"]));
-  assert.match(r, /一則/);
+  assert.match(r, /有評論提到/);
   assert.doesNotMatch(r, /多數|普遍|多則/);
 });
 test("4 independent reviews and duplicates", () => {

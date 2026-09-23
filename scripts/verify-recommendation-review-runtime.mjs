@@ -59,7 +59,7 @@ test("3 normalization retains distinct reviews", () =>
 const single = extractPlaceReviewEvidence(base.id, makeReviews(["有提供插座"]));
 test("4 single is weak evidence", () => assert.equal(single.signals[0].strength, "single"));
 test("5 single is not majority", () => {
-  assert.match(reason({ ...base, reviewEvidence: single }), /一則/);
+  assert.match(reason({ ...base, reviewEvidence: single }), /有評論提到/);
   assert.doesNotMatch(reason({ ...base, reviewEvidence: single }), /多數|多則/);
 });
 test("6 semantic dish equivalence", () =>

@@ -205,12 +205,13 @@ export function buildPlaceRecommendationReason(
   let core = intro + stop;
   if (chosen.length) {
     // Each claim retains its own strength: a single mention cannot borrow another topic's count.
+    let previousStrength = -1;
     const phrases = chosen.map((s) => {
       const strength =
         s.supportCount >= 3 && s.strength === "strong" ? 2 : s.supportCount >= 2 ? 1 : 0;
       const lead =
         i === 0
-          ? ["有一則提到", "有多則提到", "有多則一致提到"][strength]
+          ? ["有評論提到", "多則評論提到", "可取得的多則評論一致提到"][strength]
           : i === 1
             ? ["one mentions", "several mention", "several consistently mention"][strength]
             : i === 2
@@ -220,17 +221,20 @@ export function buildPlaceRecommendationReason(
                   "여러 리뷰에서 언급한 점은",
                   "여러 리뷰가 공통으로 언급한 점은",
                 ][strength];
-      return `${lead}${i === 0 || i === 2 ? "" : " "}${REVIEW_TOPIC_COPY[s.topic][i]}`;
+      // Only equal-strength Chinese clauses share a lead; mixed strengths stay explicit.
+      const shareLead = i === 0 && previousStrength === strength;
+      previousStrength = strength;
+      return `${shareLead ? "" : lead}${i === 0 || i === 2 ? "" : " "}${REVIEW_TOPIC_COPY[s.topic][i]}`;
     });
     const scope =
       i === 0
-        ? "可取得的評論中，"
+        ? ""
         : i === 1
           ? "In the available review sample, "
           : i === 2
             ? "取得できた口コミでは、"
             : "확인 가능한 리뷰 중 ";
-    core = `${intro}${i === 0 ? "，" : stop + " "}${scope}${phrases.join(i === 0 || i === 2 ? "；" : "; ")}${stop}`;
+    core = `${intro}${i === 0 ? "，" : stop + " "}${scope}${phrases.join(i === 0 ? "，" : i === 2 ? "；" : "; ")}${stop}`;
   } else {
     const claims = new Set(resolved.reasonClaimEvidence ?? []);
     const factual = claims.has("quiet_ambience")
