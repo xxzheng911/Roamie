@@ -15,7 +15,7 @@ import { isVerifiedGooglePlaceId } from "@/lib/home-nearby-eligibility";
 import type { Locale } from "@/lib/i18n/types";
 import type { PlaceResult } from "@/lib/place-result";
 import { resolveOpenNow } from "@/lib/is-recommendable-place";
-import { filterByExploreCategory, matchesCategory } from "@/lib/place-category";
+import { filterByExploreCategory, matchesCategory, resolveExploreSemanticEligibility } from "@/lib/place-category";
 
 export const EXPLORE_TIER12_MIN_RATING = 4.2;
 export const EXPLORE_TIER12_MIN_REVIEWS = 100;
@@ -48,9 +48,6 @@ export const EXPLORE_COFFEE_MIN_REVIEWS = EXPLORE_TIER12_MIN_REVIEWS;
 export type ExploreMapQualityTier = 1 | 2 | 3;
 
 const EXPLORE_DENIED_TYPES = new Set([
-  "park",
-  "national_park",
-  "botanical_garden",
   "water_point",
   "drinking_water",
   "atm",
@@ -434,6 +431,7 @@ export function passesExploreHardExclusions(
 ): boolean {
   const name = (place.name ?? "").trim();
   if (!name || name === "Unknown") return false;
+  if (!resolveExploreSemanticEligibility(place).eligible) return false;
   if (isBurialOrFuneralPlace(place)) return false;
   if (isLodgingPlace(place)) return false;
   if (options?.cityMode && !passesCityExploreTouristValue(place)) return false;
@@ -461,6 +459,7 @@ export function classifyExploreMapQualityTier(
   categoryId = "all",
   options?: { cityMode?: boolean },
 ): ExploreMapQualityTier | null {
+  if (!passesExploreHardExclusions(place, categoryId, options)) return null;
   if (categoryId === "coffee") {
     return classifyCoffeeExploreMapQualityTier(place);
   }

@@ -114,14 +114,14 @@ function RouterSsrManifestGuard() {
 }
 
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
-  beforeLoad: async () => {
+  beforeLoad: async ({ location }) => {
     if (typeof window === "undefined") return;
-    const path = readBrowserPathname().replace(/\/+$/, "") || "/";
+    const path = location.pathname.replace(/\/+$/, "") || "/";
     if (isAdminAuthBoundaryRoute(path)) return;
+    if (isPublicOnboardingBypassPath(path)) return;
     await loadOnboardingState();
     if (isOnboardingCompletedSync()) return;
     if (path === "/welcome" || path === "/onboarding") return;
-    if (isPublicOnboardingBypassPath(path)) return;
     if (path.startsWith("/auth/")) return;
     console.log("[ONBOARDING_GUARD] blocked home redirect", {
       source: "root-beforeLoad",

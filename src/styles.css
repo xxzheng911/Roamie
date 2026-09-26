@@ -300,20 +300,25 @@
     overflow-x: auto;
     overflow-y: hidden;
     overscroll-behavior-x: contain;
+    /* Settle on a whole card after either-axis gestures and sheet resizing. */
+    scroll-snap-type: x mandatory;
+    scroll-padding-inline: 1.5rem;
     padding-left: 1.5rem;
     padding-right: 1.5rem;
     padding-top: 0.25rem;
     padding-bottom: 0.25rem;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
-    touch-action: pan-x;
+    touch-action: pan-x pan-y;
   }
   .map-explore-cards::-webkit-scrollbar {
     display: none;
   }
   .map-explore-card-item {
-    flex: 0 0 17.25rem;
-    width: 17.25rem;
+    flex: 0 0 min(17.25rem, 100%);
+    width: min(17.25rem, 100%);
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
     height: 22.75rem;
     transform: none !important;
   }

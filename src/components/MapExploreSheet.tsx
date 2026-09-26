@@ -341,7 +341,7 @@ export const MapExploreSheet = forwardRef<MapExploreSheetHandle, Props>(function
       )}
       style={{
         height: resolvedH,
-        maxHeight: EXPANDED_MAX,
+        maxHeight: maxH > 0 ? maxH : EXPANDED_MAX,
         transition: isDragging ? "none" : SPRING_TRANSITION,
         backgroundColor: "var(--cream)",
       }}
@@ -369,12 +369,8 @@ export const MapExploreSheet = forwardRef<MapExploreSheetHandle, Props>(function
       </div>
 
       <div
-        className={cn(
-          "min-h-0 min-w-0 bg-cream",
-          detailOpen || open
-            ? "flex-1 overflow-y-auto overscroll-contain"
-            : "shrink-0 overflow-x-visible overflow-y-hidden",
-        )}
+        data-sheet-body-scroll
+        className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain bg-cream"
         style={{ WebkitOverflowScrolling: "touch", backgroundColor: "var(--cream)" }}
       >
         <div

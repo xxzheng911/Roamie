@@ -689,7 +689,7 @@ const exploreCategorySource = fs.readFileSync(
   "utf8",
 );
 assert.equal(
-  (exploreCategorySource.match(/console\.info\("\[EXPLORE_ALL_HYDRATION\]"/g) ?? []).length,
+  (exploreCategorySource.match(/devVerboseInfo\("\[EXPLORE_ALL_HYDRATION\]"/g) ?? []).length,
   2,
   "Explore All hydration must emit start and finalized diagnostics",
 );
@@ -697,7 +697,7 @@ const exploreRouteSource = fs.readFileSync(
   new URL("../src/routes/_app.map.tsx", import.meta.url),
   "utf8",
 );
-assert.match(exploreRouteSource, /console\.info\("\[EXPLORE_CATEGORY_AUTHORITY\]"/);
-assert.match(exploreRouteSource, /console\.info\("\[EXPLORE_ALL_HYDRATION_ENTRY\]"/);
+assert.match(exploreRouteSource, /devVerboseInfo\("\[EXPLORE_CATEGORY_AUTHORITY\]"/);
+assert.match(exploreRouteSource, /devVerboseInfo\("\[EXPLORE_ALL_HYDRATION_ENTRY\]"/);
 
 console.log("verify:nearby-runtime-contract passed");

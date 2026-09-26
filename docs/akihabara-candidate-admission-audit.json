@@ -1,0 +1,3948 @@
+{
+  "capturedAt": "2026-09-26T19:01:37.894221+00:00",
+  "note": "Fresh provider sample; semantic gate decisions, not ground-truth venue labels or device telemetry.",
+  "before": {
+    "total": 137,
+    "accepted": 88,
+    "rejected": 49,
+    "ambiguous": 29,
+    "thinAmbiguous": 5,
+    "thinAccepted": 4
+  },
+  "after": {
+    "total": 137,
+    "accepted": 96,
+    "rejected": 41,
+    "ambiguous": 29,
+    "thinAmbiguous": 5,
+    "thinAccepted": 0
+  },
+  "rows": [
+    {
+      "id": "ChIJ5d75LgCPGGARUd9ISdVgyT8",
+      "name": "Maletas",
+      "primaryType": "shopping_mall",
+      "types": [
+        "shopping_mall",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "maletas-search"
+      ],
+      "accepted": false,
+      "reason": "structural_identity_conflict",
+      "hardGate": false,
+      "ambiguous": true,
+      "thin": true,
+      "photos": 0,
+      "reviews": 0,
+      "hours": false,
+      "website": false,
+      "phone": false,
+      "tier": null,
+      "score": 149.11097252572654,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJRzg-RwCLGGARHvLMohkfXkE",
+      "name": "Maletas Tokyo",
+      "primaryType": "storage",
+      "types": [
+        "storage",
+        "point_of_interest",
+        "service",
+        "establishment"
+      ],
+      "sources": [
+        "maletas-search"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 0,
+      "hours": false,
+      "website": false,
+      "phone": false,
+      "tier": null,
+      "score": 112.81774010951634,
+      "beforeAccepted": false,
+      "beforeReason": "unproven_visitor_purpose"
+    },
+    {
+      "id": "ChIJCewJkL2LGGAR3Qmk0vCTGkg",
+      "name": "Tokyo Tower",
+      "primaryType": "observation_deck",
+      "types": [
+        "observation_deck",
+        "shopping_mall",
+        "art_gallery",
+        "landmark",
+        "tourist_attraction",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "maletas-search"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 100791,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 1030,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJy41cdb-LGGARDXkJxN53juo",
+      "name": "Times Parking",
+      "primaryType": "parking_lot",
+      "types": [
+        "parking_lot",
+        "parking",
+        "transportation_service",
+        "point_of_interest",
+        "service",
+        "establishment"
+      ],
+      "sources": [
+        "maletas-search"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 146,
+      "hours": true,
+      "website": true,
+      "phone": false,
+      "tier": null,
+      "score": 596,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJKX3mDwCPGGARZT6qFl6Bc4o",
+      "name": "Maleta",
+      "primaryType": "parking_lot",
+      "types": [
+        "parking_lot",
+        "parking",
+        "transportation_service",
+        "point_of_interest",
+        "service",
+        "establishment"
+      ],
+      "sources": [
+        "maletas-search"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 0,
+      "hours": false,
+      "website": false,
+      "phone": false,
+      "tier": null,
+      "score": 98.50603936005925,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJA_38Aq6NGGARzK6yT2lyYFA",
+      "name": "Luggage storage Tokyo Akihabara",
+      "primaryType": "storage",
+      "types": [
+        "shipping_service",
+        "storage",
+        "point_of_interest",
+        "service",
+        "establishment"
+      ],
+      "sources": [
+        "maletas-search"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 49,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": null,
+      "score": 706.1176928880208,
+      "beforeAccepted": false,
+      "beforeReason": "unproven_visitor_purpose"
+    },
+    {
+      "id": "ChIJuZ-Pf72LGGAROhDgREakQaI",
+      "name": "Tokyo Tower Motorcoach Parking Lot",
+      "primaryType": "parking_lot",
+      "types": [
+        "parking_lot",
+        "parking",
+        "transportation_service",
+        "point_of_interest",
+        "service",
+        "establishment"
+      ],
+      "sources": [
+        "maletas-search"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 41,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": null,
+      "score": 511,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJxcWbdQCPGGAR42I2EngI-V8",
+      "name": "TOPPA!!! BASE AKIBA（トッパ!!! ベース アキバ）",
+      "primaryType": "store",
+      "types": [
+        "gift_shop",
+        "store",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "shopping"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": true,
+      "thin": false,
+      "photos": 10,
+      "reviews": 8,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 467.6735772969024,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJx6LJSQCPGGAR3r9xXcW75EI",
+      "name": "fruits peaks ecute Akibahara Store",
+      "primaryType": "dessert_shop",
+      "types": [
+        "dessert_shop",
+        "confectionery",
+        "food_store",
+        "store",
+        "food",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "shopping"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 18,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 597.6396066499865,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJz4OlDwCPGGAR93jYiQWe4AI",
+      "name": "MICHIKA ecute Akihabara store",
+      "primaryType": "confectionery",
+      "types": [
+        "confectionery",
+        "pastry_shop",
+        "gift_shop",
+        "dessert_shop",
+        "bakery",
+        "food_store",
+        "store",
+        "food",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "shopping",
+        "food"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 2,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 701.5877071413366,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJKQXLAwCPGGARUs6PC5qNjrs",
+      "name": "RANMEISYA SWEETS FACTORY（ランメイシャ スイーツファクトリー）ecute秋葉原店",
+      "primaryType": "dessert_shop",
+      "types": [
+        "dessert_shop",
+        "confectionery",
+        "food_store",
+        "store",
+        "food",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "shopping"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 13,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 652.4494905061179,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJhZgRVgCPGGARNdcGgwm9Jgk",
+      "name": "はなまるキッチン エキュート秋葉原店",
+      "primaryType": "food_store",
+      "types": [
+        "deli",
+        "food_store",
+        "store",
+        "food",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "shopping"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 9,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 628.4535263823008,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJTy2rYQCPGGARJQ166eekmtI",
+      "name": "ecute Akihabara",
+      "primaryType": "shopping_mall",
+      "types": [
+        "shopping_mall",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "shopping",
+        "mall-only"
+      ],
+      "accepted": true,
+      "reason": "supported_commercial_identity",
+      "hardGate": true,
+      "ambiguous": true,
+      "thin": false,
+      "photos": 10,
+      "reviews": 33,
+      "hours": true,
+      "website": true,
+      "phone": false,
+      "tier": 3,
+      "score": 612.4426060177533,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJ-fe-_xyMGGARHBj5krVVJQM",
+      "name": "ミルクスタンド 秋葉原店",
+      "primaryType": "food_store",
+      "types": [
+        "food_store",
+        "store",
+        "food",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "shopping"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 326,
+      "hours": true,
+      "website": false,
+      "phone": true,
+      "tier": 3,
+      "score": 945.306687509249,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJD9F3emKPGGARsQsocGIiQHk",
+      "name": "Pico Crepe",
+      "primaryType": "dessert_shop",
+      "types": [
+        "dessert_shop",
+        "french_restaurant",
+        "european_restaurant",
+        "confectionery",
+        "food_store",
+        "store",
+        "restaurant",
+        "food",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "shopping",
+        "food"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 119,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 638.2877087753512,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJ88X_-qeOGGARQHGViudT8OI",
+      "name": "Milk Shop Luck Akihabara",
+      "primaryType": "food_store",
+      "types": [
+        "food_store",
+        "store",
+        "food",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "shopping"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 489,
+      "hours": true,
+      "website": true,
+      "phone": false,
+      "tier": 3,
+      "score": 1138.3444284273091,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJZ8XeDwCPGGARTRnUyEpCjBI",
+      "name": "ほんのり屋×marukome エキュート秋葉原店",
+      "primaryType": "korean_restaurant",
+      "types": [
+        "deli",
+        "food_store",
+        "store",
+        "korean_restaurant",
+        "restaurant",
+        "food",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "shopping",
+        "food"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 18,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 597.297415551279,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJh-vkvgOPGGARyrSUbL-Xcig",
+      "name": "NewDaysミニ 秋葉原1号",
+      "primaryType": "convenience_store",
+      "types": [
+        "convenience_store",
+        "food_store",
+        "store",
+        "food",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "shopping"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 11,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": null,
+      "score": 560.16098266129,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJm7MHJoONGGARp-_2AQ5WLEA",
+      "name": "NewDays KIOSK Akihabara Station Platform 6 East",
+      "primaryType": "convenience_store",
+      "types": [
+        "convenience_store",
+        "food_store",
+        "store",
+        "food",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "shopping"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 8,
+      "hours": true,
+      "website": true,
+      "phone": false,
+      "tier": null,
+      "score": 487.19262431952365,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJb1UxfgCPGGAR1aReO89Tzs8",
+      "name": "Love Live! Official Goods Store Floor 2F",
+      "primaryType": "gift_shop",
+      "types": [
+        "gift_shop",
+        "store",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "shopping"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 9,
+      "reviews": 2,
+      "hours": true,
+      "website": true,
+      "phone": false,
+      "tier": 3,
+      "score": 701.0444510216482,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJ9UDz8VmNGGAR09D8i6JwxDo",
+      "name": "3COINS",
+      "primaryType": "general_store",
+      "types": [
+        "general_store",
+        "food_store",
+        "store",
+        "food",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "shopping"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": true,
+      "thin": false,
+      "photos": 10,
+      "reviews": 114,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 723.0362079268859,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJG3VN13mPGGARrRwGubrH9OM",
+      "name": "Kenele Stand Akihabara Station",
+      "primaryType": "toy_store",
+      "types": [
+        "toy_store",
+        "store",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "shopping"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 83,
+      "hours": true,
+      "website": true,
+      "phone": false,
+      "tier": 3,
+      "score": 702.0555247048707,
+      "beforeAccepted": false,
+      "beforeReason": "unproven_visitor_purpose"
+    },
+    {
+      "id": "ChIJsY0xHACNGGARAMCiV2Jm-Qk",
+      "name": "BECK'S COFFEE SHOP エキュート秋葉原",
+      "primaryType": "food_store",
+      "types": [
+        "food_store",
+        "store",
+        "food",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "shopping"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 49,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 578.0050154141401,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJV_BRIACNGGARtmFbnKBLKu8",
+      "name": "NewDays エキュート秋葉原",
+      "primaryType": "convenience_store",
+      "types": [
+        "convenience_store",
+        "food_store",
+        "store",
+        "food",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "shopping"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 5,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": null,
+      "score": 484.0050154141401,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJ69dtVx2MGGARD70ECxf4E4Q",
+      "name": "Travel Service Center",
+      "primaryType": "train_ticket_office",
+      "types": [
+        "train_ticket_office",
+        "transportation_service",
+        "store",
+        "service",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "shopping"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 88,
+      "hours": true,
+      "website": true,
+      "phone": false,
+      "tier": null,
+      "score": 596.9592759161338,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJ12b2iqeOGGARXD7Sjf0Czf0",
+      "name": "Eyecity atré Akihabara 1",
+      "primaryType": "health",
+      "types": [
+        "health",
+        "store",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "shopping"
+      ],
+      "accepted": false,
+      "reason": "unproven_visitor_purpose",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 83,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": null,
+      "score": 721.9663666052486,
+      "beforeAccepted": false,
+      "beforeReason": "unproven_visitor_purpose"
+    },
+    {
+      "id": "ChIJPSFlGACPGGARh4-H0OfT8Yo",
+      "name": "とんかつ まい泉 エキュート秋葉原",
+      "primaryType": "deli",
+      "types": [
+        "deli",
+        "food_store",
+        "store",
+        "food",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "shopping"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 4,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 632.9484585833678,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJy09DJACNGGARbMLEHxY_6MA",
+      "name": "Akihabara Station Electric Town West Plaza",
+      "primaryType": "tourist_attraction",
+      "types": [
+        "tourist_attraction",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "culture"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 49,
+      "hours": true,
+      "website": false,
+      "phone": false,
+      "tier": 3,
+      "score": 657.5380028738808,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJ2eRq5YqNGGARnYGEBg4YPEQ",
+      "name": "アトレ秋葉原1ガラス広告",
+      "primaryType": "tourist_attraction",
+      "types": [
+        "tourist_attraction",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "culture"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 13,
+      "hours": true,
+      "website": false,
+      "phone": false,
+      "tier": 3,
+      "score": 641.2346544524794,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJaTabGQCNGGAR6Atnw93cqtQ",
+      "name": "モモーイ時計",
+      "primaryType": "tourist_attraction",
+      "types": [
+        "tourist_attraction",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "culture"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 1,
+      "hours": false,
+      "website": false,
+      "phone": false,
+      "tier": 3,
+      "score": 459.197734760948,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJr2SCTleNGGARK4KSnFxy0hs",
+      "name": "NEKOKAJI秋葉原",
+      "primaryType": "amusement_center",
+      "types": [
+        "amusement_center",
+        "tourist_attraction",
+        "cafe",
+        "food",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "culture"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 402,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 1068.303277006189,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJD7xVrNuNGGARTGvk1WfwdnI",
+      "name": "秋葉原歩行者天国",
+      "primaryType": "tourist_attraction",
+      "types": [
+        "tourist_attraction",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "culture"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 44,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 689.8684057344648,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJpQd7ZqiOGGARsRs2aimeHl4",
+      "name": "Akihabara Park",
+      "primaryType": "park",
+      "types": [
+        "park",
+        "tourist_attraction",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "culture"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 456,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 1001.8303826496764,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJS2dPOKiOGGAREfQsUq73wP0",
+      "name": "Yanagimori Shrine",
+      "primaryType": "shinto_shrine",
+      "types": [
+        "shinto_shrine",
+        "tourist_attraction",
+        "place_of_worship",
+        "association_or_organization",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "culture"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 839,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 1115.600335731749,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJqfcOdwCNGGARyIFpurTk21E",
+      "name": "オノデンボーヤ",
+      "primaryType": "tourist_attraction",
+      "types": [
+        "tourist_attraction",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "culture"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 5,
+      "reviews": 7,
+      "hours": false,
+      "website": false,
+      "phone": false,
+      "tier": 3,
+      "score": 612.4699981481001,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJrarMOaiOGGARrSdw26Nkboc",
+      "name": "ギャラリー アートマルシェ神田/gallery&space Artmarche KANDA",
+      "primaryType": "art_gallery",
+      "types": [
+        "art_gallery",
+        "store",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "culture",
+        "gallery-only"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 0,
+      "hours": false,
+      "website": false,
+      "phone": true,
+      "tier": 3,
+      "score": 155.23840127206086,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJ81QNuwKMGGARAQtFm57L2YI",
+      "name": "Shiloh",
+      "primaryType": "art_gallery",
+      "types": [
+        "art_gallery",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "culture",
+        "gallery-only"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 0,
+      "hours": false,
+      "website": false,
+      "phone": true,
+      "tier": 3,
+      "score": 155.03897427892366,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJZzSYoB2MGGARfBcicn7sx28",
+      "name": "Akihabara Electric Town",
+      "primaryType": null,
+      "types": [
+        "tourist_attraction",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "culture"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": true,
+      "thin": false,
+      "photos": 10,
+      "reviews": 9019,
+      "hours": false,
+      "website": true,
+      "phone": true,
+      "tier": 2,
+      "score": 1144.7203570410124,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJpSsEW6iOGGARWk8JntgvNMA",
+      "name": "Sakuma bridge child park",
+      "primaryType": "park",
+      "types": [
+        "park",
+        "tourist_attraction",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "culture"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 48,
+      "hours": true,
+      "website": false,
+      "phone": true,
+      "tier": 3,
+      "score": 552.6600681811941,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJ0-OhfkWNGGARYbcQGZZelIk",
+      "name": "UDXギャラリー（秋葉原）",
+      "primaryType": "event_venue",
+      "types": [
+        "art_gallery",
+        "event_venue",
+        "service",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "culture",
+        "gallery-only"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 73,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 687.1789967065009,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJQzEFbwCNGGARTyu7eV0eHcU",
+      "name": "CARD GALLERY",
+      "primaryType": "museum",
+      "types": [
+        "museum",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "culture"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 3,
+      "hours": true,
+      "website": true,
+      "phone": false,
+      "tier": 3,
+      "score": 487.0211099492134,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJ38FcL82NGGARQlP7U1-RBeg",
+      "name": "Grid9 レンタルスペース＆スタジオ 秋葉原",
+      "primaryType": "event_venue",
+      "types": [
+        "toy_store",
+        "real_estate_agency",
+        "art_gallery",
+        "event_venue",
+        "store",
+        "school",
+        "educational_institution",
+        "service",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "culture",
+        "gallery-only"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 1,
+      "hours": true,
+      "website": true,
+      "phone": false,
+      "tier": null,
+      "score": 694.7929248581328,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJod60-KiOGGARzcq38CBviUQ",
+      "name": "Izumi Bridge",
+      "primaryType": "bridge",
+      "types": [
+        "bridge",
+        "tourist_attraction",
+        "transportation_service",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "culture"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 78,
+      "hours": true,
+      "website": false,
+      "phone": true,
+      "tier": 3,
+      "score": 631.642558284098,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJz3TS9aaOGGARwdZXzammqSQ",
+      "name": "YKK",
+      "primaryType": "event_venue",
+      "types": [
+        "event_venue",
+        "art_gallery",
+        "museum",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "culture",
+        "gallery-only"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 62,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 655.0391764092573,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJs4ahKACNGGAR37DMBvx21OY",
+      "name": "おでん缶自販機",
+      "primaryType": "tourist_attraction",
+      "types": [
+        "tourist_attraction",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "culture"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 4,
+      "reviews": 12,
+      "hours": false,
+      "website": false,
+      "phone": false,
+      "tier": 3,
+      "score": 634.8461627220074,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJmahpf0CMGGARcOSJyj78VrM",
+      "name": "TokyoMTG",
+      "primaryType": "store",
+      "types": [
+        "toy_store",
+        "cafe",
+        "art_gallery",
+        "store",
+        "food",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "culture",
+        "gallery-only"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": true,
+      "thin": false,
+      "photos": 10,
+      "reviews": 510,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 1162.7902114135322,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJF-kS1ByMGGARfX9TAILqL3w",
+      "name": "Manseibashi Station Remains",
+      "primaryType": "historical_landmark",
+      "types": [
+        "historical_landmark",
+        "tourist_attraction",
+        "historical_place",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "culture"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 417,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 1029.7818055854889,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJl4JyeQCNGGARALwE_cYkA2E",
+      "name": "そばいち エキュート秋葉原",
+      "primaryType": "restaurant",
+      "types": [
+        "restaurant",
+        "point_of_interest",
+        "food",
+        "establishment"
+      ],
+      "sources": [
+        "food"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 262,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 811.7249024930328,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJq7-pdgCPGGARUK2oCawsln0",
+      "name": "羅家 東京豚饅 エキュート秋葉原店",
+      "primaryType": "meal_takeaway",
+      "types": [
+        "meal_takeaway",
+        "restaurant",
+        "point_of_interest",
+        "food",
+        "establishment"
+      ],
+      "sources": [
+        "food"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 82,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 681.4715839310372,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJtdtCcwCPGGARQvc_5i_rcnI",
+      "name": "エイミーサンドウィッチ エキュート秋葉原店",
+      "primaryType": "sandwich_shop",
+      "types": [
+        "sandwich_shop",
+        "restaurant",
+        "point_of_interest",
+        "food",
+        "establishment"
+      ],
+      "sources": [
+        "food"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 17,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 636.3834187824793,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJjYGn8KeOGGAR1YP-FzcGPOk",
+      "name": "Shintagoto Soba",
+      "primaryType": "restaurant",
+      "types": [
+        "restaurant",
+        "point_of_interest",
+        "food",
+        "establishment"
+      ],
+      "sources": [
+        "food"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 1628,
+      "hours": true,
+      "website": false,
+      "phone": true,
+      "tier": 3,
+      "score": 1059.3087788479615,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJl7SSVA2PGGARZ0joN9neMEY",
+      "name": "ラポート 秋葉原",
+      "primaryType": "dessert_restaurant",
+      "types": [
+        "dessert_restaurant",
+        "restaurant",
+        "point_of_interest",
+        "food",
+        "establishment"
+      ],
+      "sources": [
+        "food"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 12,
+      "hours": true,
+      "website": true,
+      "phone": false,
+      "tier": 3,
+      "score": 581.1759954127241,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJ2bc1pNmNGGARHCB_sZDGO6M",
+      "name": "Vegan Noodle T's Tantan Ecuto Akihabara",
+      "primaryType": "vegan_restaurant",
+      "types": [
+        "vegan_restaurant",
+        "vegetarian_restaurant",
+        "restaurant",
+        "point_of_interest",
+        "food",
+        "establishment"
+      ],
+      "sources": [
+        "food"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 32,
+      "hours": true,
+      "website": false,
+      "phone": true,
+      "tier": 3,
+      "score": 720.9467508130916,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJ9TdLK3ePGGAR791KYjjP3g4",
+      "name": "肉そばとおにぎり 一のや アキバトリム店",
+      "primaryType": "restaurant",
+      "types": [
+        "restaurant",
+        "point_of_interest",
+        "food",
+        "establishment"
+      ],
+      "sources": [
+        "food"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 186,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 684.9135342113897,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJC24UNgCPGGAR-7N7Wmj8EWk",
+      "name": "Sekiya Spaghetti EXPRESS ecute Akihabara",
+      "primaryType": "italian_restaurant",
+      "types": [
+        "fast_food_restaurant",
+        "italian_restaurant",
+        "european_restaurant",
+        "restaurant",
+        "point_of_interest",
+        "food",
+        "establishment"
+      ],
+      "sources": [
+        "food"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 80,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 648.8445803484959,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJGZx2TACPGGARKU-QCcedv-c",
+      "name": "タイ料理研究所エキュート秋葉原店",
+      "primaryType": "thai_restaurant",
+      "types": [
+        "thai_restaurant",
+        "restaurant",
+        "point_of_interest",
+        "food",
+        "establishment"
+      ],
+      "sources": [
+        "food"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 75,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 703.8143598791198,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJFds9FACPGGARnpB5kQbhPzs",
+      "name": "TOKYO豚骨BASE エキュート秋葉原",
+      "primaryType": "ramen_restaurant",
+      "types": [
+        "ramen_restaurant",
+        "japanese_restaurant",
+        "restaurant",
+        "point_of_interest",
+        "food",
+        "establishment"
+      ],
+      "sources": [
+        "food"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 105,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 693.7807178898637,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJOQk0CaiOGGARIxTbDZJA6Ag",
+      "name": "YAKINIKU TORAJI",
+      "primaryType": "yakiniku_restaurant",
+      "types": [
+        "yakiniku_restaurant",
+        "korean_barbecue_restaurant",
+        "korean_restaurant",
+        "japanese_restaurant",
+        "restaurant",
+        "point_of_interest",
+        "food",
+        "establishment"
+      ],
+      "sources": [
+        "food"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 346,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 964.5523785291081,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJbwVn96eOGGARrPvwl9457c4",
+      "name": "Starbucks Coffee - atré Akihabara 1",
+      "primaryType": "coffee_shop",
+      "types": [
+        "coffee_shop",
+        "cafe",
+        "food_store",
+        "store",
+        "point_of_interest",
+        "food",
+        "establishment"
+      ],
+      "sources": [
+        "food"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 642,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 1088.5414641744576,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJ1cy6vAuNGGARGf05CK0fNyc",
+      "name": "Cow Cow Kitchen Akihabara",
+      "primaryType": "pastry_shop",
+      "types": [
+        "pastry_shop",
+        "gift_shop",
+        "chocolate_shop",
+        "candy_store",
+        "dessert_restaurant",
+        "meal_takeaway",
+        "dessert_shop",
+        "confectionery",
+        "cake_shop",
+        "wholesaler",
+        "bakery",
+        "food_store",
+        "store",
+        "service",
+        "restaurant",
+        "manufacturer",
+        "point_of_interest",
+        "food",
+        "establishment"
+      ],
+      "sources": [
+        "food"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 347,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": null,
+      "score": 1005.4756968671037,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJbwVn96eOGGARKpZdkIub6Ao",
+      "name": "FLO PRESTIGE Akihabara Station Shop",
+      "primaryType": "cake_shop",
+      "types": [
+        "cake_shop",
+        "wholesaler",
+        "bakery",
+        "food_store",
+        "store",
+        "service",
+        "manufacturer",
+        "point_of_interest",
+        "food",
+        "establishment"
+      ],
+      "sources": [
+        "food"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 94,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": null,
+      "score": 622.4727859661344,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJFa5T2GqNGGARmSiHDgcJFf8",
+      "name": "Marugame Seimen atre Akihabara 1 Shop",
+      "primaryType": "japanese_restaurant",
+      "types": [
+        "noodle_shop",
+        "japanese_restaurant",
+        "restaurant",
+        "point_of_interest",
+        "food",
+        "establishment"
+      ],
+      "sources": [
+        "food"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 599,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 1028.44518471505,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJVUsHWEKNGGAR1ucj7kacXZ4",
+      "name": "Jonathan's Akihabara",
+      "primaryType": "family_restaurant",
+      "types": [
+        "family_restaurant",
+        "western_restaurant",
+        "pizza_restaurant",
+        "meal_delivery",
+        "food_delivery",
+        "meal_takeaway",
+        "breakfast_restaurant",
+        "restaurant",
+        "point_of_interest",
+        "food",
+        "establishment"
+      ],
+      "sources": [
+        "food"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 471,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 1079.3870371216512,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJbZjXKvKNGGAR3uVsiHX-ZDY",
+      "name": "SARUTAHIKO COFFEE atre AKIHABARA 1",
+      "primaryType": "food_store",
+      "types": [
+        "cafe",
+        "food_store",
+        "store",
+        "point_of_interest",
+        "food",
+        "establishment"
+      ],
+      "sources": [
+        "food"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 677,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 1108.371942654115,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJZVsWpd-PGGAR2X-ratqDEaM",
+      "name": "だん家本社",
+      "primaryType": "corporate_office",
+      "types": [
+        "corporate_office",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "structural-diagnostic"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 6,
+      "hours": false,
+      "website": false,
+      "phone": true,
+      "tier": null,
+      "score": 534.2035710999421,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJ6wpiDqiOGGARRdOrPueRXkk",
+      "name": "Times TX Akihabara",
+      "primaryType": "parking_lot",
+      "types": [
+        "parking_lot",
+        "parking",
+        "transportation_service",
+        "service",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "structural-diagnostic"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 8,
+      "reviews": 39,
+      "hours": true,
+      "website": true,
+      "phone": false,
+      "tier": null,
+      "score": 626.8586662829352,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJNUusHviNGGAR6985AjyRuWs",
+      "name": "株式会社リアルアキバ・コミュニケーションズ",
+      "primaryType": "corporate_office",
+      "types": [
+        "corporate_office",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "structural-diagnostic"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 2,
+      "reviews": 0,
+      "hours": true,
+      "website": true,
+      "phone": false,
+      "tier": null,
+      "score": 197.57702710774927,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJNa3gdKiOGGAR182VddN0vVs",
+      "name": "神田花岡町自動二輪車駐車場",
+      "primaryType": "parking",
+      "types": [
+        "parking",
+        "transportation_service",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "structural-diagnostic"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 17,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": null,
+      "score": 584.5334104119781,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJC9SAGqiOGGARTkke5uL_uuQ",
+      "name": "三石ジャパン㈱",
+      "primaryType": "corporate_office",
+      "types": [
+        "corporate_office",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "structural-diagnostic"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 0,
+      "hours": false,
+      "website": true,
+      "phone": true,
+      "tier": null,
+      "score": 157.4207150390535,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJiUGeTACPGGARhh6qFOC-9zI",
+      "name": "株式会社トラストハブ",
+      "primaryType": "corporate_office",
+      "types": [
+        "corporate_office",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "structural-diagnostic"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 0,
+      "hours": false,
+      "website": true,
+      "phone": false,
+      "tier": null,
+      "score": 157.39887813294172,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJtwDqaR2MGGARPkzMHnZ8D-o",
+      "name": "株式会社アトレーション",
+      "primaryType": "corporate_office",
+      "types": [
+        "corporate_office",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "structural-diagnostic"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 0,
+      "hours": false,
+      "website": false,
+      "phone": false,
+      "tier": null,
+      "score": 157.42150091578728,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJMUgeXCqPGGARPPM7YMQNxvE",
+      "name": "Chomuchomuakihabaratsukigime Parking Lot",
+      "primaryType": "parking_lot",
+      "types": [
+        "parking_lot",
+        "parking",
+        "real_estate_agency",
+        "transportation_service",
+        "service",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "structural-diagnostic"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 1,
+      "reviews": 1,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": null,
+      "score": 498.38739431129216,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJt1-tQQCNGGARrlnzlilFl4k",
+      "name": "真光無線株式会社",
+      "primaryType": "corporate_office",
+      "types": [
+        "corporate_office",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "structural-diagnostic"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 1,
+      "reviews": 0,
+      "hours": false,
+      "website": false,
+      "phone": false,
+      "tier": null,
+      "score": 197.3126841569976,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJ42kgEwCNGGARW_BTPKh-cPU",
+      "name": "トモカ電気㈱",
+      "primaryType": "corporate_office",
+      "types": [
+        "corporate_office",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "structural-diagnostic"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 0,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": null,
+      "score": 157.2606395995818,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJtW33aB2MGGARX3fTfCoO750",
+      "name": "㈱アイシーズ",
+      "primaryType": "corporate_office",
+      "types": [
+        "corporate_office",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "structural-diagnostic"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 0,
+      "hours": true,
+      "website": true,
+      "phone": false,
+      "tier": null,
+      "score": 157.29234856043007,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJBU5tGqiOGGAR6XhJqVUgZ64",
+      "name": "Motonak",
+      "primaryType": "corporate_office",
+      "types": [
+        "corporate_office",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "structural-diagnostic"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 0,
+      "hours": false,
+      "website": true,
+      "phone": false,
+      "tier": null,
+      "score": 157.20987930772418,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJKX4FGqiOGGAR_enQJ9OBvLk",
+      "name": "㈱デジタル・ウント・メア",
+      "primaryType": "corporate_office",
+      "types": [
+        "corporate_office",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "structural-diagnostic"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 0,
+      "hours": false,
+      "website": true,
+      "phone": false,
+      "tier": null,
+      "score": 157.119686210224,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJKX4FGqiOGGARSdlE5K72quo",
+      "name": "N2㈱",
+      "primaryType": "corporate_office",
+      "types": [
+        "corporate_office",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "structural-diagnostic"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 0,
+      "hours": false,
+      "website": false,
+      "phone": true,
+      "tier": null,
+      "score": 157.119686210224,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJey8FGqiOGGARqFEi9ldtN0A",
+      "name": "㈱セールスエッジ",
+      "primaryType": "corporate_office",
+      "types": [
+        "corporate_office",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "structural-diagnostic"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 0,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": null,
+      "score": 157.119686210224,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJq6oaGqiOGGARiSWM7bOUfPA",
+      "name": "株式会社グリートリンク",
+      "primaryType": "corporate_office",
+      "types": [
+        "corporate_office",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "structural-diagnostic"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 0,
+      "hours": false,
+      "website": true,
+      "phone": false,
+      "tier": null,
+      "score": 157.1152832124045,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJq6oaGqiOGGARMaQyW6jdw0I",
+      "name": "合同会社 Flypot（フライポット）",
+      "primaryType": "corporate_office",
+      "types": [
+        "corporate_office",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "structural-diagnostic"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 0,
+      "hours": false,
+      "website": true,
+      "phone": false,
+      "tier": null,
+      "score": 157.1152832124045,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJfb3pkZGPGGARS72csVcU8SA",
+      "name": "Hà Hà Jp Real Estate",
+      "primaryType": "corporate_office",
+      "types": [
+        "corporate_office",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "structural-diagnostic"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 0,
+      "hours": false,
+      "website": false,
+      "phone": false,
+      "tier": null,
+      "score": 157.1152832124045,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJYX_83HCPGGARs6Up9_JxHvI",
+      "name": "Raiseone㈱",
+      "primaryType": "corporate_office",
+      "types": [
+        "corporate_office",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "structural-diagnostic"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 2,
+      "reviews": 0,
+      "hours": true,
+      "website": true,
+      "phone": false,
+      "tier": null,
+      "score": 197.1152832124045,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJ8dWlkcCPGGAR69a8HdYLewM",
+      "name": "㈱Ocean Map",
+      "primaryType": "corporate_office",
+      "types": [
+        "corporate_office",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "structural-diagnostic"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 0,
+      "hours": false,
+      "website": false,
+      "phone": false,
+      "tier": null,
+      "score": 157.1152832124045,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJN2UoRR2MGGARPrpOSvznx7o",
+      "name": "atré Akihabara 1",
+      "primaryType": "shopping_mall",
+      "types": [
+        "shopping_mall",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "mall-only"
+      ],
+      "accepted": true,
+      "reason": "supported_commercial_identity",
+      "hardGate": true,
+      "ambiguous": true,
+      "thin": false,
+      "photos": 10,
+      "reviews": 5659,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 1078.6311677278218,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJC7faDqiOGGARl1Mt2NF5m54",
+      "name": "AKIBA TOLIM",
+      "primaryType": "shopping_mall",
+      "types": [
+        "shopping_mall",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "mall-only"
+      ],
+      "accepted": true,
+      "reason": "supported_commercial_identity",
+      "hardGate": true,
+      "ambiguous": true,
+      "thin": false,
+      "photos": 10,
+      "reviews": 1453,
+      "hours": true,
+      "website": true,
+      "phone": false,
+      "tier": 3,
+      "score": 1078.3380324042516,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJcR0LSwCPGGAR0TVjGDFX7hQ",
+      "name": "TX秋葉原駅A1",
+      "primaryType": "shopping_mall",
+      "types": [
+        "shopping_mall",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "mall-only"
+      ],
+      "accepted": false,
+      "reason": "unproven_commercial_destination",
+      "hardGate": false,
+      "ambiguous": true,
+      "thin": true,
+      "photos": 4,
+      "reviews": 1,
+      "hours": false,
+      "website": false,
+      "phone": false,
+      "tier": null,
+      "score": 699.1812237069233,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJ__-AdayOGGAR6EGPwvcpzTA",
+      "name": "Akihabara Radio Kaikan",
+      "primaryType": "shopping_mall",
+      "types": [
+        "shopping_mall",
+        "store",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "mall-only"
+      ],
+      "accepted": true,
+      "reason": "supported_commercial_identity",
+      "hardGate": true,
+      "ambiguous": true,
+      "thin": false,
+      "photos": 10,
+      "reviews": 7872,
+      "hours": true,
+      "website": true,
+      "phone": false,
+      "tier": 3,
+      "score": 1127.1856719379293,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJoVCk6XuNGGARwqoQBpk5Yrw",
+      "name": "秋葉原部品市場",
+      "primaryType": "shopping_mall",
+      "types": [
+        "shopping_mall",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "mall-only"
+      ],
+      "accepted": true,
+      "reason": "supported_commercial_identity",
+      "hardGate": true,
+      "ambiguous": true,
+      "thin": false,
+      "photos": 1,
+      "reviews": 2,
+      "hours": true,
+      "website": false,
+      "phone": false,
+      "tier": 3,
+      "score": 449.18917153392806,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJRRWPqAKMGGARlquVjBJDSeY",
+      "name": "New Akihabara Center",
+      "primaryType": "shopping_mall",
+      "types": [
+        "shopping_mall",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "mall-only"
+      ],
+      "accepted": true,
+      "reason": "supported_commercial_identity",
+      "hardGate": true,
+      "ambiguous": true,
+      "thin": false,
+      "photos": 10,
+      "reviews": 233,
+      "hours": true,
+      "website": false,
+      "phone": true,
+      "tier": 3,
+      "score": 809.9672593603539,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJjUTGOACPGGARJeA7wEjIhrQ",
+      "name": "ヨドバシAKIBAビル",
+      "primaryType": "shopping_mall",
+      "types": [
+        "shopping_mall",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "mall-only"
+      ],
+      "accepted": false,
+      "reason": "structural_identity_conflict",
+      "hardGate": false,
+      "ambiguous": true,
+      "thin": true,
+      "photos": 0,
+      "reviews": 0,
+      "hours": false,
+      "website": false,
+      "phone": false,
+      "tier": null,
+      "score": 156.8542926136972,
+      "beforeAccepted": false,
+      "beforeReason": "structural_identity_conflict"
+    },
+    {
+      "id": "ChIJq6ofQB2MGGARLly3_r8db0M",
+      "name": "Akihabara Denpa Kaikan",
+      "primaryType": "shopping_mall",
+      "types": [
+        "shopping_mall",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "mall-only"
+      ],
+      "accepted": true,
+      "reason": "supported_commercial_identity",
+      "hardGate": true,
+      "ambiguous": true,
+      "thin": false,
+      "photos": 10,
+      "reviews": 37,
+      "hours": true,
+      "website": true,
+      "phone": false,
+      "tier": 3,
+      "score": 653.6485331907252,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJ71xrQB2MGGAREemYgeK3Jb4",
+      "name": "Akihabara Radio Center",
+      "primaryType": "shopping_mall",
+      "types": [
+        "shopping_mall",
+        "store",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "mall-only"
+      ],
+      "accepted": true,
+      "reason": "supported_commercial_identity",
+      "hardGate": true,
+      "ambiguous": true,
+      "thin": false,
+      "photos": 10,
+      "reviews": 881,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 1106.4662723948713,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJneOucKiOGGARh9QMapkLl9A",
+      "name": "atré Akihabara 2",
+      "primaryType": "shopping_mall",
+      "types": [
+        "shopping_mall",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "mall-only"
+      ],
+      "accepted": true,
+      "reason": "supported_commercial_identity",
+      "hardGate": true,
+      "ambiguous": true,
+      "thin": false,
+      "photos": 10,
+      "reviews": 728,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 1066.4578697332802,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJP-akfxGNGGAR8h9-E2uhZEk",
+      "name": "AKIBA FAN CUBE",
+      "primaryType": "event_venue",
+      "types": [
+        "event_venue",
+        "shopping_mall",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "mall-only"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 12,
+      "hours": true,
+      "website": true,
+      "phone": false,
+      "tier": 3,
+      "score": 488.4208962025113,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJ7_0XhqeOGGARm_hwQNoknoA",
+      "name": "アキハバラ房の駅",
+      "primaryType": "store",
+      "types": [
+        "gift_shop",
+        "shopping_mall",
+        "store",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "mall-only"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": true,
+      "thin": false,
+      "photos": 10,
+      "reviews": 35,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 641.4370468849529,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJb6zFhaeOGGARCzV3aiBjDcc",
+      "name": "CHABARA AKI-OKA MARCHE",
+      "primaryType": "shopping_mall",
+      "types": [
+        "shopping_mall",
+        "store",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "mall-only"
+      ],
+      "accepted": true,
+      "reason": "supported_commercial_identity",
+      "hardGate": true,
+      "ambiguous": true,
+      "thin": false,
+      "photos": 10,
+      "reviews": 1456,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 1106.4349046705142,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJ60nPGh2MGGARbgfxcs7Im1U",
+      "name": "Tokyo Radio Department Store Shops",
+      "primaryType": "shopping_mall",
+      "types": [
+        "shopping_mall",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "mall-only"
+      ],
+      "accepted": true,
+      "reason": "supported_commercial_identity",
+      "hardGate": true,
+      "ambiguous": true,
+      "thin": false,
+      "photos": 10,
+      "reviews": 728,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 1114.9568691978884,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJBdknPgCPGGARjpmSMR633qU",
+      "name": "メトロピア秋葉原",
+      "primaryType": "shopping_mall",
+      "types": [
+        "shopping_mall",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "mall-only"
+      ],
+      "accepted": false,
+      "reason": "unproven_commercial_destination",
+      "hardGate": false,
+      "ambiguous": true,
+      "thin": true,
+      "photos": 0,
+      "reviews": 0,
+      "hours": false,
+      "website": false,
+      "phone": false,
+      "tier": null,
+      "score": 154.7032406110274,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJV5YIVXaPGGARm8O15TmaX2k",
+      "name": "SEEKBASE AKI-OKA MANUFACTURE",
+      "primaryType": "shopping_mall",
+      "types": [
+        "shopping_mall",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "mall-only"
+      ],
+      "accepted": true,
+      "reason": "supported_commercial_identity",
+      "hardGate": true,
+      "ambiguous": true,
+      "thin": false,
+      "photos": 10,
+      "reviews": 120,
+      "hours": true,
+      "website": true,
+      "phone": false,
+      "tier": 3,
+      "score": 724.4012155253487,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJBSBjAACPGGARkPl4qI5ZtHU",
+      "name": "HOP ON",
+      "primaryType": "shopping_mall",
+      "types": [
+        "shopping_mall",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "mall-only"
+      ],
+      "accepted": false,
+      "reason": "unproven_commercial_destination",
+      "hardGate": false,
+      "ambiguous": true,
+      "thin": true,
+      "photos": 0,
+      "reviews": 0,
+      "hours": false,
+      "website": false,
+      "phone": false,
+      "tier": null,
+      "score": 153.90709654772175,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJJzLFqh2MGGARllaKkFikT0w",
+      "name": "神林ビル",
+      "primaryType": "shopping_mall",
+      "types": [
+        "shopping_mall",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "mall-only"
+      ],
+      "accepted": true,
+      "reason": "supported_commercial_identity",
+      "hardGate": true,
+      "ambiguous": true,
+      "thin": false,
+      "photos": 2,
+      "reviews": 10,
+      "hours": true,
+      "website": false,
+      "phone": false,
+      "tier": 3,
+      "score": 493.5975538344207,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJ34MW1hyMGGARsJ1e3aP3xS4",
+      "name": "mAAch ecute Kanda Manseibashi",
+      "primaryType": "shopping_mall",
+      "types": [
+        "shopping_mall",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "mall-only"
+      ],
+      "accepted": true,
+      "reason": "supported_commercial_identity",
+      "hardGate": true,
+      "ambiguous": true,
+      "thin": false,
+      "photos": 10,
+      "reviews": 1972,
+      "hours": true,
+      "website": true,
+      "phone": false,
+      "tier": 3,
+      "score": 1083.3726295539714,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJKZmlzqaOGGARHY-0ZSxS2jQ",
+      "name": "7-Eleven",
+      "primaryType": "convenience_store",
+      "types": [
+        "convenience_store",
+        "food_store",
+        "store",
+        "point_of_interest",
+        "food",
+        "establishment"
+      ],
+      "sources": [
+        "north-shopping"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 30,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": null,
+      "score": 483.95947092789874,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJCU5M-JaPGGARwXoPwSGainU",
+      "name": "GALLERY BELLFLOWER Produced By HIRAMATSU",
+      "primaryType": "jewelry_store",
+      "types": [
+        "jewelry_store",
+        "store",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "north-shopping"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 0,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 143.7058733139677,
+      "beforeAccepted": false,
+      "beforeReason": "unproven_visitor_purpose"
+    },
+    {
+      "id": "ChIJJ3RcvgWPGGARnjOG4NJrsS4",
+      "name": "Seven Bank ATM",
+      "primaryType": "atm",
+      "types": [
+        "atm",
+        "bank",
+        "finance",
+        "store",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "north-shopping"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 2,
+      "reviews": 0,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": null,
+      "score": 183.9095776498594,
+      "beforeAccepted": false,
+      "beforeReason": "unproven_visitor_purpose"
+    },
+    {
+      "id": "ChIJGwUSnkWPGGAReSnxouAgdPA",
+      "name": "VIZIO",
+      "primaryType": "store",
+      "types": [
+        "store",
+        "service",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "north-shopping"
+      ],
+      "accepted": true,
+      "reason": "supported_commercial_identity",
+      "hardGate": true,
+      "ambiguous": true,
+      "thin": false,
+      "photos": 10,
+      "reviews": 7,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 660.8222747584516,
+      "beforeAccepted": false,
+      "beforeReason": "unproven_visitor_purpose"
+    },
+    {
+      "id": "ChIJyT8jNtuPGGARp6szve1KWvU",
+      "name": "御徒町フェニックスビル",
+      "primaryType": "jewelry_store",
+      "types": [
+        "jewelry_store",
+        "store",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "north-shopping"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 0,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 143.8307580106854,
+      "beforeAccepted": false,
+      "beforeReason": "unproven_visitor_purpose"
+    },
+    {
+      "id": "ChIJ5YQ0KKGOGGARhX_qWvvrPR4",
+      "name": "BonCoeur御徒町店",
+      "primaryType": "bakery",
+      "types": [
+        "bakery",
+        "food_store",
+        "store",
+        "point_of_interest",
+        "food",
+        "establishment"
+      ],
+      "sources": [
+        "north-shopping"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 124,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 737.8329452715572,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJse1eNKGOGGARhUQpkCi3NtY",
+      "name": "ポルシャジャパン株式会社",
+      "primaryType": "store",
+      "types": [
+        "store",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "north-shopping"
+      ],
+      "accepted": false,
+      "reason": "unproven_commercial_destination",
+      "hardGate": false,
+      "ambiguous": true,
+      "thin": false,
+      "photos": 0,
+      "reviews": 0,
+      "hours": false,
+      "website": false,
+      "phone": true,
+      "tier": null,
+      "score": 143.07517119033764,
+      "beforeAccepted": false,
+      "beforeReason": "unproven_visitor_purpose"
+    },
+    {
+      "id": "ChIJbdaFKaGOGGAR6XsyQYORl-8",
+      "name": "エーワン",
+      "primaryType": "clothing_store",
+      "types": [
+        "clothing_store",
+        "store",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "north-shopping"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 0,
+      "hours": true,
+      "website": false,
+      "phone": false,
+      "tier": 3,
+      "score": 144.40006243000056,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJ-73AO6GOGGARMwgalWDTXMc",
+      "name": "STAR JAPAN Co.,Ltd.",
+      "primaryType": "wholesaler",
+      "types": [
+        "jewelry_store",
+        "wholesaler",
+        "store",
+        "service",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "north-shopping"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 0,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": null,
+      "score": 142.36436406988926,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJ500BDHWNGGARcezXbLmHskw",
+      "name": "㈱ライフライク",
+      "primaryType": "store",
+      "types": [
+        "pet_care",
+        "store",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "north-shopping"
+      ],
+      "accepted": true,
+      "reason": "supported_commercial_identity",
+      "hardGate": true,
+      "ambiguous": true,
+      "thin": false,
+      "photos": 3,
+      "reviews": 7,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 519.3643640698892,
+      "beforeAccepted": false,
+      "beforeReason": "unproven_visitor_purpose"
+    },
+    {
+      "id": "ChIJA3pzqoiLGGARAe4GYwVIKwY",
+      "name": "Soki",
+      "primaryType": "service",
+      "types": [
+        "store",
+        "service",
+        "manufacturer",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "north-shopping"
+      ],
+      "accepted": false,
+      "reason": "unproven_visitor_purpose",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 0,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": null,
+      "score": 142.36436406988926,
+      "beforeAccepted": false,
+      "beforeReason": "unproven_visitor_purpose"
+    },
+    {
+      "id": "ChIJK5-yyqaOGGAR3A4UIvaQOdg",
+      "name": "㈱上野襖紙店",
+      "primaryType": "home_goods_store",
+      "types": [
+        "home_goods_store",
+        "store",
+        "service",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "north-shopping"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 1,
+      "hours": true,
+      "website": false,
+      "phone": true,
+      "tier": null,
+      "score": 644.1265536515766,
+      "beforeAccepted": false,
+      "beforeReason": "non_visitor_type"
+    },
+    {
+      "id": "ChIJ3dHz8qOOGGAR2Lb2wFQwZ98",
+      "name": "㈱ケンテックス ジャパン",
+      "primaryType": "store",
+      "types": [
+        "store",
+        "service",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "north-shopping"
+      ],
+      "accepted": true,
+      "reason": "supported_commercial_identity",
+      "hardGate": true,
+      "ambiguous": true,
+      "thin": false,
+      "photos": 10,
+      "reviews": 31,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 666.1122635091831,
+      "beforeAccepted": false,
+      "beforeReason": "unproven_visitor_purpose"
+    },
+    {
+      "id": "ChIJ074ZcyyPGGARAS-eOpvSLLQ",
+      "name": "Bounce Luggage Storage - Near Suehirochō Station",
+      "primaryType": "storage",
+      "types": [
+        "storage",
+        "store",
+        "service",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "north-shopping"
+      ],
+      "accepted": false,
+      "reason": "non_visitor_type",
+      "hardGate": false,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 8,
+      "reviews": 0,
+      "hours": false,
+      "website": true,
+      "phone": true,
+      "tier": null,
+      "score": 182.12627843719088,
+      "beforeAccepted": false,
+      "beforeReason": "unproven_visitor_purpose"
+    },
+    {
+      "id": "ChIJz3ILN6GOGGARoHe1FSbOQRk",
+      "name": "とけい堂.com",
+      "primaryType": "store",
+      "types": [
+        "store",
+        "service",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "north-shopping"
+      ],
+      "accepted": true,
+      "reason": "supported_commercial_identity",
+      "hardGate": true,
+      "ambiguous": true,
+      "thin": false,
+      "photos": 10,
+      "reviews": 8,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 640.1926623404021,
+      "beforeAccepted": false,
+      "beforeReason": "unproven_visitor_purpose"
+    },
+    {
+      "id": "ChIJAQCUO6GOGGARn3gaUKZe7QI",
+      "name": "ティーラ",
+      "primaryType": "jewelry_store",
+      "types": [
+        "jewelry_store",
+        "store",
+        "service",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "north-shopping"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 2,
+      "reviews": 3,
+      "hours": false,
+      "website": false,
+      "phone": true,
+      "tier": 3,
+      "score": 555.071721368075,
+      "beforeAccepted": false,
+      "beforeReason": "unproven_visitor_purpose"
+    },
+    {
+      "id": "ChIJB9kN4mqPGGARBTDmsUO-3R8",
+      "name": "GINZA VINTAGE JEWELRY",
+      "primaryType": "jewelry_store",
+      "types": [
+        "jewelry_store",
+        "store",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "north-shopping"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 2,
+      "reviews": 0,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 182.1916232360934,
+      "beforeAccepted": false,
+      "beforeReason": "unproven_visitor_purpose"
+    },
+    {
+      "id": "ChIJaXM2wVCPGGAR1WjK-67s3ss",
+      "name": "羽勝 バトミントン用品専門店",
+      "primaryType": "sporting_goods_store",
+      "types": [
+        "sporting_goods_store",
+        "store",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "north-shopping"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 32,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 667.2751202799463,
+      "beforeAccepted": false,
+      "beforeReason": "unproven_visitor_purpose"
+    },
+    {
+      "id": "ChIJM2AJ16COGGARfK6yroK2J_o",
+      "name": "カジカワダイヤモンド",
+      "primaryType": "jewelry_store",
+      "types": [
+        "jewelry_store",
+        "store",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "north-shopping"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 0,
+      "hours": true,
+      "website": false,
+      "phone": false,
+      "tier": 3,
+      "score": 144.44794902629675,
+      "beforeAccepted": false,
+      "beforeReason": "unproven_visitor_purpose"
+    },
+    {
+      "id": "ChIJAYjH0sqPGGARijEMPf1SOtE",
+      "name": "Kachin Grace Gems Myanmar",
+      "primaryType": "jewelry_store",
+      "types": [
+        "jewelry_store",
+        "store",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "north-shopping"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 4,
+      "hours": true,
+      "website": false,
+      "phone": true,
+      "tier": 3,
+      "score": 588.4348154043383,
+      "beforeAccepted": false,
+      "beforeReason": "unproven_visitor_purpose"
+    },
+    {
+      "id": "ChIJRzkoPxyMGGARcrlyyHSzaks",
+      "name": "ギャラリー明神下",
+      "primaryType": "art_gallery",
+      "types": [
+        "art_gallery",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "gallery-only"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 7,
+      "hours": true,
+      "website": true,
+      "phone": false,
+      "tier": 3,
+      "score": 627.5753304461425,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJcaDy1SeNGGAR9_CTqQ2N-pU",
+      "name": "Phrase Gallery 秋葉原",
+      "primaryType": "art_gallery",
+      "types": [
+        "art_gallery",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "gallery-only"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 22,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 632.1262056298833,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJh7WDGAOMGGARDR0OeLKorgo",
+      "name": "M＆H gallery",
+      "primaryType": "art_gallery",
+      "types": [
+        "art_gallery",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "gallery-only"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 0,
+      "hours": false,
+      "website": false,
+      "phone": false,
+      "tier": 3,
+      "score": 149.6454595806291,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJh2soc32PGGARndZZQnXGrxk",
+      "name": "Zenshi",
+      "primaryType": "art_gallery",
+      "types": [
+        "art_gallery",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "gallery-only"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 0,
+      "hours": true,
+      "website": true,
+      "phone": false,
+      "tier": 3,
+      "score": 149.45641302652274,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJrz0K7amOGGARKrwn-su-p68",
+      "name": "fabre8710",
+      "primaryType": "art_gallery",
+      "types": [
+        "art_gallery",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "gallery-only"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 1,
+      "reviews": 0,
+      "hours": false,
+      "website": false,
+      "phone": false,
+      "tier": 3,
+      "score": 189.31852213582,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJOzJ9tByMGGARMrGcxuUjW0I",
+      "name": "アトリエアポロ",
+      "primaryType": "art_gallery",
+      "types": [
+        "art_gallery",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "gallery-only"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 0,
+      "reviews": 4,
+      "hours": false,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 533.1624970550903,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJHTJFSgCPGGARg0I9PupC4Fo",
+      "name": "Darkroom&Gallery Artgraph",
+      "primaryType": "art_gallery",
+      "types": [
+        "art_gallery",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "gallery-only"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 2,
+      "reviews": 0,
+      "hours": true,
+      "website": true,
+      "phone": true,
+      "tier": 3,
+      "score": 188.67099711769393,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJEeD6WzqNGGAR0W_HmWI0YyE",
+      "name": "Gallery8",
+      "primaryType": "art_gallery",
+      "types": [
+        "art_gallery",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "gallery-only"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 72,
+      "hours": true,
+      "website": false,
+      "phone": false,
+      "tier": 3,
+      "score": 460.5631097153001,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJAQBwbh6MGGARaIsPslXTS0w",
+      "name": "Akiba CO Gallery",
+      "primaryType": "art_gallery",
+      "types": [
+        "art_gallery",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "gallery-only"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 449,
+      "hours": true,
+      "website": true,
+      "phone": false,
+      "tier": 3,
+      "score": 1057.2298432164575,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJ76X9mh6MGGAR_fhLJ312wT0",
+      "name": "Park Gallery",
+      "primaryType": "art_gallery",
+      "types": [
+        "art_gallery",
+        "tourist_attraction",
+        "museum",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "gallery-only"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 41,
+      "hours": true,
+      "website": true,
+      "phone": false,
+      "tier": 3,
+      "score": 639.1614751083207,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJL5Fbm--NGGARw_8KUstMWQE",
+      "name": "高架画廊",
+      "primaryType": "art_gallery",
+      "types": [
+        "art_gallery",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "gallery-only"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 5,
+      "reviews": 5,
+      "hours": false,
+      "website": true,
+      "phone": false,
+      "tier": 3,
+      "score": 693.0694680677409,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJo9cfQgKMGGARtDKJNOe5aRU",
+      "name": "Galerie SoHo",
+      "primaryType": "art_gallery",
+      "types": [
+        "art_gallery",
+        "museum",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "gallery-only"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 6,
+      "reviews": 10,
+      "hours": false,
+      "website": false,
+      "phone": true,
+      "tier": 3,
+      "score": 618.031062438213,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJ2f1pJ9KPGGARUAhtWLiyD4I",
+      "name": "AIR 3331 Iwamotocho Studio",
+      "primaryType": "art_gallery",
+      "types": [
+        "art_gallery",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "gallery-only"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 7,
+      "reviews": 6,
+      "hours": false,
+      "website": true,
+      "phone": false,
+      "tier": 3,
+      "score": 693.9193809248557,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    },
+    {
+      "id": "ChIJIR_T1OiLGGARmoehcs0DU8I",
+      "name": "楽座 | RAKUZA GALLERY LABO TOKYO",
+      "primaryType": "art_gallery",
+      "types": [
+        "art_gallery",
+        "point_of_interest",
+        "establishment"
+      ],
+      "sources": [
+        "gallery-only"
+      ],
+      "accepted": true,
+      "reason": "visitor_type",
+      "hardGate": true,
+      "ambiguous": false,
+      "thin": false,
+      "photos": 10,
+      "reviews": 7,
+      "hours": false,
+      "website": true,
+      "phone": true,
+      "tier": null,
+      "score": 624.7152847745166,
+      "beforeAccepted": true,
+      "beforeReason": "visitor_type"
+    }
+  ]
+}

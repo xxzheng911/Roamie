@@ -18,6 +18,16 @@ export type PlaceLike = {
   types?: string[] | null;
   name?: string | null;
   address?: string | null;
+  originalName?: string | null;
+  businessStatus?: string | null;
+  userRatingCount?: number | null;
+  regularOpeningHours?: unknown;
+  currentOpeningHours?: unknown;
+  pureServiceAreaBusiness?: boolean;
+  photoName?: string | null;
+  websiteUri?: string | null;
+  nationalPhoneNumber?: string | null;
+  internationalPhoneNumber?: string | null;
 };
 
 /** @deprecated 嚴格模式下改為僅在 0 筆時顯示空狀態 */
@@ -43,7 +53,6 @@ const GLOBAL_DENY_TYPES = [
   "primary_school",
   "secondary_school",
   "university",
-  "church",
   "local_government_office",
   "real_estate_agency",
   "insurance_agency",
@@ -90,7 +99,7 @@ const GLOBAL_ALLOW_TYPES = [
 ] as const;
 
 const GLOBAL_DENY_NAME_RE =
-  /汽車|機車|摩托|汽配|輪胎|維修|保修|五金|工具行|診所|醫院|牙醫|補習|托育|教堂|寺廟|墓園|殯葬|批發|物流|倉儲|有限公司(?!.*百貨)|企業社|工廠/i;
+  /汽車|機車|摩托|汽配|輪胎|維修|保修|五金|工具行|診所|醫院|牙醫|補習|托育|墓園|殯葬|批發|物流|倉儲|有限公司(?!.*百貨)|企業社|工廠/i;
 
 /** 非餐飲：檳榔、菸酒專賣等（美食／首頁／探索共用） */
 export const FOOD_MERCHANT_DENY_RE =
@@ -200,6 +209,9 @@ const ATTRACTION_TYPES = [
   "buddhist_temple",
   "church",
   "place_of_worship",
+  "shinto_shrine",
+  "mosque",
+  "synagogue",
 ] as const;
 
 const ATTRACTION_DENY_TYPES = [
@@ -331,17 +343,93 @@ const ALL_EXPLORE_TYPES = [
 ] as const;
 
 export function matchesAllExplore(place: PlaceLike): boolean {
-  if (isGloballyDenied(place)) return false;
-  if (matchesParkStrict(place)) return false;
-  return (
-    matchesFoodStrict(place) ||
-    matchesCafeStrict(place) ||
-    matchesNightStrict(place) ||
-    matchesNightExplore(place) ||
-    matchesAttractionStrict(place) ||
-    matchesDistrictStrict(place) ||
-    hasAnyType(collectPlaceTypes(place), ALL_EXPLORE_TYPES)
-  );
+  return resolveExploreSemanticEligibility(place).eligible;
+}
+
+const STRUCTURAL_TYPES = new Set([
+  "building", "apartment_building", "apartment_complex", "housing_complex",
+  "residential_building", "residential_complex", "premise", "subpremise",
+  "office_building", "corporate_office", "office", "dormitory", "structure",
+  "route", "street_address", "intersection", "political", "locality",
+  "neighborhood", "postal_code", "plus_code",
+  "parking_lot", "parking_garage", "parking_structure", "atm", "bank", "storage",
+]);
+const BUILDING_IDENTITY_RE = /\b(?:building|office block|apartments?|residences?)\s*(?:[\divx-]+)?$|(?:大樓|大厦|大廈|公寓|住宅|ビル|マンション)\s*[\d一二三四五六七八九十号館棟-]*$/i;
+const ADDITIONAL_VISITOR_TYPES = [
+  "spa", "wellness_center", "amusement_park", "amusement_center", "bowling_alley",
+  "observation_deck", "beach", "marina", "gift_shop", "clothing_store", "shoe_store",
+  "jewelry_store", "toy_store", "sporting_goods_store", "event_venue",
+] as const;
+const AMBIGUOUS_COMMERCIAL_TYPES = new Set([
+  "shopping_mall", "department_store", "store", "general_store",
+  "shopping_center", "establishment", "point_of_interest",
+]);
+const STRUCTURAL_ADDRESS_RE = /\b(?:parking\s*(?:tower|garage|structure)|office\s*(?:building|tower))\b|駐車場|停車(?:場|塔)|辦公大樓|办公楼/i;
+
+function hasVisitorHours(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const hours = value as { periods?: unknown[]; weekdayDescriptions?: unknown[]; openNow?: boolean };
+  return Boolean(hours.periods?.length || hours.weekdayDescriptions?.length || typeof hours.openNow === "boolean");
+}
+
+/** Canonical Explore admission, separate from category labels and quality ranking.
+ * Reuses this module's type authority; rating/photos alone never establish purpose.
+ */
+export function resolveExploreSemanticEligibility(place: PlaceLike): {
+  eligible: boolean;
+  reason: "visitor_type" | "supported_visitor_identity" | "non_visitor_type" |
+    "structural_identity_conflict" | "unproven_visitor_purpose" |
+    "supported_commercial_identity" | "unproven_commercial_destination";
+} {
+  const types = collectPlaceTypes(place);
+  if (place.pureServiceAreaBusiness || isGloballyDenied(place) || types.some((type) =>
+    STRUCTURAL_TYPES.has(type) || /^(administrative_area|sublocality)(_|$)/.test(type))) {
+    return { eligible: false, reason: "non_visitor_type" };
+  }
+  const name = place.originalName?.trim() || place.name?.trim() || "";
+  const visitorTypes = types.filter((type) =>
+    type !== "food" && (
+      [...ALL_EXPLORE_TYPES, ...ATTRACTION_TYPES, ...PARK_TYPES, ...ADDITIONAL_VISITOR_TYPES]
+        .some((known) => type === known) || /_(restaurant|museum)$/.test(type)));
+  const specificVisitorTypes = visitorTypes.filter((type) => !AMBIGUOUS_COMMERCIAL_TYPES.has(type));
+  if (specificVisitorTypes.length > 0) return { eligible: true, reason: "visitor_type" };
+
+  // Do not count a mall/store tag twice as both type and inferred name evidence.
+  // The address is context, never evidence of the tenant's own business purpose.
+  const namedCategory = inferPlaceCategory({ name, address: null });
+  const namedPurpose = namedCategory !== "unknown";
+  const hours = hasVisitorHours(place.regularOpeningHours) || hasVisitorHours(place.currentOpeningHours);
+  const website = /^https?:\/\/\S+$/i.test(place.websiteUri?.trim() ?? "");
+  const phone = [place.nationalPhoneNumber, place.internationalPhoneNumber]
+    .some((value) => (value?.replace(/\D/g, "").length ?? 0) >= 6);
+  const engagement = Boolean(place.photoName?.trim()) || (place.userRatingCount ?? 0) > 0;
+  const businessPresence = hours || website || phone;
+  const corroborated = (hours && (website || phone)) || (website && phone) ||
+    (businessPresence && (engagement || namedPurpose));
+  const structuralContext = BUILDING_IDENTITY_RE.test(name) ||
+    STRUCTURAL_ADDRESS_RE.test(place.address ?? "");
+
+  const primaryType = normalizeType(place.primaryType ?? "");
+  const ambiguousCommercial = AMBIGUOUS_COMMERCIAL_TYPES.has(primaryType) ||
+    (!primaryType && types.some((type) => AMBIGUOUS_COMMERCIAL_TYPES.has(type)));
+  if (ambiguousCommercial) {
+    // A structural host is not a tenant ban: specific visitor types already
+    // passed above; ambiguous commerce needs hours or both contact channels.
+    if (corroborated && (!structuralContext || hours || (website && phone))) {
+      return { eligible: true, reason: "supported_commercial_identity" };
+    }
+    return { eligible: false, reason: structuralContext
+      ? "structural_identity_conflict" : "unproven_commercial_destination" };
+  }
+  // Unknown/new types are not automatically rejected. Require a recognizable
+  // destination identity in its own name (never its street address), together
+  // with operational and hours/review evidence. Generic POI tags are not proof.
+  if (namedPurpose &&
+      place.businessStatus?.toUpperCase() === "OPERATIONAL" &&
+      (hours || website || phone || engagement)) {
+    return { eligible: true, reason: "supported_visitor_identity" };
+  }
+  return { eligible: false, reason: "unproven_visitor_purpose" };
 }
 
 /** 茶飲、加水站、冰品等（即使 types 含 cafe 也排除） */
@@ -460,9 +548,7 @@ function matchesAttractionStrict(place: PlaceLike): boolean {
   if (hasBlockedType(types, ATTRACTION_DENY_TYPES)) return false;
   if (hasAnyType(types, ["book_store", "bookstore", "library"])) return false;
   if (hasAnyType(types, ["park", "national_park", "botanical_garden"])) {
-    return /國家公園|國家風景區|森林遊樂區|風景區|地質|湿地|溼地|生态|生態|寿山|壽山|澄清湖|蓮池潭|爱河|愛河|驳二|駁二|西子灣|旗津|地標|landmark/i.test(
-      name,
-    );
+    return true;
   }
   if (hasAnyType(types, ATTRACTION_TYPES)) return true;
   if (/寺|廟|神社|shrine|temple|展望|觀景|地標|瞭望|viewpoint|observatory|landmark/i.test(name)) {

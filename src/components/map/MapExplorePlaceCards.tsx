@@ -129,7 +129,8 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
     }, [categoryKey]);
 
     const onCarouselPointerDown = (e: PointerEvent<HTMLDivElement>) => {
-      if (e.button !== 0) return;
+      // Native touch scrolling arbitrates horizontal cards vs. the sheet's vertical scroll.
+      if (e.pointerType === "touch" || e.button !== 0) return;
       const target = e.target as HTMLElement;
       if (target.closest("button")) return;
       e.stopPropagation();

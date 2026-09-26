@@ -32,6 +32,10 @@ export type GooglePlaceRaw = {
   types?: string[] | null;
   type?: string | null;
   businessStatus?: string | null;
+  pureServiceAreaBusiness?: boolean;
+  websiteUri?: string | null;
+  nationalPhoneNumber?: string | null;
+  internationalPhoneNumber?: string | null;
   regularOpeningHours?: PlaceHoursData["regularOpeningHours"];
   currentOpeningHours?: PlaceHoursData["currentOpeningHours"];
   opening_hours?: {
@@ -181,6 +185,11 @@ export function normalizeGooglePlace(
       null,
     primaryType,
     primaryTypeDisplayName: raw.primaryTypeDisplayName,
+    pureServiceAreaBusiness: raw.pureServiceAreaBusiness,
+    websiteUri: raw.websiteUri ?? options?.existing?.websiteUri,
+    nationalPhoneNumber: raw.nationalPhoneNumber ?? options?.existing?.nationalPhoneNumber,
+    internationalPhoneNumber: raw.internationalPhoneNumber ?? options?.existing?.internationalPhoneNumber,
+    currentOpeningHours: raw.currentOpeningHours ?? options?.existing?.currentOpeningHours,
     rawTypes: raw.types ? [...raw.types] : undefined,
     types: types.length ? types : primaryType ? [primaryType] : [],
     businessStatus: raw.businessStatus ?? options?.existing?.businessStatus ?? null,

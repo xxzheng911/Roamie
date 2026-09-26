@@ -118,7 +118,8 @@ export function buildPlaceImageUrls(place: PlaceImageSources): string[] {
   if (fromNames.length > 0) {
     return dedupePlaceImageUrls(fromNames);
   }
-  // Place detail: never fall back to generic cafe / scene / Unsplash images when Google photo is missing.
+  // Keep placeholder visuals out of the photo list; PlaceDetailSheet renders the
+  // shared Explore fallback separately when this list is empty.
   if (cover && !/scene-cafe|unsplash\.com/i.test(cover)) {
     return dedupePlaceImageUrls([sanitizePlaceImageUrl(cover, { maxWidth: 800 })]);
   }

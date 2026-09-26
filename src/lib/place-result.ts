@@ -24,6 +24,10 @@ export type PlaceResult = {
   /** Google Places types（含 primaryType 以外的次要類型） */
   types?: string[] | null;
   businessStatus: string | null;
+  pureServiceAreaBusiness?: boolean;
+  websiteUri?: string | null;
+  nationalPhoneNumber?: string | null;
+  internationalPhoneNumber?: string | null;
   openStatus: PlaceOpenStatus;
   openStatusLabel: string;
   todayHoursLabel: string;

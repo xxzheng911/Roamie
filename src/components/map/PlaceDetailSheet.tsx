@@ -17,6 +17,7 @@ import {
   TrainFront,
 } from "lucide-react";
 import { SafeImage } from "@/components/media/SafeImage";
+import { getRoamieDefaultImage } from "@/services/placeImageService";
 import { MotorcycleIcon } from "@/components/map/MotorcycleIcon";
 import { resolvePlaceDetailOpeningLine } from "@/lib/normalized-opening-status";
 import { placeCategoryDisplay } from "@/lib/native-qa-display";
@@ -56,6 +57,7 @@ export type PlaceDetailData = PlaceResult & {
 type Props = {
   place: PlaceDetailData;
   imageUrls: string[];
+  fallbackCategoryId?: string;
   distanceLabel: string | null;
   isSaved: boolean;
   isBusy: boolean;
@@ -79,6 +81,7 @@ type Props = {
 export function PlaceDetailSheet({
   place,
   imageUrls,
+  fallbackCategoryId,
   distanceLabel,
   isSaved,
   isBusy,
@@ -133,7 +136,10 @@ export function PlaceDetailSheet({
 
   return (
     <div className="flex flex-col" data-no-sheet-drag>
-      <div className="relative mx-5 mt-1 aspect-[16/10] overflow-hidden rounded-3xl bg-secondary shadow-soft">
+      <div
+        data-place-detail-hero={photos.length > 0 ? "provider-photo" : "fallback-visual"}
+        className="relative mx-5 mt-1 aspect-[16/10] overflow-hidden rounded-3xl bg-secondary shadow-soft"
+      >
         {photos.length > 0 ? (
           <>
             <SafeImage
@@ -193,9 +199,14 @@ export function PlaceDetailSheet({
             )}
           </>
         ) : (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            {t("uiCoverage.noPhotos")}
-          </div>
+          <SafeImage
+            src={getRoamieDefaultImage(fallbackCategoryId)}
+            alt={place.name}
+            loading="eager"
+            fetchPriority="high"
+            className="h-full w-full object-cover"
+            draggable={false}
+          />
         )}
         <button
           type="button"

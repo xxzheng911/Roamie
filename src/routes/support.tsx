@@ -2,7 +2,7 @@ import { useI18n } from "@/hooks/use-i18n";
 import { createFileRoute } from "@tanstack/react-router";
 import { ROAMIE_CONTACT_EMAIL } from "@/constants/contact";
 
-const PRIVACY_POLICY_URL = "/privacy";
+import { LEGAL_PATHS } from "@/lib/legal-navigation";
 
 export const Route = createFileRoute("/support")({
   head: () => ({
@@ -120,11 +120,19 @@ function SupportPage() {
               {uiT("productionUi.pa99818b942")}
               <a
                 className="ml-1 font-medium text-primary underline decoration-primary/30 underline-offset-4 transition-colors hover:decoration-primary"
-                href={PRIVACY_POLICY_URL}
+                href={LEGAL_PATHS.privacy}
               >
                 {uiT("productionUi.pace240822b")}
               </a>
               。
+            </p>
+            <p>
+              <a
+                className="font-medium text-primary underline underline-offset-4"
+                href={LEGAL_PATHS.terms}
+              >
+                {uiT("plusPurchase.terms")}
+              </a>
             </p>
           </SupportSection>
         </div>

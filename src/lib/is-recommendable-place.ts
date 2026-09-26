@@ -5,6 +5,7 @@ import { isLowValueCityExplorePlace } from "@/lib/explore-city-tourist-filter";
 import { recommendationTypeMetadataFromItem } from "@/lib/ai/recommendation-place-type-metadata";
 import { isExplicitFamilyPlace } from "@/lib/family-place-classification";
 import { isPlaceOperationalForRecommendation } from "@/lib/place-operational-eligibility";
+import { resolveExploreSemanticEligibility, type PlaceLike } from "@/lib/place-category";
 
 export type RecommendablePlaceContext =
   | "home_nearby"
@@ -16,7 +17,7 @@ export type RecommendablePlaceContext =
   | "chat_nearby"
   | "nearby_home";
 
-export type RecommendablePlaceInput = {
+export type RecommendablePlaceInput = PlaceLike & {
   id?: string | null;
   placeId?: string | null;
   name?: string | null;
@@ -394,6 +395,10 @@ export function isRecommendablePlace(
   };
 
   if (!isPlaceOperationalForRecommendation(place)) return fail("non_operational");
+  if (context === "explore_map" || context === "explore_map_city") {
+    const semantic = resolveExploreSemanticEligibility(place);
+    if (!semantic.eligible) return fail(semantic.reason);
+  }
 
   const cityMode = context === "explore_map_city";
   const exploreRelaxed =
@@ -560,7 +565,7 @@ export function filterRecommendablePlaces<T extends RecommendablePlaceInput>(
 }
 
 export function placeResultToRecommendableInput(
-  place: {
+  place: PlaceLike & {
     id: string;
     name: string;
     businessStatus: string | null;
@@ -578,6 +583,7 @@ export function placeResultToRecommendableInput(
   >,
 ): RecommendablePlaceInput {
   return {
+    ...place,
     id: place.id,
     placeId: place.id,
     name: place.name,

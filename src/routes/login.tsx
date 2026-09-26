@@ -41,6 +41,7 @@ import { emitOAuthFlow, OAUTH_FLOW_EVENT, type OAuthFlowDetail } from "@/lib/aut
 import { navigateOAuthAppPath } from "@/lib/oauth-app-navigate";
 import { hasPendingAdminReturn } from "@/lib/admin/admin-route-boundary";
 import { shouldIgnoreLoginFailure } from "@/lib/auth-login-attempt";
+import { LEGAL_PATHS } from "@/lib/legal-navigation";
 import { isPublicOnboardingBypassPath } from "@/lib/public-routes";
 
 const RoamieMascotFigure = lazy(() =>
@@ -84,9 +85,9 @@ const OAUTH_BUSY_TIMEOUT_MS = 120_000;
 const APPLE_BUSY_TIMEOUT_MS = 90_000;
 
 export const Route = createFileRoute("/login")({
-  beforeLoad: async () => {
+  beforeLoad: async ({ location }) => {
     if (typeof window === "undefined") return;
-    const path = window.location.pathname.replace(/\/+$/, "") || "/";
+    const path = location.pathname.replace(/\/+$/, "") || "/";
     if (isPublicOnboardingBypassPath(path)) return;
     if (hasPendingAdminReturn()) return;
     await loadOnboardingState();
@@ -167,9 +168,11 @@ function Login() {
 
   const openLegal = (doc: "terms" | "privacy") => {
     if (detectPlatform().isCapacitor && detectPlatform().isIOS) {
-      void navigate({ to: "/login/legal", search: { doc }, replace: false }).catch(() => {
-        window.location.assign(`/login/legal?doc=${doc}`);
-      });
+      void navigate({ to: LEGAL_PATHS[doc], search: { from: "/login" }, replace: false }).catch(
+        () => {
+          window.location.assign(`${LEGAL_PATHS[doc]}?from=/login`);
+        },
+      );
       return;
     }
     setLegalOpen(doc);

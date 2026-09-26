@@ -283,7 +283,11 @@ test("城市模式各分類 tier 放寬門檻", () => {
     primaryType: "shopping_mall",
     types: ["shopping_mall"],
   };
-  assert.equal(classifyExploreMapQualityTier(district, "district", { cityMode: true }), 2);
+  assert.equal(classifyExploreMapQualityTier(district, "district", { cityMode: true }), null,
+    "Quality relaxation cannot admit an uncorroborated shopping_mall tag");
+  assert.equal(classifyExploreMapQualityTier({ ...district,
+    websiteUri: "https://mall.example.test", nationalPhoneNumber: "03-1234-5678",
+  }, "district", { cityMode: true }), 2);
   assert.equal(EXPLORE_CITY_CATEGORY_MIN_DISPLAY, 5);
 });
 

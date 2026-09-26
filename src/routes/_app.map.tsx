@@ -2221,6 +2221,7 @@ function MapView() {
               <PlaceDetailSheet
                 place={selectedPlace}
                 imageUrls={buildPlaceImageUrls(selectedPlace)}
+                fallbackCategoryId={cat.id}
                 distanceLabel={
                   (hasDeviceLocation || effectiveLocation?.source === "remembered") &&
                   selectedPlace.lat != null &&

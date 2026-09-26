@@ -1,28 +1,19 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { LegalDocumentPage, type LegalDocumentKind } from "@/components/LegalDocumentPage";
+import { createFileRoute, redirect } from "@tanstack/react-router";
+import { LEGAL_PATHS } from "@/lib/legal-navigation";
 import { resolveLegalReturnTarget } from "@/lib/legal-return-target";
 
-type LegalSearch = {
-  doc: LegalDocumentKind;
-  from?: string;
-};
-
-function parseLegalSearch(search: Record<string, unknown>): LegalSearch {
-  return {
-    doc: search.doc === "privacy" ? "privacy" : "terms",
-    from: typeof search.from === "string" ? search.from : undefined,
-  };
-}
-
+/** Preserve previously distributed links without mounting the Login/auth parent UI. */
 export const Route = createFileRoute("/login/legal")({
-  validateSearch: parseLegalSearch,
-  component: LoginLegalPage,
+  validateSearch: (search: Record<string, unknown>) => ({
+    doc: search.doc === "privacy" ? ("privacy" as const) : ("terms" as const),
+    from: resolveLegalReturnTarget(search.from),
+  }),
+  beforeLoad: ({ search }) => {
+    throw redirect({
+      to: LEGAL_PATHS[search.doc],
+      search: { from: search.from },
+      replace: true,
+      reloadDocument: true,
+    });
+  },
 });
-
-function LoginLegalPage() {
-  const { doc, from } = Route.useSearch();
-  const navigate = useNavigate();
-  const backTarget = resolveLegalReturnTarget(from);
-
-  return <LegalDocumentPage doc={doc} onBack={() => navigate({ to: backTarget, replace: true })} />;
-}

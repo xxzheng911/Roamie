@@ -21,11 +21,10 @@ function BootAwareRoutePending() {
   return <RoamieRoutePending />;
 }
 
-let sharedQueryClient: QueryClient | null = null;
 let sharedRouter: AnyRouter | null = null;
 
 export const getRouter = () => {
-  if (sharedRouter) {
+  if (typeof window !== "undefined" && sharedRouter) {
     logRouterCreate(true);
     return sharedRouter;
   }
@@ -40,11 +39,12 @@ export const getRouter = () => {
     }
   }
 
-  sharedQueryClient = new QueryClient();
+  // SSR requests must not reuse another request's history/search/redirect state.
+  const queryClient = new QueryClient();
 
   const router = createRouter({
     routeTree,
-    context: { queryClient: sharedQueryClient },
+    context: { queryClient },
     scrollRestoration: true,
     defaultPreloadStaleTime: 0,
     defaultPendingComponent: BootAwareRoutePending,
@@ -89,6 +89,6 @@ export const getRouter = () => {
     });
   }
 
-  sharedRouter = router;
+  if (typeof window !== "undefined") sharedRouter = router;
   return router;
 };

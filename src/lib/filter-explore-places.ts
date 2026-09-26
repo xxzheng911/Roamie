@@ -226,6 +226,7 @@ export function filterExplorePlaces<T extends RecommendablePlaceLike>(
   return places.filter((place) => {
     if (isBurialOrFuneralPlace(place)) return false;
     const input = placeResultToRecommendableInput({
+      ...place,
       id: place.id ?? "",
       name: place.name ?? "",
       businessStatus: place.businessStatus ?? null,

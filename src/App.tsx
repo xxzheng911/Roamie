@@ -5,6 +5,8 @@ import { type ReactNode, useEffect } from "react";
 import { useRouterState } from "@tanstack/react-router";
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { OnboardingGate } from "@/components/OnboardingGate";
+import { useIosInteractiveRoute } from "@/hooks/use-ios-interactive-route";
+import { I18nProvider } from "@/hooks/use-i18n";
 import { AppProviders } from "@/providers/AppProviders";
 import { logAppBoot, logAppBootSnapshot } from "@/lib/app-boot-log";
 import { logAppRemountSource, shouldLogAppMounted } from "@/lib/startup-boot-state";
@@ -19,6 +21,7 @@ type Props = { children: ReactNode };
 export function App({ children }: Props) {
   const currentPath =
     useRouterState({ select: (state) => state.location.pathname }).replace(/\/+$/, "") || "/";
+  useIosInteractiveRoute(isPublicOnboardingBypassPath(currentPath) ? "public-legal" : "__skip__");
   const isAdminBoundary = isAdminAuthBoundaryRoute(currentPath);
   const isAdminPage = isAdminRoute(currentPath);
   const stagingBadge =
@@ -63,7 +66,11 @@ export function App({ children }: Props) {
   }
 
   if (isPublicOnboardingBypassPath(currentPath)) {
-    return <AppErrorBoundary>{children}</AppErrorBoundary>;
+    return (
+      <AppErrorBoundary>
+        <I18nProvider>{children}</I18nProvider>
+      </AppErrorBoundary>
+    );
   }
 
   if (isAdminBoundary) {

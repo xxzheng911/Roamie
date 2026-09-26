@@ -1,4 +1,5 @@
 import type { PlaceResult } from "@/lib/place-result";
+import { resolveExploreSemanticEligibility } from "@/lib/place-category";
 import { PLACES_NEARBY_CACHE_TTL_MS } from "@/lib/places-api-guard";
 import { logPlacesCacheHit } from "@/lib/places-diagnostics";
 import type { ExploreTimeBucket } from "@/lib/explore-time-bucket";
@@ -89,12 +90,22 @@ export function readMapPlacesCache(
 
   const hit = CACHE.get(key);
   if (hit && Date.now() - hit.at <= memoryTtlMs(key)) {
+    if (hit.places.some((place) => !resolveExploreSemanticEligibility(place).eligible)) {
+      invalidateMapPlacesCache(key);
+      return null;
+    }
     return hit;
   }
   if (hit) CACHE.delete(key);
 
   const persisted = readExploreMapPersistedCache<PlaceResult>(key, cacheMode(key));
   if (!persisted) return null;
+  // Old recommendation caches must not bypass the current admission authority.
+  // Treat as a miss so the existing expansion path can replenish eligible POIs.
+  if (persisted.places.some((place) => !resolveExploreSemanticEligibility(place).eligible)) {
+    invalidateMapPlacesCache(key);
+    return null;
+  }
 
   const entry: MapPlacesCacheEntry = {
     places: persisted.places,

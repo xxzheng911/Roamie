@@ -1,6 +1,7 @@
 import type { PlaceOpenStatus } from "@/lib/filter-available-places";
 import type { PlaceResult } from "@/lib/place-result";
 import { placeOperationalEligibility } from "@/lib/place-operational-eligibility";
+import { resolveExploreSemanticEligibility } from "@/lib/place-category";
 
 /** 首頁只接受真實 Google place_id，排除 mock / saved 假 id */
 export function isVerifiedGooglePlaceId(id: string | null | undefined): boolean {
@@ -206,6 +207,7 @@ export type HomeNearbyHardExclusionReason =
   | "permanently_closed"
   | "temporarily_closed"
   | "suspicious_stale_listing"
+  | "unproven_visitor_purpose"
   | "generic_store_excluded";
 
 export type HomeNearbyPoiHealth = {
@@ -298,6 +300,7 @@ export function homeNearbyHardExclusionReason(
   if (!health.accepted) return health.dropReason;
   if (hasPermanentExcludedType(place)) return "prohibited_type";
   if (isGenericNonTravelStore(place)) return "generic_store_excluded";
+  if (!resolveExploreSemanticEligibility(place).eligible) return "unproven_visitor_purpose";
   return null;
 }
 

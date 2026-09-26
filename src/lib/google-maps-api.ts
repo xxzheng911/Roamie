@@ -3,7 +3,7 @@
 const PLACES_API = "https://places.googleapis.com/v1";
 
 export const PLACES_FIELD_MASK =
-  "places.id,places.displayName,places.formattedAddress,places.shortFormattedAddress,places.location,places.rating,places.userRatingCount,places.photos,places.primaryType,places.primaryTypeDisplayName,places.types,places.businessStatus,places.currentOpeningHours,places.regularOpeningHours,places.utcOffsetMinutes";
+  "places.id,places.displayName,places.formattedAddress,places.shortFormattedAddress,places.location,places.rating,places.userRatingCount,places.photos,places.primaryType,places.primaryTypeDisplayName,places.types,places.businessStatus,places.currentOpeningHours,places.regularOpeningHours,places.utcOffsetMinutes,places.websiteUri,places.nationalPhoneNumber,places.internationalPhoneNumber,places.pureServiceAreaBusiness";
 
 export function placesSearchTextUrl(): string {
   return `${PLACES_API}/places:searchText`;

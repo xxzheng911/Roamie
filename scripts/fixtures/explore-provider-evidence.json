@@ -1,0 +1,68 @@
+[
+  {
+    "id": "ChIJJxdtWymPGGAR-pxIzxoR4m4",
+    "types": [
+      "art_gallery",
+      "point_of_interest",
+      "establishment"
+    ],
+    "nationalPhoneNumber": "080-5195-4911",
+    "internationalPhoneNumber": "+81 80-5195-4911",
+    "formattedAddress": "Japan, 〒110-0016 Tokyo, Taito City, Taitō, 1-chōme−33−１２ 船山ビル 201",
+    "location": {
+      "latitude": 35.702112299999996,
+      "longitude": 139.7783993
+    },
+    "rating": 5,
+    "googleMapsUri": "https://maps.google.com/?cid=7989967495753145594&g_mp=CiVnb29nbGUubWFwcy5wbGFjZXMudjEuUGxhY2VzLkdldFBsYWNlEAIYBCAA",
+    "websiteUri": "https://www.playacolores.jp/",
+    "businessStatus": "OPERATIONAL",
+    "userRatingCount": 1,
+    "displayName": {
+      "text": "Playacolores",
+      "languageCode": "ja"
+    },
+    "primaryTypeDisplayName": {
+      "text": "Art gallery",
+      "languageCode": "en"
+    },
+    "primaryType": "art_gallery",
+    "accessibilityOptions": {
+      "wheelchairAccessibleParking": false,
+      "wheelchairAccessibleEntrance": false
+    },
+    "pureServiceAreaBusiness": false
+  },
+  {
+    "id": "ChIJmVTkbkOPGGARf4Y6vd2yJ78",
+    "types": [
+      "shopping_mall",
+      "point_of_interest",
+      "establishment"
+    ],
+    "nationalPhoneNumber": "03-5818-3858",
+    "internationalPhoneNumber": "+81 3-5818-3858",
+    "formattedAddress": "5-chōme-16-17 Ueno, Taito City, Tokyo 110-0005, Japan",
+    "location": {
+      "latitude": 35.704944499999996,
+      "longitude": 139.7753526
+    },
+    "rating": 5,
+    "googleMapsUri": "https://maps.google.com/?cid=13774174650768197247&g_mp=CiVnb29nbGUubWFwcy5wbGFjZXMudjEuUGxhY2VzLkdldFBsYWNlEAIYBCAA",
+    "businessStatus": "OPERATIONAL",
+    "userRatingCount": 1,
+    "displayName": {
+      "text": "Chiyoda Building II",
+      "languageCode": "en"
+    },
+    "primaryTypeDisplayName": {
+      "text": "Shopping mall",
+      "languageCode": "en"
+    },
+    "primaryType": "shopping_mall",
+    "accessibilityOptions": {
+      "wheelchairAccessibleParking": false
+    },
+    "pureServiceAreaBusiness": false
+  }
+]

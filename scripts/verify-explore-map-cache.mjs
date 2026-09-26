@@ -32,7 +32,7 @@ const detailKey = buildUnifiedPlaceDetailsCacheKey("ChIJx123", "zh-TW", {
   cityLabel: "東京",
   country: "JP",
 });
-assert.match(detailKey, /\|detail\|zh-TW$/);
+assert.equal(detailKey, "details|ChIJx123|zh-TW|screen_reviews_v2");
 
 const { country, city } = inferPlaceCacheLocation({
   cityLabel: "首爾",

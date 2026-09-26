@@ -247,7 +247,10 @@
     "cap:add:android": "npx cap add android",
     "verify:recommendation-review-runtime": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-recommendation-review-runtime.mjs",
     "verify:recommendation-review-browser": "node scripts/verify-recommendation-review-browser.mjs",
-    "verify:place-identity-runtime": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-place-identity-runtime.mjs"
+    "verify:place-identity-runtime": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-place-identity-runtime.mjs",
+    "postinstall": "node scripts/patch-tanstack-router.mjs",
+    "verify:protected-login-bootstrap": "node scripts/verify-protected-login-bootstrap.mjs",
+    "verify:router-pending-lifecycle": "node scripts/verify-router-pending-lifecycle.mjs"
   },
   "dependencies": {
     "@capacitor-community/apple-sign-in": "^7.1.0",
