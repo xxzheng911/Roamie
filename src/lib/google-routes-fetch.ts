@@ -1,3 +1,4 @@
+import { googleRestFetch } from "@/lib/google-rest-transport";
 import type { RouteResult, RoutesTravelMode } from "@/lib/routes/types";
 import {
   fetchGoogleDirectionsForRoutesMode,
@@ -35,9 +36,9 @@ export const ROUTES_REQUEST_DENIED_HINT = [
   "可能原因：",
   "· Routes API 尚未在 Google Cloud Console 啟用",
   "· API key 的「API 限制」未包含 Routes API",
-  "· API restriction 未允許此 app、bundle ID 或 referrer",
+  "· Server credential 的 IP／API restriction 未允許此請求",
   "· 專案尚未開啟計費（Billing）",
-  "· App 未正確讀取 EXPO_PUBLIC_GOOGLE_MAPS_API_KEY（請 sync:env 並重啟）",
+  "· Server 尚未完成路線服務的 credential 設定",
 ].join("\n");
 
 function parseDurationSeconds(duration: string | undefined): number | null {
@@ -124,7 +125,7 @@ function logRouteResponse(
   );
 }
 
-/** 直接呼叫 Google Routes computeRoutes（browser 或 server 共用） */
+/** 透過受保護 transport 呼叫 Routes computeRoutes（browser 或 server 共用） */
 export async function fetchGoogleRoute(
   apiKey: string,
   origin: LatLng,
@@ -167,7 +168,7 @@ export async function fetchGoogleRoute(
   };
 
   try {
-    const res = await fetch(ROUTES_URL, {
+    const res = await googleRestFetch(ROUTES_URL, {
       method: "POST",
       signal: ctrl.signal,
       headers: {

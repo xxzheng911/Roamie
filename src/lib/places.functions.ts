@@ -1,3 +1,5 @@
+import { requireGoogleProviderRate } from "@/lib/google-rate-limit.server";
+import { googleRestFetch } from "@/lib/google-rest-transport";
 import {
   hasPlaceReviewCapability,
   UNIFIED_PLACE_SCREEN_CACHE_TTL_MS,
@@ -220,8 +222,7 @@ function parseGoogleError(text: string): string {
 }
 
 async function getServerMapsKey(): Promise<string> {
-  const { requireGoogleMapsServerKey } = await import("@/lib/google-maps.server");
-  return requireGoogleMapsServerKey();
+  return "roamie-server-proxy";
 }
 
 function placesQueryFamily(callType: string, body: Record<string, unknown>): string {
@@ -347,7 +348,7 @@ async function postPlaces(
 
         let res: Response;
         try {
-          res = await fetch(url, {
+          res = await googleRestFetch(url, {
             signal,
             method: "POST",
             headers: {
@@ -630,43 +631,27 @@ async function searchNearby(
   maxResultCount = 12,
   userLocale?: Locale,
   stats?: PlacesSearchStats,
-  opts?: { maxPages?: number },
+  _opts?: { maxPages?: number },
 ): Promise<{ places: PlaceResult[]; error: string | null }> {
   const { languageCode, regionCode } = exploreLocale(lat, lng, userLocale);
   const perPageMax = Math.min(maxResultCount, 20);
-  const maxPages = opts?.maxPages ?? 1;
-  const allRaw: RawPlace[] = [];
-  let pageToken: string | undefined;
-  let lastError: string | null = null;
-
-  for (let page = 0; page < maxPages; page++) {
-    const body: Record<string, unknown> = {
-      includedTypes,
-      languageCode,
-      locationRestriction: locationCircle(lat, lng, radius),
-      maxResultCount: perPageMax,
-      rankPreference: "DISTANCE",
-    };
-    if (regionCode) body.regionCode = regionCode;
-    if (pageToken) body.pageToken = pageToken;
-
-    const {
-      places: raw,
-      error,
-      nextPageToken,
-    } = await postPlaces(placesSearchNearbyUrl(), body, apiKey, "nearby", stats);
-    if (error) {
-      lastError = error;
-      if (allRaw.length === 0) return { places: [], error };
-      break;
-    }
-    allRaw.push(...raw);
-    if (!nextPageToken || raw.length === 0) break;
-    pageToken = nextPageToken;
-    if (page < maxPages - 1) {
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-    }
-  }
+  const body: Record<string, unknown> = {
+    includedTypes,
+    languageCode,
+    locationRestriction: locationCircle(lat, lng, radius),
+    maxResultCount: perPageMax,
+    rankPreference: "DISTANCE",
+  };
+  if (regionCode) body.regionCode = regionCode;
+  // Places Nearby (New) has no pagination contract.
+  const { places: allRaw, error } = await postPlaces(
+    placesSearchNearbyUrl(),
+    body,
+    apiKey,
+    "nearby",
+    stats,
+  );
+  if (error) return { places: [], error };
 
   const places = mapRawPlaces(allRaw, {
     screen: stats?.screen,
@@ -681,8 +666,8 @@ async function searchNearby(
       radius,
       rawCount: allRaw.length,
       mappedCount: places.length,
-      pages: maxPages > 1 ? maxPages : 1,
-      error: lastError ?? "",
+      pages: 1,
+      error: "",
     });
   }
   return { places, error: null };
@@ -992,7 +977,7 @@ export async function executeExploreSearch(
 }
 
 export const searchPlaces = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
+  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
   .inputValidator((input) => ExploreSearchInput.parse(input))
   .handler(async ({ data }): Promise<{ places: PlaceResult[]; error: string | null }> => {
     return executeExploreSearch(data);
@@ -1168,7 +1153,7 @@ async function fetchScreenDetailsNetwork(
       try {
         const languageCode = localeToGoogleLanguageCode(locale ?? "zh-TW");
         const requestPath = telemetryOptions?.requestPath ?? "server";
-        const res = await fetch(placeDetailsUrl(placeId, languageCode), {
+        const res = await googleRestFetch(placeDetailsUrl(placeId, languageCode), {
           signal,
           headers: {
             "X-Goog-Api-Key": apiKey,
@@ -1342,7 +1327,7 @@ const PlaceDetailsInput = z.object({
 });
 
 export const getPlaceDetails = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
+  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
   .inputValidator((input) => PlaceDetailsInput.parse(input))
   .handler(
     async ({ data }): Promise<{ place: PlaceDetailsScreenResult | null; error: string | null }> => {

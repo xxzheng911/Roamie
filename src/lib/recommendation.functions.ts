@@ -1,3 +1,4 @@
+import { requireGoogleProviderRate } from "@/lib/google-rate-limit.server";
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
@@ -25,7 +26,7 @@ const Input = z.object({
 });
 
 export const getPlaceIntro = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
+  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
   .inputValidator((input) => Input.parse(input))
   .handler(async ({ data }): Promise<{ intro: PlaceIntroPayload | null; error: string | null }> => {
     try {

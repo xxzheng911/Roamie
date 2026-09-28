@@ -11,7 +11,7 @@ import {
   shouldSkipStartupNavigation,
   tryStartBootRouteSync,
 } from "@/lib/startup-boot-state";
-import { readBrowserPathname } from "@/lib/startup-path";
+import { isCanonicalOAuthCallbackPath, readBrowserPathname } from "@/lib/startup-path";
 
 type Props = {
   targetRoute: StartupPath;
@@ -29,6 +29,7 @@ export function AppBootRouteSync({ targetRoute, onApplied }: Props) {
   useEffect(() => {
     const normalizedTarget = targetRoute === "/" ? "/" : targetRoute;
     const currentRoute = readBrowserPathname();
+    if (isCanonicalOAuthCallbackPath(currentRoute)) return;
 
     const finish = () => {
       markBootRouteSynced(normalizedTarget, {
@@ -64,6 +65,7 @@ export function AppBootRouteSync({ targetRoute, onApplied }: Props) {
             onboardingRoute: ONBOARDING_ROUTE,
           });
         }
+        if (isCanonicalOAuthCallbackPath(readBrowserPathname())) return;
         await router.navigate({ to: normalizedTarget, replace: true });
         await router.load({ sync: true });
 

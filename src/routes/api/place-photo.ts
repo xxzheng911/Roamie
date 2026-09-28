@@ -1,3 +1,4 @@
+import { checkGoogleProviderRate } from "@/lib/google-rate-limit.server";
 import { createFileRoute } from "@tanstack/react-router";
 import {
   resolveGoogleMapsKeyFromServerEnv,
@@ -265,6 +266,9 @@ export async function handlePlacePhotoRequest(
   if (!(await verifyPlacePhotoSignature(runtimeEnv, photo!, maxW, expires, signature))) {
     return new Response("Unauthorized", { status: 401 });
   }
+  try {
+    if (!await checkGoogleProviderRate(runtimeEnv, `google:photo:${ip}`)) return new Response("Rate limited", {status:429,headers:{"Retry-After":"60"}});
+  } catch { return new Response("Photo unavailable", {status:503}); }
   const validPhoto = photo!;
 
   let keySource: GoogleMapsServerKeySource = "none";
@@ -391,7 +395,7 @@ export async function handlePlacePhotoRequest(
   }
 }
 
-/** Proxy Google Place photos when VITE_GOOGLE_MAPS_API_KEY is absent in native bundle. */
+/** Signed photo capability; Google credential is resolved only on the server. */
 export const Route = createFileRoute("/api/place-photo")({
   server: {
     handlers: {

@@ -40,7 +40,7 @@ import {
   fetchPlaceDetailsForScreenWithKeyViaGateway,
   getPlaceDetailsServerFnViaGateway,
 } from "@/lib/pie/places-gateway";
-import { getGoogleMapsBrowserKey } from "@/lib/google-maps-client";
+import { getGoogleRestTransportToken } from "@/lib/google-rest-transport";
 import { detectPlatform } from "@/services/platform";
 import { distanceMeters, formatDistanceLabel } from "@/lib/map-explore";
 import {
@@ -257,7 +257,7 @@ function PlaceDetailPage() {
           fetchPlaceDetailsFn,
           detectPlatform().isCapacitor
             ? async (id, loc) => {
-                const mapsKey = getGoogleMapsBrowserKey();
+                const mapsKey = getGoogleRestTransportToken();
                 if (!mapsKey) return null;
                 return fetchPlaceDetailsForScreenWithKeyViaGateway(id, mapsKey, loc, undefined, {
                   requestPath: "capacitor_client",

@@ -1,3 +1,5 @@
+import { AUTH_CALLBACK_PATH } from "@/constants/auth-redirect";
+
 /** 登入頁冷啟動（可略過重型 provider / 背景 auth） */
 export function isLoginColdStartPath(pathname: string): boolean {
   const path = pathname.replace(/\/+$/, "") || "/";
@@ -25,4 +27,9 @@ export function shouldUseLightStartupShell(pathname: string, hasUser: boolean, l
 export function readBrowserPathname(): string {
   if (typeof window === "undefined") return "/";
   return window.location.pathname.replace(/\/+$/, "") || "/";
+}
+
+/** Only the canonical OAuth callback owns startup navigation while mounted. */
+export function isCanonicalOAuthCallbackPath(pathname: string): boolean {
+  return pathname === AUTH_CALLBACK_PATH;
 }

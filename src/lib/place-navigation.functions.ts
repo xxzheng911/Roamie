@@ -1,3 +1,4 @@
+import { requireGoogleProviderRate } from "@/lib/google-rate-limit.server";
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
@@ -11,7 +12,7 @@ const InputSchema = z.object({
 });
 
 export const fetchPlaceTravelDurations = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
+  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
   .inputValidator((input) => InputSchema.parse(input))
   .handler(
     async ({ data }): Promise<{ durations: LegDurationEstimate | null; error: string | null }> => {

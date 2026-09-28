@@ -9,7 +9,8 @@ import {
   fetchPlaceDetailsForScreenWithKeyViaGateway,
   getPlaceLiteDetailsViaGateway,
 } from "@/lib/pie/places-gateway";
-import { getGoogleMapsBrowserKey, buildPlacePhotoUrl } from "@/lib/google-maps-client";
+import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
+import { getGoogleRestTransportToken } from "@/lib/google-rest-transport";
 import { preferJpegPngImageUrl } from "@/lib/safe-image-url";
 import { buildUnifiedPlaceCard } from "@/lib/unified-place-card";
 import type { UserProfileForReason } from "@/lib/build-place-recommendation-reason";
@@ -203,7 +204,7 @@ export async function resolveExploreSelectedPlacePin(
 
   let details: PlaceDetailsScreenResult | PlaceResult | null = null;
 
-  const browserKey = getGoogleMapsBrowserKey();
+  const browserKey = getGoogleRestTransportToken();
   if (browserKey) {
     details = await fetchPlaceDetailsForScreenWithKeyViaGateway(
       placeId,

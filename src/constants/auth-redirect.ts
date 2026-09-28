@@ -12,20 +12,14 @@ export const OAUTH_DEEP_LINK_REDIRECT = `${APP_SCHEME}://auth/callback`;
 /** 本機 Vite dev（僅瀏覽器／Capacitor live reload 用，非寫死正式網域） */
 export const LOCAL_DEV_AUTH_CALLBACK = "http://localhost:8080/auth/callback";
 
-/**
- * 正式 Web 網域（選用）：有值時才加入允許清單建議。
- * 未設定時不 fallback 任何 production URL。
- */
-export function readOptionalWebAuthCallback(): string | null {
-  const origin = import.meta.env.VITE_APP_ORIGIN as string | undefined;
-  if (!origin?.trim()) return null;
-  return `${origin.replace(/\/$/, "")}${AUTH_CALLBACK_PATH}`;
+/** Fixed production authority; never derived from unvalidated build configuration. */
+export const PRODUCTION_AUTH_ORIGIN = "https://roamie.tw";
+export const PRODUCTION_AUTH_CALLBACK = `${PRODUCTION_AUTH_ORIGIN}${AUTH_CALLBACK_PATH}`;
+
+export function readOptionalWebAuthCallback(): string {
+  return PRODUCTION_AUTH_CALLBACK;
 }
 
-/** 建議在 Supabase 後台加入的 Redirect URLs（不含尚未決定的正式網域） */
 export function suggestedSupabaseRedirectUrls(): string[] {
-  const urls = [OAUTH_DEEP_LINK_REDIRECT, LOCAL_DEV_AUTH_CALLBACK];
-  const web = readOptionalWebAuthCallback();
-  if (web) urls.push(web);
-  return urls;
+  return [OAUTH_DEEP_LINK_REDIRECT, LOCAL_DEV_AUTH_CALLBACK, PRODUCTION_AUTH_CALLBACK];
 }

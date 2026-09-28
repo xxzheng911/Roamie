@@ -1,3 +1,4 @@
+import { resolveOAuthCallback, validateOAuthOrigin } from "@/lib/oauth-origin-authority";
 import { APP_SCHEME } from "@/constants/app";
 import {
   AUTH_CALLBACK_PATH,
@@ -17,28 +18,14 @@ export {
   suggestedSupabaseRedirectUrls,
 } from "@/constants/auth-redirect";
 
-/**
- * OAuth `redirectTo` — iOS TestFlight / 原生一律 `roamie://auth/callback`。
- * Web 本機用 localhost；正式網域僅在設定 VITE_APP_ORIGIN 後使用（不寫死）。
- */
+/** Web authority is the strictly validated current origin; native retains its deep link. */
 export function getOAuthRedirectUrl(): string {
   const info = detectPlatform();
-
-  if (info.isCapacitor || info.isNative) {
-    return OAUTH_DEEP_LINK_REDIRECT;
-  }
-
-  const configured = readOptionalWebAuthCallback();
-  if (configured) return configured;
-
-  if (typeof window !== "undefined") {
-    const origin = window.location.origin;
-    if (origin && origin !== "null" && !origin.startsWith("file:")) {
-      return `${origin}${AUTH_CALLBACK_PATH}`;
-    }
-  }
-
-  return LOCAL_DEV_AUTH_CALLBACK;
+  return resolveOAuthCallback({
+    native: info.isCapacitor || info.isNative,
+    origin: typeof window === "undefined" ? undefined : window.location.origin,
+    development: import.meta.env.DEV,
+  });
 }
 
 export function isOAuthDeepLinkUrl(url: string): boolean {
@@ -47,7 +34,6 @@ export function isOAuthDeepLinkUrl(url: string): boolean {
     if (u.protocol === `${APP_SCHEME}:`) {
       return u.hostname === "auth" && u.pathname === "/callback";
     }
-    if (u.href.startsWith(OAUTH_DEEP_LINK_REDIRECT)) return true;
 
     const project = readSupabaseProjectUrl();
     if (project) {
@@ -57,14 +43,11 @@ export function isOAuthDeepLinkUrl(url: string): boolean {
       }
     }
 
-    const configured = readOptionalWebAuthCallback();
-    if (configured) {
-      const allowed = new URL(configured);
-      if (u.origin === allowed.origin && u.pathname === allowed.pathname) return true;
-    }
-    if (import.meta.env.DEV) {
-      const dev = new URL(LOCAL_DEV_AUTH_CALLBACK);
-      return u.origin === dev.origin && u.pathname === dev.pathname;
+    // Validate raw authority (URL.origin would discard explicit ports/userinfo).
+    const rawAuthority = url.match(/^(https?:\/\/[^/?#]+)(?:[/?#]|$)/)?.[1];
+    if (rawAuthority) {
+      validateOAuthOrigin(rawAuthority, import.meta.env.DEV);
+      return u.pathname === AUTH_CALLBACK_PATH;
     }
     return false;
   } catch {

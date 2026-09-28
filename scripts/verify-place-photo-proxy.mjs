@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {
   buildPlacePhotoUpstreamUrl,
-  handlePlacePhotoRequest,
+  handlePlacePhotoRequest as handlePhoto,
   validatePhotoResource,
 } from "../src/routes/api/place-photo.ts";
 import { signPlacePhoto } from "../src/lib/place-photo-signature.server.ts";
@@ -13,7 +13,12 @@ const opaqueSpecialCharacters = ".~%+-=_:@!$&'(),;[]";
 const opaqueResource = `places/opaque-place~id/photos/${`${opaqueSpecialCharacters}Az09`.repeat(40)}`;
 let upstreamCalls = 0;
 
-const signingEnv = { PLACE_PHOTO_SIGNING_SECRET: "test-signing-secret-at-least-32-bytes" };
+const handlePlacePhotoRequest = (request, dependencies, env = signingEnv) =>
+  handlePhoto(request, dependencies, env);
+const signingEnv = {
+  GOOGLE_API_RATE_LIMITER: { limit: async () => ({ success: true }) },
+  PLACE_PHOTO_SIGNING_SECRET: "test-signing-secret-at-least-32-bytes",
+};
 process.env.PLACE_PHOTO_SIGNING_SECRET = signingEnv.PLACE_PHOTO_SIGNING_SECRET;
 
 async function requestFor(photo, suffix = "") {
@@ -30,7 +35,7 @@ function dependencies(fetchImpl, timeoutMs = 8_000) {
       upstreamCalls += 1;
       return fetchImpl(...args);
     },
-    resolveServerKey: () => ({ key, source: "GOOGLE_MAPS_API_KEY" }),
+    resolveServerKey: () => ({ key, source: "GOOGLE_PLACES_SERVER_API_KEY" }),
     recordHttpCall: () => {},
     timeoutMs,
   };
@@ -44,6 +49,20 @@ const anonymous = await handlePlacePhotoRequest(
   signingEnv,
 );
 assert.equal(anonymous.status, 401, "unsigned requests must be rejected before Google fetch");
+
+for (const [binding, status] of [
+  [undefined, 503],
+  [{ limit: async () => ({ success: false }) }, 429],
+]) {
+  const before = upstreamCalls;
+  const response = await handlePlacePhotoRequest(
+    await requestFor(shortResource),
+    dependencies(async () => new Response(jpeg)),
+    { ...signingEnv, GOOGLE_API_RATE_LIMITER: binding },
+  );
+  assert.equal(response.status, status);
+  assert.equal(upstreamCalls, before, "photo rate rejection must not reach Google");
+}
 
 for (const resource of [longResource, shortResource, opaqueResource]) {
   const encoded = encodeURIComponent(resource);
@@ -137,7 +156,10 @@ const timeoutResponse = await handlePlacePhotoRequest(
 assert.equal(timeoutResponse.status, 500, "upstream timeout must remain enforced");
 assert.equal(timeoutResponse.headers.get("x-roamie-photo-failure-stage"), "timeout");
 assert.equal(timeoutResponse.headers.get("x-roamie-photo-error-name"), "AbortError");
-assert.equal(timeoutResponse.headers.get("x-roamie-photo-key-source"), "GOOGLE_MAPS_API_KEY");
+assert.equal(
+  timeoutResponse.headers.get("x-roamie-photo-key-source"),
+  "GOOGLE_PLACES_SERVER_API_KEY",
+);
 assert.equal(timeoutResponse.headers.get("x-roamie-photo-upstream-url-valid"), "true");
 assert.equal(timeoutResponse.headers.get("x-roamie-photo-upstream-path-segment-count"), "6");
 
@@ -168,14 +190,11 @@ const secretSentinel = "AIza-secret-must-not-leak";
 const resourceSentinel = "places/private/photos/private-resource";
 const keyFailure = await handlePlacePhotoRequest(await requestFor(resourceSentinel), {
   ...dependencies(async () => new Response(jpeg)),
-  resolveServerKey: () => ({ key: null, source: "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY" }),
+  resolveServerKey: () => ({ key: null, source: "none" }),
 });
 assert.equal(keyFailure.status, 500);
 assert.equal(keyFailure.headers.get("x-roamie-photo-failure-stage"), "key_resolution");
-assert.equal(
-  keyFailure.headers.get("x-roamie-photo-key-source"),
-  "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY",
-);
+assert.equal(keyFailure.headers.get("x-roamie-photo-key-source"), "none");
 assert.equal(keyFailure.headers.get("x-roamie-photo-error-name"), "Error");
 const serializedFailure = [...keyFailure.headers.entries()].flat().join(" ");
 assert.doesNotMatch(serializedFailure, new RegExp(secretSentinel));

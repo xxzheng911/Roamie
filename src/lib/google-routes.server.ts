@@ -1,4 +1,3 @@
-import { requireGoogleMapsServerKey } from "@/lib/google-maps-key-resolve.server";
 import { API_CACHE_TTL_MS } from "@/lib/api/constants";
 import { createServerRequestCache } from "@/lib/server-request-cache";
 import {
@@ -37,7 +36,7 @@ async function computeRouteRaw(
   return routeServerCache.getOrFetch(
     routeCacheKey(origin, destination, travelMode, departureTime),
     () => {
-      const apiKey = requireGoogleMapsServerKey();
+      const apiKey = "roamie-server-proxy";
       return fetchGoogleRoute(apiKey, origin, destination, travelMode, departureTime);
     },
     (result) => result.ok,

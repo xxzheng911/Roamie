@@ -1,3 +1,4 @@
+import { googleRestFetch } from "@/lib/google-rest-transport";
 /**
  * Client-side Destination Provider (Capacitor / WebView).
  *
@@ -9,7 +10,7 @@ import {
   placeDetailsUrl,
   placesAutocompleteUrl,
 } from "@/lib/google-maps-api";
-import { getGoogleMapsBrowserKey } from "@/lib/google-maps-client";
+import { getGoogleRestTransportToken } from "@/lib/google-rest-transport";
 import { localeToGoogleLanguageCode } from "@/lib/i18n/places-language";
 import type { Locale } from "@/lib/i18n/types";
 import type { TripLocation } from "@/lib/location/types";
@@ -94,7 +95,7 @@ async function geocodeOnceClient(params: {
 
   let res: Response;
   try {
-    res = await fetch(endpoint);
+    res = await googleRestFetch(endpoint);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logDestinationServerResponse({
@@ -239,7 +240,7 @@ async function placesAutocompleteDetailsClient(params: {
 
   let autoRes: Response;
   try {
-    autoRes = await fetch(placesAutocompleteUrl(), {
+    autoRes = await googleRestFetch(placesAutocompleteUrl(), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -349,7 +350,7 @@ async function placesAutocompleteDetailsClient(params: {
 
   let detailRes: Response;
   try {
-    detailRes = await fetch(placeDetailsUrl(placeId, params.language), {
+    detailRes = await googleRestFetch(placeDetailsUrl(placeId, params.language), {
       method: "GET",
       headers: {
         "X-Goog-Api-Key": params.apiKey,
@@ -481,28 +482,13 @@ export type ClientGeocodeDestinationParams = {
 };
 
 /**
- * Resolve destination coordinates via browser Google APIs.
+ * Resolve destination coordinates via the authenticated Google REST proxy.
  * Used when Capacitor has no working serverFn, or server returned an empty envelope.
  */
 export async function geocodeDestinationViaClient(
   params: ClientGeocodeDestinationParams,
 ): Promise<GeocodeFnEnvelope> {
-  const apiKey = getGoogleMapsBrowserKey();
-  if (!apiKey) {
-    return {
-      location: null,
-      error: "geocode_api_key_missing",
-      providerResult: {
-        ok: false,
-        status: "API_KEY_MISSING",
-        provider: "geocode",
-        rawResultCount: 0,
-        parsedResultCount: 0,
-        failureReason: "geocode_api_key_missing",
-        query: params.query,
-      },
-    };
-  }
+  const apiKey = getGoogleRestTransportToken();
 
   const locale = params.locale ?? params.language ?? "zh-TW";
   const language = localeToGoogleLanguageCode(locale);

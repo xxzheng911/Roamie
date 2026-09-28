@@ -1,6 +1,7 @@
 import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
 
 const ALLOWED_API_PATHS = new Set([
+  "/api/google",
   "/api/roamie",
   "/api/generate-itinerary",
   "/api/analytics/events",

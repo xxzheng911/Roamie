@@ -1,5 +1,7 @@
 /** Google Maps / Places URL 與欄位常數（client-safe，不含 server env） */
 
+export const GOOGLE_PLACES_MAX_RADIUS_METERS = 50_000;
+
 const PLACES_API = "https://places.googleapis.com/v1";
 
 export const PLACES_FIELD_MASK =
