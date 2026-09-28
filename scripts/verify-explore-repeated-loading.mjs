@@ -4,14 +4,23 @@ import { exploreSearchPresentation } from "../src/lib/explore-search-presentatio
 import {
   applyExploreProgressiveUpdate,
   buildMapExploreCacheKeys,
+  capExploreVisiblePlaces,
   convergeExploreDisplayedPlaces,
+  exploreAllVisibleDisplayLimit,
   exploreDisplayedPlaceKey,
   mergeStableExploreProgress,
+  reconcileExploreVisibleSnapshot,
   resolveExploreFirstPaintCache,
+  shouldCommitExploreFirstSnapshot,
   shouldEnterExploreFullLoading,
   shouldResetExploreResultsForScope,
   stabilizeExploreCardPhoto,
 } from "../src/lib/explore-client-loading.ts";
+import { markerSnapshotChanged, markerSnapshotKey } from "../src/lib/map-marker-snapshot.ts";
+import {
+  placeCoverRequestIdentity,
+  shouldRestartPlaceCoverLoad,
+} from "../src/hooks/use-place-cover-image.ts";
 import { mergeExploreAllCategoryResults } from "../src/lib/explore-all-places-merge.ts";
 import { searchExploreCategoryPlaces } from "../src/lib/explore-category-search.ts";
 import { publishHomeNearbyCache } from "../src/lib/home-nearby-repository.ts";
@@ -32,11 +41,21 @@ assert.doesNotMatch(loadingSource, /searchPlaces|\/api\/google|searchNearby|sear
 assert.match(route, /useLayoutEffect/);
 assert.match(route, /resolveExploreFirstPaintCache/);
 assert.match(route, /shouldEnterExploreFullLoading\(visibleResultsRef\.current\.length\)/);
-assert.match(route, /applyExploreProgressiveUpdate/);
+assert.match(route, /shouldCommitExploreFirstSnapshot/);
+assert.match(route, /reconcileExploreVisibleSnapshot/);
+assert.doesNotMatch(route, /applyExploreProgressiveUpdate/);
 assert.match(route, /convergeExploreDisplayedPlaces/);
 assert.match(cards, /key=\{p\.id\}/);
 assert.match(route, /loading=\{resultPresentation\.fullLoading\}/);
-assert.match(route, /backgroundLoading=\{resultPresentation\.backgroundLoading\}/);
+assert.doesNotMatch(route, /backgroundLoading=\{resultPresentation\.backgroundLoading\}/);
+assert.doesNotMatch(cards, /loading \|\| backgroundLoading/);
+assert.match(cards, /\{loading \? \(/);
+const presentationSource = route.slice(
+  route.indexOf("const resultPresentation"),
+  route.indexOf("const displayResults"),
+);
+assert.doesNotMatch(presentationSource, /sortMapCards/);
+assert.equal(exploreAllVisibleDisplayLimit(false), 10);
 
 function place(id, name, extra = {}) {
   return {
@@ -127,6 +146,17 @@ loading = false;
 warmFrames.push(frame(progressed, loading));
 assert.equal(warmFrames.filter((item) => item.fullLoading).length, 0);
 assert.ok(warmFrames.every((item) => item.places.length === 2));
+assert.equal(
+  shouldCommitExploreFirstSnapshot({
+    hasVisibleSnapshot: true,
+    completedCategories: 3,
+    totalCategories: 5,
+    bufferedCount: 10,
+    displayLimit: 10,
+  }),
+  false,
+  "warm progress must not commit another visible snapshot",
+);
 
 // Case 2: cache hit plus background hydration keeps cards.
 assert.equal(shouldEnterExploreFullLoading(2), false);
@@ -134,7 +164,7 @@ assert.equal(frame(shown, true).fullLoading, false);
 assert.equal(frame(shown, true).backgroundLoading, true);
 assert.equal(frame(shown, true).places.length, 2);
 
-// Case 3 + 4 + 8: progressive categories keep identity, then converge to official ranking.
+// Case 3 + 4 + 8: subcategory waves stay in the buffer, then one official reconcile.
 const coffee = place("ChIJcoffee", "Coffee", { rating: 4.1, categoryId: "coffee" });
 const sight = place("ChIJsight", "Sight", {
   rating: 4.9,
@@ -154,44 +184,56 @@ let cold = [];
 let coldLoading = true;
 const coldFrames = [frame(cold, coldLoading)];
 assert.equal(shouldEnterExploreFullLoading(cold.length), true);
-const batches = [
-  [coffee],
-  [coffee, sight],
-  [coffee, sight, district],
-];
-for (const batch of batches) {
-  const next = applyExploreProgressiveUpdate({
-    current: cold,
-    incoming: batch,
-    requestId: 1,
-    currentRequestId: 1,
-    aborted: false,
-    keyOf: exploreDisplayedPlaceKey,
-  });
-  assert.ok(next);
-  if (cold.length > 0) assert.equal(next[0], cold[0]);
-  cold = next;
-  coldFrames.push(frame(cold, coldLoading));
-}
+assert.equal(
+  shouldCommitExploreFirstSnapshot({
+    hasVisibleSnapshot: false,
+    completedCategories: 1,
+    totalCategories: 5,
+    bufferedCount: 10,
+    displayLimit: 10,
+  }),
+  false,
+  "coffee alone must not publish",
+);
+const firstScreen = Array.from({ length: 10 }, (_, index) =>
+  place(`ChIJfirst-${index}`, `First ${index}`, { rating: 4.5 - index * 0.01 }),
+);
+assert.equal(
+  shouldCommitExploreFirstSnapshot({
+    hasVisibleSnapshot: false,
+    completedCategories: 2,
+    totalCategories: 5,
+    bufferedCount: firstScreen.length,
+    displayLimit: 10,
+  }),
+  true,
+);
+cold = capExploreVisiblePlaces(firstScreen, 10);
+coldLoading = false;
+coldFrames.push(frame(cold, true));
 assert.equal(coldFrames.filter((item) => item.fullLoading).length, 1);
-assert.ok(coldFrames.slice(1).every((item) => item.fullLoading === false));
-assert.deepEqual(cold.map((item) => item.id), ["ChIJcoffee", "ChIJsight", "ChIJdistrict"]);
-assert.equal(cold[0], coffee);
-assert.equal(cold[1], sight);
+assert.equal(coldFrames[1].fullLoading, false);
+assert.equal(cold.length, 10);
+assert.equal(
+  shouldCommitExploreFirstSnapshot({
+    hasVisibleSnapshot: true,
+    completedCategories: 3,
+    totalCategories: 5,
+    bufferedCount: 10,
+    displayLimit: 10,
+  }),
+  false,
+);
+assert.equal(capExploreVisiblePlaces([...firstScreen, district, sight], 10).length, 10);
 
 const official = mergeExploreAllCategoryResults(
   { coffee: [coffee], sight: [sight], district: [district] },
   { origin: { lat: taipei.lat, lng: taipei.lng }, timeBucket: "day" },
 );
-const converged = convergeExploreDisplayedPlaces(cold, official, exploreDisplayedPlaceKey);
+const converged = convergeExploreDisplayedPlaces([coffee, sight, district], official, exploreDisplayedPlaceKey);
 assert.deepEqual(
   converged.map(exploreDisplayedPlaceKey),
   official.map(exploreDisplayedPlaceKey),
-);
-assert.notDeepEqual(
-  cold.map((item) => item.id),
-  official.map((item) => item.id),
-  "progressive order must not freeze the official ranking",
 );
 assert.equal(converged.find((item) => item.id === coffee.id), coffee);
 assert.equal(stabilizeExploreCardPhoto(coffee, { ...coffee, coverImageUrl: "https://signed/new" }).coverImageUrl, coffee.coverImageUrl);
@@ -305,8 +347,8 @@ const sharedHit = resolveExploreFirstPaintCache({
   location: sharedLocation,
   session: null,
 });
-assert.equal(sharedHit.source, "shared-nearby");
-assert.deepEqual(sharedHit.places.map((item) => item.id), [sharedPlace.id]);
+assert.equal(sharedHit.source, "none", "home nearby cache must not paint Explore");
+assert.equal(sharedHit.places.length, 0);
 invalidateMapPlacesCache(coffeeScope.cacheKey);
 assert.equal(
   resolveExploreFirstPaintCache({
@@ -383,4 +425,191 @@ assert.equal(
 assert.equal(frame([], true).fullLoading, true);
 assert.equal(frame([coffee], true).fullLoading, false);
 
-console.log("Explore repeated-loading UX: 8 cases + warm request budget 0 PASS");
+function visualMetrics(run) {
+  const metrics = {
+    visibleSnapshotPublishCount: 0,
+    recommendationSpinnerMountCount: 0,
+    visibleCountTransitions: 0,
+    visibleOrderTransitions: 0,
+    cardIdentityReplacementCount: 0,
+    markerSnapshotTransitions: 0,
+    repeatedPhotoSignCount: 0,
+    finalReconcileCount: 0,
+    maxVisible: 0,
+  };
+  let visible = [];
+  let spinnerMounted = false;
+  let photoSigned = new Set();
+  const publish = (next, kind) => {
+    if (next === visible) return;
+    const previousKeys = visible.map(exploreDisplayedPlaceKey);
+    const nextKeys = next.map(exploreDisplayedPlaceKey);
+    if (visible.length !== next.length) metrics.visibleCountTransitions += 1;
+    if (previousKeys.join("|") !== nextKeys.join("|")) metrics.visibleOrderTransitions += 1;
+    const previousByKey = new Map(visible.map((item) => [exploreDisplayedPlaceKey(item), item]));
+    for (const item of next) {
+      const key = exploreDisplayedPlaceKey(item);
+      const previous = previousByKey.get(key);
+      if (previous && previous !== item) metrics.cardIdentityReplacementCount += 1;
+      const photoIdentity = placeCoverRequestIdentity({
+        placeId: item.id,
+        photoName: item.photoName,
+        url: item.coverImageUrl,
+      });
+      if (
+        photoSigned.has(photoIdentity) &&
+        shouldRestartPlaceCoverLoad({
+          previousIdentity: photoIdentity,
+          nextIdentity: photoIdentity,
+          hasDisplayedImage: true,
+        })
+      ) {
+        metrics.repeatedPhotoSignCount += 1;
+      }
+      photoSigned.add(photoIdentity);
+    }
+    const previousMarkers = visible.map((item) => markerSnapshotKey({ id: item.id, lat: item.lat, lng: item.lng, title: item.name }));
+    const nextMarkers = next.map((item) => markerSnapshotKey({ id: item.id, lat: item.lat, lng: item.lng, title: item.name }));
+    if (markerSnapshotChanged(previousMarkers, nextMarkers)) metrics.markerSnapshotTransitions += 1;
+    visible = next;
+    metrics.visibleSnapshotPublishCount += 1;
+    metrics.maxVisible = Math.max(metrics.maxVisible, visible.length);
+    if (kind === "reconcile") metrics.finalReconcileCount += 1;
+    if (visible.length > 0) spinnerMounted = spinnerMounted;
+  };
+  if (run.warm) {
+    publish(run.warm, "cache");
+  } else if (!spinnerMounted) {
+    spinnerMounted = true;
+    metrics.recommendationSpinnerMountCount = 1;
+  }
+  for (const wave of run.waves) {
+    const buffered = capExploreVisiblePlaces(wave.cards, run.displayLimit);
+    assert.ok(buffered.length <= run.displayLimit);
+    const beforeKeys = visible.map(exploreDisplayedPlaceKey);
+    const beforeLength = visible.length;
+    if (
+      shouldCommitExploreFirstSnapshot({
+        hasVisibleSnapshot: visible.length > 0,
+        completedCategories: wave.completedCategories,
+        totalCategories: wave.totalCategories,
+        bufferedCount: buffered.length,
+        displayLimit: run.displayLimit,
+      })
+    ) {
+      publish(buffered, "first");
+    }
+    if (beforeLength > 0) {
+      assert.equal(visible.length, beforeLength, "later subcategory progress must not change visible count");
+      assert.deepEqual(
+        visible.map(exploreDisplayedPlaceKey),
+        beforeKeys,
+        "later subcategory progress must not change visible order",
+      );
+    }
+  }
+  const reconciled = reconcileExploreVisibleSnapshot(
+    visible,
+    run.finalPlaces,
+    exploreDisplayedPlaceKey,
+    run.displayLimit,
+  );
+  assert.ok(reconciled.length <= run.displayLimit);
+  if (reconciled !== visible) publish(reconciled, "reconcile");
+  if (!run.warm) assert.equal(metrics.recommendationSpinnerMountCount, spinnerMounted ? 1 : 0);
+  if (run.warm) assert.equal(metrics.recommendationSpinnerMountCount, 0);
+  return { metrics, visible };
+}
+
+const displayLimit = 10;
+const wavePlaces = (count, prefix) =>
+  Array.from({ length: count }, (_, index) =>
+    place(`ChIJ${prefix}-${index}`, `${prefix} ${index}`, {
+      lat: 25.03 + index * 0.001,
+      lng: 121.56,
+      rating: 4.8 - index * 0.01,
+    }),
+  );
+const coldWaves = [4, 7, 12, 12, 12].map((count, index) => ({
+  cards: wavePlaces(count, "cold"),
+  completedCategories: index + 1,
+  totalCategories: 5,
+}));
+const coldRun = visualMetrics({
+  warm: null,
+  displayLimit,
+  waves: coldWaves,
+  finalPlaces: coldWaves[1].cards.slice(0, 8).concat(wavePlaces(3, "final")),
+});
+assert.equal(coldRun.metrics.recommendationSpinnerMountCount, 1);
+assert.equal(coldRun.metrics.visibleSnapshotPublishCount, 2);
+assert.equal(coldRun.metrics.finalReconcileCount, 1);
+assert.ok(coldRun.metrics.maxVisible <= displayLimit);
+assert.equal(coldRun.metrics.repeatedPhotoSignCount, 0);
+
+const warmList = wavePlaces(10, "warm");
+const warmRun = visualMetrics({
+  warm: warmList,
+  displayLimit,
+  waves: [1, 2, 3, 4, 5].map((completedCategories) => ({
+    cards: wavePlaces(12, "buffer"),
+    completedCategories,
+    totalCategories: 5,
+  })),
+  finalPlaces: warmList,
+});
+assert.equal(warmRun.metrics.recommendationSpinnerMountCount, 0);
+assert.equal(warmRun.metrics.visibleSnapshotPublishCount, 1);
+assert.equal(warmRun.metrics.finalReconcileCount, 0);
+assert.equal(warmRun.metrics.visibleCountTransitions, 1);
+assert.deepEqual(warmRun.visible.map((item) => item.id), warmList.map((item) => item.id));
+
+const added = wavePlaces(1, "new")[0];
+const shifted = reconcileExploreVisibleSnapshot(
+  warmList,
+  [added, ...warmList.slice(0, 9)],
+  exploreDisplayedPlaceKey,
+  displayLimit,
+);
+assert.equal(shifted.length <= displayLimit, true);
+assert.equal(shifted[0], warmList[0], "a small final delta keeps the current first card");
+assert.equal(shifted[shifted.length - 1], added);
+
+const coverIdentity = placeCoverRequestIdentity({
+  placeId: coffee.id,
+  photoName: coffee.photoName,
+  url: "https://signed.example/one",
+});
+assert.equal(
+  coverIdentity,
+  placeCoverRequestIdentity({
+    placeId: coffee.id,
+    photoName: coffee.photoName,
+    url: "https://signed.example/two",
+  }),
+);
+assert.equal(
+  shouldRestartPlaceCoverLoad({
+    previousIdentity: coverIdentity,
+    nextIdentity: coverIdentity,
+    hasDisplayedImage: true,
+  }),
+  false,
+);
+assert.equal(
+  shouldRestartPlaceCoverLoad({
+    previousIdentity: coverIdentity,
+    nextIdentity: placeCoverRequestIdentity({ placeId: coffee.id, photoName: "photos/other" }),
+    hasDisplayedImage: true,
+  }),
+  true,
+);
+assert.equal(
+  markerSnapshotChanged(
+    warmList.map((item) => markerSnapshotKey(item)),
+    warmList.map((item) => markerSnapshotKey(item)),
+  ),
+  false,
+);
+
+console.log("Explore repeated-loading UX: visible snapshot contract + warm request budget 0 PASS");

@@ -641,6 +641,11 @@ export function resolveExploreAllHydrationPlan(
   };
 }
 
+export type ExploreAllSearchProgress = {
+  completedCategories: number;
+  totalCategories: number;
+};
+
 async function searchExploreAllPlacesMerged(ctx: {
   userLocation: { lat: number; lng: number };
   weather: WeatherSummary | null;
@@ -652,7 +657,7 @@ async function searchExploreAllPlacesMerged(ctx: {
   cityLabel?: string;
   cityPlaceId?: string | null;
   requestSession?: ExploreRequestSession;
-  onProgress?: (cards: ExplorePlaceCard[]) => void;
+  onProgress?: (cards: ExplorePlaceCard[], progress?: ExploreAllSearchProgress) => void;
 }): Promise<ExplorePlaceCard[]> {
   const { userLocation, locale, recommendMode } = ctx;
   const timeBucket = exploreTimeBucket();
@@ -707,10 +712,15 @@ async function searchExploreAllPlacesMerged(ctx: {
   });
 
   const failedSubIds: string[] = [];
+  let completedCategories = cachedSubIds.length;
+  const totalCategories = EXPLORE_ALL_SUBCATEGORY_IDS.length;
   for (const subId of missingSubIds) {
     if (ctx.requestSession?.controller.signal.aborted) break;
     const subCat = getExploreCategoryById(subId);
-    if (!subCat) continue;
+    if (!subCat) {
+      completedCategories += 1;
+      continue;
+    }
     try {
       cardsByCategory[subId] = await searchExploreCategoryPlaces(subCat, {
         ...ctx,
@@ -718,18 +728,21 @@ async function searchExploreAllPlacesMerged(ctx: {
         recommendMode,
         cityLabel,
         cityPlaceId: ctx.cityPlaceId,
+        onProgress: undefined,
       });
     } catch {
       failedSubIds.push(subId);
       cardsByCategory[subId] = [];
     }
+    completedCategories += 1;
     const progressive = mergeExploreAllCategoryResults(cardsByCategory, {
       origin: userLocation,
       timeBucket,
       cityMode: recommendMode === "city",
     });
-    if (progressive.length && !ctx.requestSession?.controller.signal.aborted)
-      ctx.onProgress?.(progressive);
+    if (progressive.length && !ctx.requestSession?.controller.signal.aborted) {
+      ctx.onProgress?.(progressive, { completedCategories, totalCategories });
+    }
   }
 
   let merged = mergeExploreAllCategoryResults(cardsByCategory, {
@@ -879,7 +892,7 @@ export async function searchExploreCategoryPlaces(
     cityLabel?: string;
     cityPlaceId?: string | null;
     requestSession?: ExploreRequestSession;
-    onProgress?: (cards: ExplorePlaceCard[]) => void;
+    onProgress?: (cards: ExplorePlaceCard[], progress?: ExploreAllSearchProgress) => void;
   },
 ): Promise<ExplorePlaceCard[]> {
   if (
@@ -991,7 +1004,7 @@ async function searchExploreCategoryPlacesInner(
     cityLabel?: string;
     cityPlaceId?: string | null;
     requestSession?: ExploreRequestSession;
-    onProgress?: (cards: ExplorePlaceCard[]) => void;
+    onProgress?: (cards: ExplorePlaceCard[], progress?: ExploreAllSearchProgress) => void;
     quiet?: boolean;
   },
 ): Promise<ExplorePlaceCard[]> {
@@ -1347,7 +1360,7 @@ export async function searchExploreAllPlaces(ctx: {
   cityLabel?: string;
   cityPlaceId?: string | null;
   requestSession?: ExploreRequestSession;
-  onProgress?: (cards: ExplorePlaceCard[]) => void;
+  onProgress?: (cards: ExplorePlaceCard[], progress?: ExploreAllSearchProgress) => void;
 }): Promise<ExplorePlaceCard[]> {
   const allCat = getExploreCategoryById("all");
   if (!allCat) return [];

@@ -58,7 +58,6 @@ export type MapExploreCardsHandle = {
 type Props = {
   places: MapPlaceCard[];
   loading: boolean;
-  backgroundLoading?: boolean;
   highlightIndex: number | null;
   busyId: string | null;
   savedNames: Set<string>;
@@ -82,7 +81,6 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
     {
       places,
       loading,
-      backgroundLoading,
       highlightIndex,
       busyId,
       savedNames,
@@ -184,11 +182,11 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
 
     return (
       <div className="relative min-w-0 w-full">
-        {(loading || backgroundLoading) && (
+        {loading ? (
           <div className="pointer-events-none absolute inset-x-6 top-0 z-10 flex justify-center py-2">
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
           </div>
-        )}
+        ) : null}
         {showEmpty ? (
           <div className="px-6 py-10" aria-hidden />
         ) : (

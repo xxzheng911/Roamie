@@ -18,10 +18,12 @@ import {
   resolveUserMarkerAvatarSrc,
 } from "@/lib/map-user-location-marker";
 import { applyMapVisiblePadding, type MapVisiblePadding } from "@/lib/map-visible-padding";
+import { markerSnapshotKey } from "@/lib/map-marker-snapshot";
 
 const LOG = "[Roamie Maps]";
 
 export type MapPlaceMarker = {
+  id?: string;
   lat: number;
   lng: number;
   title?: string;
@@ -77,7 +79,13 @@ export function GoogleMap({
   mapPaddingRef.current = mapPadding;
   const mapRef = useRef<google.maps.Map | null>(null);
   const initStartedRef = useRef(false);
-  const placeMarkersRef = useRef<google.maps.Marker[]>([]);
+  const markerRecordsRef = useRef<
+    Array<{ key: string; marker: google.maps.Marker; selected: boolean }>
+  >([]);
+  const placeMarkersPropRef = useRef(placeMarkers);
+  placeMarkersPropRef.current = placeMarkers;
+  const onPlaceMarkerClickRef = useRef(onPlaceMarkerClick);
+  onPlaceMarkerClickRef.current = onPlaceMarkerClick;
   const userOverlayRef = useRef<UserLocationOverlayHandle | null>(null);
   const userInfoWindowRef = useRef<google.maps.InfoWindow | null>(null);
   const userLocationRef = useRef(userLocation);
@@ -320,33 +328,60 @@ export function GoogleMap({
     if (!mapRef.current || !mapReady) return;
     const g = window.google?.maps;
     if (!g?.Marker) return;
-
-    placeMarkersRef.current.forEach((m) => {
-      try {
-        m.setMap(null);
-      } catch {
-        /* ignore */
-      }
-    });
-    placeMarkersRef.current = [];
+    const map = mapRef.current;
+    const existingByKey = new Map(markerRecordsRef.current.map((record) => [record.key, record]));
+    const next: Array<{ key: string; marker: google.maps.Marker; selected: boolean }> = [];
+    const seen = new Set<string>();
 
     try {
-      const MarkerCtor = g.Marker;
-      placeMarkersRef.current = placeMarkers.map((m, i) => {
-        const marker = new MarkerCtor({
-          position: { lat: m.lat, lng: m.lng },
-          map: mapRef.current!,
-          title: m.title,
-          animation: m.selected ? g.Animation?.BOUNCE : undefined,
-          zIndex: m.selected ? 500 : 100,
+      for (const item of placeMarkers) {
+        const key = markerSnapshotKey(item);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const selected = Boolean(item.selected);
+        const found = existingByKey.get(key);
+        if (found) {
+          existingByKey.delete(key);
+          const position = found.marker.getPosition();
+          if (!position || position.lat() !== item.lat || position.lng() !== item.lng) {
+            found.marker.setPosition({ lat: item.lat, lng: item.lng });
+          }
+          if ((found.marker.getTitle() ?? "") !== (item.title ?? "")) found.marker.setTitle(item.title ?? "");
+          if (found.selected !== selected) {
+            found.marker.setAnimation(selected ? (g.Animation?.BOUNCE ?? null) : null);
+            found.marker.setZIndex(selected ? 500 : 100);
+            found.selected = selected;
+          }
+          next.push(found);
+          continue;
+        }
+        const marker = new g.Marker({
+          position: { lat: item.lat, lng: item.lng },
+          map,
+          title: item.title,
+          animation: selected ? g.Animation?.BOUNCE : undefined,
+          zIndex: selected ? 500 : 100,
         });
-        if (onPlaceMarkerClick) marker.addListener("click", () => onPlaceMarkerClick(i));
-        return marker;
-      });
+        marker.addListener("click", () => {
+          const index = placeMarkersPropRef.current.findIndex(
+            (candidate) => markerSnapshotKey(candidate) === key,
+          );
+          if (index >= 0) onPlaceMarkerClickRef.current?.(index);
+        });
+        next.push({ key, marker, selected });
+      }
+      for (const leftover of existingByKey.values()) {
+        try {
+          leftover.marker.setMap(null);
+        } catch {
+          /* ignore */
+        }
+      }
+      markerRecordsRef.current = next;
     } catch (e) {
       console.warn(LOG, "建立地圖標記失敗", e);
     }
-  }, [placeMarkers, onPlaceMarkerClick, mapReady]);
+  }, [placeMarkers, mapReady]);
 
   if (loadError) {
     return (

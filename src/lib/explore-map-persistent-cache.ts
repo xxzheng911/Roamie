@@ -125,8 +125,8 @@ export function writeExploreMapPersistedCache<T>(
   places: T[],
   error: string | null,
 ): void {
-  // Persist only factual Place fields. Recommendation reason/category/profile context
-  // belongs to the current user/session and is rebuilt by the Explore card adapter.
+  // Persist factual Place fields only. coverImageUrl may be a short-lived signed URL,
+  // so the reusable photo authority that stays on disk is photoName.
   const factualPlaces = places.map((place) => {
     const record = place as Record<string, unknown>;
     const {

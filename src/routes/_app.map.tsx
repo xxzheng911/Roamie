@@ -11,11 +11,15 @@ import {
 } from "@/lib/explore-request-session";
 import { exploreSearchPresentation } from "@/lib/explore-search-presentation";
 import {
-  applyExploreProgressiveUpdate,
   buildMapExploreCacheKeys,
+  capExploreVisiblePlaces,
   convergeExploreDisplayedPlaces,
+  exploreAllVisibleDisplayLimit,
   exploreDisplayedPlaceKey,
+  reconcileExploreVisibleSnapshot,
   resolveExploreFirstPaintCache,
+  shouldApplyExploreProgress,
+  shouldCommitExploreFirstSnapshot,
   shouldEnterExploreFullLoading,
   shouldResetExploreResultsForScope,
 } from "@/lib/explore-client-loading";
@@ -123,9 +127,6 @@ import {
   type ExplorePlaceCard,
   type HomeNearbyPick,
 } from "@/lib/explore-category-search";
-import { homeNearbyLoadPeriodKey } from "@/lib/home-nearby-search";
-import { homeNearbyLoadKey } from "@/lib/home-nearby-picks-policy";
-import { readSharedNearbyPlaces } from "@/lib/home-nearby-repository";
 import { buildExploreRawPoolKey, readExploreRawPool } from "@/lib/explore-raw-places-pool";
 import { TAIPEI_CENTER } from "@/lib/geo";
 import { requestDeviceLocation } from "@/lib/device-location";
@@ -388,6 +389,7 @@ function MapView() {
   const visibleResultsRef = useRef<MapPlaceCard[]>([]);
   const displayedScopeRef = useRef<string | null>(null);
   const publishExploreResults = useCallback((next: MapPlaceCard[]) => {
+    if (next === visibleResultsRef.current) return;
     visibleResultsRef.current = next;
     setResults(next);
   }, []);
@@ -455,9 +457,12 @@ function MapView() {
   }, []);
 
   useLayoutEffect(() => {
-    if (restoredExploreSearchRef.current) return;
-    restoredExploreSearchRef.current = true;
-    const snapshot = getEffectiveLocationSnapshot();
+    if (visibleResultsRef.current.length > 0) return;
+    const snapshot = effectiveLocation?.isReadyForPlaces
+      ? effectiveLocation
+      : getEffectiveLocationSnapshot();
+    const session = readExploreMapSearchSession();
+    if (!session && !snapshot?.isReadyForPlaces) return;
     const hit = resolveExploreFirstPaintCache<ExplorePlaceCard>({
       locale,
       location: snapshot?.isReadyForPlaces
@@ -468,9 +473,10 @@ function MapView() {
             label: snapshot.city?.trim() || "",
           }
         : null,
-      session: readExploreMapSearchSession(),
+      session,
     });
-    if (hit.mode === "city" && hit.center) {
+    if (hit.mode === "city" && hit.center && !restoredExploreSearchRef.current) {
+      restoredExploreSearchRef.current = true;
       setSearchSelectedCenter(hit.center);
       setQuery(hit.query);
       setLocationLabel(hit.center.label);
@@ -480,29 +486,40 @@ function MapView() {
       prevQueryRef.current = hit.query;
       prevCatIdRef.current = hit.categoryId;
     }
-    if (hit.source === "none" || !hit.center || !hit.sessionKey || !hit.locationKey) return;
+    if (hit.source !== "explore-map" || !hit.center || !hit.sessionKey || !hit.locationKey) return;
 
     const cardOpts = {
       weather: weatherRef.current,
       reasonProfile: reasonProfileRef.current,
       locale,
     };
-    const finalResults = finalizeMapResults(
-      exploreCardsToMapCards(hit.places, cardOpts),
-      { lat: hit.center.lat, lng: hit.center.lng },
-      reasonProfileRef.current,
-      hit.categoryId,
-      weatherRef.current,
-      null,
-      hit.locationKey,
-      hit.mode === "city" ? hit.center.label : null,
+    const limit =
+      hit.categoryId === "all"
+        ? exploreAllVisibleDisplayLimit(hit.mode === "city")
+        : Number.POSITIVE_INFINITY;
+    const finalResults = capExploreVisiblePlaces(
+      finalizeMapResults(
+        exploreCardsToMapCards(hit.places, cardOpts),
+        { lat: hit.center.lat, lng: hit.center.lng },
+        reasonProfileRef.current,
+        hit.categoryId,
+        weatherRef.current,
+        null,
+        hit.locationKey,
+        hit.mode === "city" ? hit.center.label : null,
+      ),
+      limit,
     );
     if (finalResults.length === 0) return;
     displayedScopeRef.current = hit.sessionKey;
     publishExploreResults(finalResults);
     setLoading(false);
     setError(null);
-  }, [locale, publishExploreResults]);
+  }, [
+    effectiveLocation,
+    locale,
+    publishExploreResults,
+  ]);
 
   const recommendCenter = useMemo(() => {
     if (browseCenter && !query.trim())
@@ -817,22 +834,30 @@ function MapView() {
         locale,
       };
       const enriched = exploreCardsToMapCards(cachedPlaces as ExplorePlaceCard[], cardOpts);
-      const finalResults = finalizeMapResults(
-        enriched,
-        center,
-        reasonProfileRef.current,
-        cat.id,
-        weatherRef.current,
-        primaryPlaceRef.current,
-        locationKey,
-        searchSelectedCenter?.label,
+      const limit =
+        cat.id === "all"
+          ? exploreAllVisibleDisplayLimit(cityRecommendMode === "city")
+          : Number.POSITIVE_INFINITY;
+      const finalResults = capExploreVisiblePlaces(
+        finalizeMapResults(
+          enriched,
+          center,
+          reasonProfileRef.current,
+          cat.id,
+          weatherRef.current,
+          primaryPlaceRef.current,
+          locationKey,
+          searchSelectedCenter?.label,
+        ),
+        limit,
       );
       syncExploreSheetFeedback();
       publishExploreResults(
-        convergeExploreDisplayedPlaces(
+        reconcileExploreVisibleSnapshot(
           visibleResultsRef.current,
           finalResults,
           exploreDisplayedPlaceKey,
+          limit,
         ),
       );
       displayedScopeRef.current = sessionKey;
@@ -891,28 +916,6 @@ function MapView() {
             );
             return;
           }
-        }
-      } else if (
-        !cachedHit?.places.length &&
-        !skipCacheForPrimarySearch &&
-        !forceRefresh &&
-        cityRecommendMode !== "city"
-      ) {
-        // 與首頁共用附近快取，避免同定位再刷一輪 Places
-        const shared = readSharedNearbyPlaces({
-          loadKey: homeNearbyLoadKey(center.lat, center.lng, homeNearbyLoadPeriodKey(), locale),
-        });
-        if (shared && shared.length > 0) {
-          lastMapSearchSessionRef.current = sessionKey;
-          applyCachedResults(
-            exploreCardsToMapCards(shared as ExplorePlaceCard[], {
-              weather: weatherRef.current,
-              reasonProfile: reasonProfileRef.current,
-              locale,
-            }),
-            null,
-          );
-          devVerboseInfo("[EXPLORE_SHARED_NEARBY_HIT]", { count: shared.length });
         }
       }
     }
@@ -1009,26 +1012,46 @@ function MapView() {
                 saved: savedRef.current,
                 searchPlacesFn: scopedSearchPlacesFn,
                 requestSession: session,
-                onProgress: (cards) => {
-                  const incoming = finalizeMapResults(
-                    exploreCardsToMapCards(cards, cardOpts),
-                    center,
-                    reasonProfileRef.current,
-                    cat.id,
-                    weatherRef.current,
-                    null,
-                    locationKey,
+                onProgress: (cards, progress) => {
+                  if (
+                    !shouldApplyExploreProgress({
+                      requestId,
+                      currentRequestId: searchRequestIdRef.current,
+                      aborted: session.controller.signal.aborted,
+                    })
+                  ) {
+                    return;
+                  }
+                  const limit =
+                    cat.id === "all"
+                      ? exploreAllVisibleDisplayLimit(cityRecommendMode === "city")
+                      : Number.POSITIVE_INFINITY;
+                  const incoming = capExploreVisiblePlaces(
+                    finalizeMapResults(
+                      exploreCardsToMapCards(cards, cardOpts),
+                      center,
+                      reasonProfileRef.current,
+                      cat.id,
+                      weatherRef.current,
+                      null,
+                      locationKey,
+                    ),
+                    limit,
                   );
-                  const next = applyExploreProgressiveUpdate({
-                    current: visibleResultsRef.current,
-                    incoming,
-                    requestId,
-                    currentRequestId: searchRequestIdRef.current,
-                    aborted: session.controller.signal.aborted,
-                    keyOf: exploreDisplayedPlaceKey,
-                  });
-                  if (!next || next === visibleResultsRef.current) return;
-                  publishExploreResults(next);
+                  if (
+                    !shouldCommitExploreFirstSnapshot({
+                      hasVisibleSnapshot: visibleResultsRef.current.length > 0,
+                      completedCategories: progress?.completedCategories ?? 0,
+                      totalCategories: progress?.totalCategories ?? Number.POSITIVE_INFINITY,
+                      bufferedCount: incoming.length,
+                      displayLimit: limit,
+                    })
+                  ) {
+                    return;
+                  }
+                  publishExploreResults(incoming);
+                  displayedScopeRef.current = sessionKey;
+                  setLoading(false);
                 },
                 forHome: false,
                 recommendMode: cityRecommendMode,
@@ -1203,11 +1226,16 @@ function MapView() {
             syncExploreSheetFeedback();
           }
           if (requestId === searchRequestIdRef.current && !session.controller.signal.aborted) {
+            const limit =
+              !isFreeText && cat.id === "all"
+                ? exploreAllVisibleDisplayLimit(cityRecommendMode === "city")
+                : Number.POSITIVE_INFINITY;
             publishExploreResults(
-              convergeExploreDisplayedPlaces(
+              reconcileExploreVisibleSnapshot(
                 visibleResultsRef.current,
-                finalResults,
+                capExploreVisiblePlaces(finalResults, limit),
                 exploreDisplayedPlaceKey,
+                limit,
               ),
             );
             displayedScopeRef.current = sessionKey;
@@ -1404,7 +1432,6 @@ function MapView() {
   ]);
 
   const resultPresentation = useMemo(() => {
-    const filterCat = cat;
     const sortCenter = { lat: recommendCenter.lat, lng: recommendCenter.lng };
     const primary = primaryPlace;
 
@@ -1414,11 +1441,9 @@ function MapView() {
         : !loading && !searchDropdownOpen && allowDemoPlaceFallback()
           ? mockMapCards(sortCenter, cat)
           : [];
-    const nearbyOnly = stripPrimaryFromNearby(primary, base);
-    const sorted = sortMapCards(nearbyOnly, sortCenter, reasonProfile, filterCat.id, weather);
     return exploreSearchPresentation({
       primary,
-      recommendations: sorted,
+      recommendations: stripPrimaryFromNearby(primary, base),
       primarySearchLoading,
       backgroundRecommendationLoading: backgroundRecommendationLoading || searchingPlaces,
     });
@@ -1429,8 +1454,6 @@ function MapView() {
     searchDropdownOpen,
     recommendCenter.lat,
     recommendCenter.lng,
-    reasonProfile,
-    weather,
     primaryPlace,
     primarySearchLoading,
     backgroundRecommendationLoading,
@@ -1575,6 +1598,7 @@ function MapView() {
       displayResults
         .filter((p) => p.lat != null && p.lng != null)
         .map((p) => ({
+          id: p.id,
           lat: p.lat!,
           lng: p.lng!,
           title: p.name,
@@ -2224,7 +2248,6 @@ function MapView() {
                 ref={cardsRef}
                 places={displayResults}
                 loading={resultPresentation.fullLoading}
-                backgroundLoading={resultPresentation.backgroundLoading}
                 categoryKey={cat.id}
                 emptyMessage={null}
                 highlightIndex={selectedPlaceIndex}

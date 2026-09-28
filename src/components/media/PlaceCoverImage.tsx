@@ -43,11 +43,11 @@ export function PlaceCoverImage({
 
   return (
     <div ref={containerRef} className={cn("relative overflow-hidden bg-secondary", className)}>
-      {!shouldLoad ? (
+      {!shouldLoad && !src ? (
         <div className="absolute inset-0 animate-pulse bg-secondary/80" aria-hidden />
       ) : (
         <>
-          {loading ? (
+          {loading && !src ? (
             <div className="absolute inset-0 animate-pulse bg-secondary/80" aria-hidden />
           ) : null}
           {src ? (

@@ -1,8 +1,9 @@
 import { explorePlaceDedupeKey } from "@/lib/explore-all-places-merge";
+import {
+  EXPLORE_CITY_ALL_MAX_DISPLAY,
+  EXPLORE_MAP_MAX_DISPLAY,
+} from "@/lib/explore-places-eligibility";
 import { normalizeExplorePlaceId } from "@/lib/explore-selected-place";
-import { readSharedNearbyPlaces } from "@/lib/home-nearby-repository";
-import { homeNearbyLoadKey } from "@/lib/home-nearby-picks-policy";
-import { homeNearbyLoadPeriodKey } from "@/lib/home-nearby-search";
 import { normalizedLocationKey } from "@/lib/location-key";
 import {
   buildExploreSessionKey,
@@ -195,8 +196,81 @@ export type ExploreFirstPaintCenter = {
   placeId?: string;
 };
 
+/** Nearby Explore all uses the map cap; city all uses the city cap. */
+export function exploreAllVisibleDisplayLimit(cityMode: boolean): number {
+  return cityMode ? EXPLORE_CITY_ALL_MAX_DISPLAY : EXPLORE_MAP_MAX_DISPLAY;
+}
+
+export function capExploreVisiblePlaces<T>(places: readonly T[], displayLimit: number): T[] {
+  if (!Number.isFinite(displayLimit) || places.length <= displayLimit) return places as T[];
+  return places.slice(0, displayLimit);
+}
+
+/**
+ * Cold first paint waits until two subcategory phases have filled the display cap.
+ * The last phase is left to final reconcile so it is not published twice.
+ * A visible snapshot, including a warm cache, never accepts another progress commit.
+ */
+export function shouldCommitExploreFirstSnapshot(input: {
+  hasVisibleSnapshot: boolean;
+  completedCategories: number;
+  totalCategories: number;
+  bufferedCount: number;
+  displayLimit: number;
+}): boolean {
+  if (input.hasVisibleSnapshot || input.bufferedCount <= 0) return false;
+  if (input.completedCategories >= input.totalCategories) return false;
+  if (input.completedCategories < 2) return false;
+  return input.bufferedCount >= input.displayLimit;
+}
+
+/** Membership edits at or below this stay in the current order. */
+const SMALL_VISIBLE_RECONCILE_CHANGES = 2;
+
+/**
+ * Official final membership stays in force.
+ * A small add/remove keeps the current order; a larger change follows final ranking.
+ */
+export function reconcileExploreVisibleSnapshot<T extends PhotoCard>(
+  current: readonly T[],
+  finalPlaces: readonly T[],
+  keyOf: (item: T) => string,
+  displayLimit: number,
+): T[] {
+  const finalCapped = capExploreVisiblePlaces(finalPlaces, displayLimit);
+  if (current.length === 0) return finalCapped;
+  const currentCapped = capExploreVisiblePlaces(current, displayLimit);
+  const finalByKey = new Map<string, T>();
+  for (const item of finalCapped) {
+    const key = keyOf(item);
+    if (key && !finalByKey.has(key)) finalByKey.set(key, item);
+  }
+  const currentKeys = currentCapped.map((item) => keyOf(item)).filter(Boolean);
+  const finalKeys = finalCapped.map((item) => keyOf(item)).filter(Boolean);
+  const currentKeySet = new Set(currentKeys);
+  const finalKeySet = new Set(finalKeys);
+  let changes = 0;
+  for (const key of currentKeys) if (!finalKeySet.has(key)) changes += 1;
+  for (const key of finalKeys) if (!currentKeySet.has(key)) changes += 1;
+  if (changes > SMALL_VISIBLE_RECONCILE_CHANGES) {
+    return convergeExploreDisplayedPlaces(currentCapped, finalCapped, keyOf);
+  }
+  const kept = currentCapped
+    .filter((item) => finalByKey.has(keyOf(item)))
+    .map((item) => stabilizeExploreCardPhoto(item, finalByKey.get(keyOf(item))!));
+  const keptKeys = new Set(kept.map((item) => keyOf(item)));
+  const next = [
+    ...kept,
+    ...finalCapped.filter((item) => !keptKeys.has(keyOf(item))),
+  ].slice(0, Number.isFinite(displayLimit) ? displayLimit : undefined);
+  if (next.length === current.length && next.every((item, index) => item === current[index])) {
+    return current as T[];
+  }
+  return next;
+}
+
 export type ExploreFirstPaintResolution<T> = {
-  source: "explore-map" | "shared-nearby" | "none";
+  source: "explore-map" | "none";
   places: T[];
   categoryId: string;
   query: string;
@@ -306,27 +380,7 @@ export function resolveExploreFirstPaintCache<T>(input: {
       };
     }
 
-    const shared = readSharedNearbyPlaces({
-      loadKey: homeNearbyLoadKey(
-        location.lat,
-        location.lng,
-        homeNearbyLoadPeriodKey(),
-        input.locale,
-      ),
-    });
-    if (shared && shared.length > 0) {
-      return {
-        source: "shared-nearby",
-        places: shared as T[],
-        categoryId: "all",
-        query: "",
-        mode: "nearby",
-        cacheKey: scope.cacheKey,
-        sessionKey: scope.sessionKey,
-        locationKey: scope.locationKey,
-        center: asCenter(location.lat, location.lng, label),
-      };
-    }
+    // Home nearby picks are a different result set. They must not become the Explore snapshot.
     return {
       ...emptyFirstPaint(),
       cacheKey: scope.cacheKey,

@@ -128,7 +128,11 @@ assert.match(
 assert.match(route, /publishExploreResults\(\[mapCard\]\)/);
 assert.match(route, /const displayResults = resultPresentation.places/);
 assert.match(route, /loading=\{resultPresentation.fullLoading\}/);
-assert.match(route, /backgroundLoading=\{resultPresentation.backgroundLoading\}/);
+assert.doesNotMatch(route, /backgroundLoading=\{resultPresentation.backgroundLoading\}/);
+assert.doesNotMatch(
+  fs.readFileSync("src/components/map/MapExplorePlaceCards.tsx", "utf8"),
+  /loading \|\| backgroundLoading/,
+);
 assert.match(route, /displayResults\s*\.filter/);
 assert.match(route, /skipLocationBias: true/);
 assert.match(
