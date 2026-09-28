@@ -125,7 +125,7 @@ assert.match(
   route,
   /if \(requestId === searchTargetRequestRef.current\) \{\s*setResolvingSearchId\(null\)/,
 );
-assert.match(route, /setResults\(\[mapCard\]\)/);
+assert.match(route, /publishExploreResults\(\[mapCard\]\)/);
 assert.match(route, /const displayResults = resultPresentation.places/);
 assert.match(route, /loading=\{resultPresentation.fullLoading\}/);
 assert.match(route, /backgroundLoading=\{resultPresentation.backgroundLoading\}/);

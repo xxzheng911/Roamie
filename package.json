@@ -182,6 +182,7 @@
     "verify:explore-native-search": "node scripts/verify-explore-native-search.mjs",
     "verify:explore-request-storm": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-explore-request-storm.mjs",
     "verify:explore-progressive-search": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-explore-progressive-search.mjs",
+    "verify:explore-repeated-loading": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-explore-repeated-loading.mjs",
     "verify:favorites-photo-runtime": "node scripts/verify-favorites-photo-runtime.mjs",
     "verify:favorites-refresh-race": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-favorites-refresh-race.mjs",
     "verify:itinerary-insufficient-credits": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-itinerary-insufficient-credits.mjs",
