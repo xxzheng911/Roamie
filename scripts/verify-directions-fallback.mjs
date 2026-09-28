@@ -60,7 +60,7 @@ const longWalkFallback = {
 assert.equal(transportFallbackModeFromResult(longWalkFallback), "drive");
 assert.equal(
   resolvedTransportDisplayLabel("步行", longWalkFallback),
-  "開車",
+  "租車自駕",
 );
 
 console.log("verify-directions-fallback: ok");

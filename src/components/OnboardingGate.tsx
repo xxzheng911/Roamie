@@ -1,3 +1,4 @@
+import { useRouterState } from "@tanstack/react-router";
 import { type ReactNode, useEffect, useState } from "react";
 import { RoamieRoutePending } from "@/components/RoamieRoutePending";
 import { hasExternalBootSplash } from "@/lib/boot-splash";
@@ -31,7 +32,7 @@ import {
   shouldSkipStartupNavigation,
   tryStartOnboardingGateBoot,
 } from "@/lib/startup-boot-state";
-import { readBrowserPathname } from "@/lib/startup-path";
+import { isCanonicalOAuthCallbackPath, readBrowserPathname } from "@/lib/startup-path";
 import { dismissBootSplashWhenAppReady } from "@/lib/boot-splash";
 
 type Props = { children: ReactNode };
@@ -49,6 +50,14 @@ function shouldFastOpenHomeShell(): boolean {
 }
 
 export function OnboardingGate({ children }: Props) {
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  // Render the callback immediately. It owns success/error navigation; no boot state
+  // is consumed until that route leaves, when the unchanged startup gate mounts.
+  if (isCanonicalOAuthCallbackPath(pathname)) return <>{children}</>;
+  return <StartupOnboardingGate>{children}</StartupOnboardingGate>;
+}
+
+function StartupOnboardingGate({ children }: Props) {
   const fastOpenHome = shouldFastOpenHomeShell();
   const initialGate = getBootGateState();
   const [hydrated, setHydrated] = useState(() => fastOpenHome || initialGate.hydrated);

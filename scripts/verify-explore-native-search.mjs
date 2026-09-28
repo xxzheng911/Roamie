@@ -19,12 +19,21 @@ await build({
   outfile: file,
   loader: { ".png": "dataurl", ".jpg": "dataurl" },
   define: {
-    "import.meta.env": JSON.stringify({ VITE_GOOGLE_MAPS_API_KEY: "AIza" + "a".repeat(35) }),
+    "import.meta.env": JSON.stringify({
+      SSR: false,
+      VITE_APP_ORIGIN: "https://roamie.example",
+      VITE_GOOGLE_MAPS_API_KEY: "AIza" + "a".repeat(35),
+    }),
   },
   plugins: [
     {
       name: "fixture-auth",
       setup(b) {
+        b.onResolve({ filter: /^@\/lib\/auth-session$/ }, (args) =>
+          args.importer.endsWith("/google-rest-transport.ts")
+            ? { path: "session", namespace: "fixture" }
+            : null,
+        );
         b.onResolve({ filter: /^@\/integrations\/supabase\/client$/ }, () => ({
           path: "auth",
           namespace: "fixture",
@@ -39,11 +48,13 @@ await build({
         }));
         b.onLoad({ filter: /.*/, namespace: "fixture" }, (a) => ({
           contents:
-            a.path === "framework"
-              ? 'export const createServerFn=()=>({middleware(){return this},inputValidator(){return this},handler(){return async()=>{throw Error("Unexpected server function")}}});'
-              : a.path === "middleware"
-                ? "export const requireSupabaseAuth={};"
-                : "export const isSupabaseConfigured=false;export const supabase={auth:{getSession:async()=>({data:{session:null}})}};",
+            a.path === "session"
+              ? 'export const getClientAuthSession=async()=>({access_token:"fixture-session"});'
+              : a.path === "framework"
+                ? 'export const createMiddleware=()=>({server:()=>({})});export const createServerFn=()=>({middleware(){return this},inputValidator(){return this},handler(){return async()=>{throw Error("Unexpected server function")}}});'
+                : a.path === "middleware"
+                  ? "export const requireSupabaseAuth={};"
+                  : "export const isSupabaseConfigured=false;export const supabase={auth:{getSession:async()=>({data:{session:null}})}};",
           loader: "js",
         }));
       },
@@ -92,8 +103,11 @@ try {
   api.clearPlacesQueryCooldown();
   for (let i = 0; i < 25; i++) api.notePlacesWindowCallForTests();
   let s = api.beginExploreRequestSession("search", "首爾塔");
-  globalThis.fetch = async (url) => {
-    assert.match(String(url), /places:searchText/);
+  globalThis.fetch = async (url, init) => {
+    assert.equal(String(url), "https://roamie.example/api/google");
+    assert.equal(init.headers.Authorization, "Bearer fixture-session");
+    assert.match(JSON.parse(init.body).url, /places:searchText/);
+    assert.ok(!init.body.includes("AIza"));
     calls++;
     return Response.json({ places: [raw] });
   };
@@ -140,8 +154,9 @@ try {
   api.clearPlacesQueryCooldown();
   s = api.beginExploreRequestSession("search", "tower suggestions");
   let autocompleteCalls = 0;
-  globalThis.fetch = async (url) => {
-    assert.match(String(url), /places:autocomplete/);
+  globalThis.fetch = async (url, init) => {
+    assert.equal(String(url), "https://roamie.example/api/google");
+    assert.match(JSON.parse(init.body).url, /places:autocomplete/);
     autocompleteCalls++;
     return Response.json({
       suggestions: Array.from({ length: 10 }, (_, i) => ({

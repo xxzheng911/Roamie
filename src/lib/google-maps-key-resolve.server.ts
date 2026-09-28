@@ -1,61 +1,40 @@
 import { isValidGoogleMapsApiKey } from "@/lib/google-maps-key";
-import { resolveServerEnv } from "@/lib/load-env.server";
-import { googleMapsKeyMissingMessage } from "@/lib/google-maps-key-resolve";
 import type { CloudflareRuntimeEnv } from "@/lib/server-request-context";
 
-export const GOOGLE_MAPS_SERVER_KEY_ENV_NAMES = [
-  "GOOGLE_PLACES_SERVER_API_KEY",
-  "GOOGLE_MAPS_API_KEY",
-  "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY",
-  "VITE_GOOGLE_MAPS_API_KEY",
-] as const;
+export type GoogleMapsServerKeySource = "GOOGLE_PLACES_SERVER_API_KEY" | "none";
+export type GoogleApiFamily = "places" | "routes" | "geocoding";
+export const GOOGLE_SERVER_CREDENTIALS = {
+  places: "GOOGLE_PLACES_SERVER_API_KEY",
+  routes: "GOOGLE_ROUTES_SERVER_API_KEY",
+  geocoding: "GOOGLE_GEOCODING_SERVER_API_KEY",
+} as const;
 
-export type GoogleMapsServerKeySource = (typeof GOOGLE_MAPS_SERVER_KEY_ENV_NAMES)[number] | "none";
-
-export type GoogleMapsServerKeyResolution = {
-  key: string | null;
-  source: GoogleMapsServerKeySource;
-};
-
-let serverKeyLogged = false;
-
-type ServerEnvResolver = typeof resolveServerEnv;
-
-export function resolveGoogleMapsKeyFromServerEnv(
+/** Server runtime only. Neither public env, legacy shared keys nor import.meta.env are authority. */
+export function requireGoogleServerKey(
+  family: GoogleApiFamily,
   runtimeEnv?: CloudflareRuntimeEnv,
-  resolveEnv: ServerEnvResolver = resolveServerEnv,
-): GoogleMapsServerKeyResolution {
-  for (const name of GOOGLE_MAPS_SERVER_KEY_ENV_NAMES) {
-    const runtimeValue = runtimeEnv?.[name];
-    const runtimeKey = typeof runtimeValue === "string" ? runtimeValue.trim() : "";
-    if (runtimeKey && isValidGoogleMapsApiKey(runtimeKey)) {
-      return { key: runtimeKey, source: name };
-    }
-    const resolved = resolveEnv(name);
-    const trimmed = resolved?.value?.trim();
-    if (trimmed && isValidGoogleMapsApiKey(trimmed)) return { key: trimmed, source: name };
-  }
-  return { key: null, source: "none" };
+): string {
+  const name = GOOGLE_SERVER_CREDENTIALS[family];
+  const raw = runtimeEnv?.[name] ?? process.env[name];
+  const key = typeof raw === "string" ? raw.trim() : "";
+  if (!isValidGoogleMapsApiKey(key)) throw new Error(`google_${family}_credential_unavailable`);
+  return key;
 }
 
+/** Compatibility name for Places callers only; other APIs select their own family. */
+export function requireGoogleMapsServerKey(runtimeEnv?: CloudflareRuntimeEnv): string {
+  return requireGoogleServerKey("places", runtimeEnv);
+}
+export function resolveGoogleMapsKeyFromServerEnv(runtimeEnv?: CloudflareRuntimeEnv) {
+  try {
+    return {
+      key: requireGoogleServerKey("places", runtimeEnv),
+      source: GOOGLE_SERVER_CREDENTIALS.places,
+    };
+  } catch {
+    return { key: null, source: "none" as const };
+  }
+}
 export function readGoogleMapsKeyFromServerEnv(runtimeEnv?: CloudflareRuntimeEnv): string | null {
   return resolveGoogleMapsKeyFromServerEnv(runtimeEnv).key;
-}
-
-export function requireGoogleMapsServerKey(runtimeEnv?: CloudflareRuntimeEnv): string {
-  const key = readGoogleMapsKeyFromServerEnv(runtimeEnv);
-  if (!key) {
-    console.error("[Roamie Maps] Missing API key.", googleMapsKeyMissingMessage());
-    throw new Error(googleMapsKeyMissingMessage());
-  }
-  if (!isValidGoogleMapsApiKey(key)) {
-    throw new Error(
-      "Google Maps API 金鑰格式不正確。請使用 Maps API 金鑰（通常以 AIza 開頭），勿使用 OAuth 用戶端密鑰。",
-    );
-  }
-  if (!serverKeyLogged) {
-    serverKeyLogged = true;
-    console.info("✅ Google Maps key loaded");
-  }
-  return key;
 }

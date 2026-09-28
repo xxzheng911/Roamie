@@ -1,5 +1,6 @@
+import { googleRestFetch } from "@/lib/google-rest-transport";
 import { searchTripLocations, resolveTripLocation } from "@/lib/location.functions";
-import { getGoogleMapsBrowserKey } from "@/lib/google-maps-client";
+import { getGoogleRestTransportToken } from "@/lib/google-rest-transport";
 import type { LocationSuggestion, TripLocation } from "@/lib/location/types";
 import type { Locale } from "@/lib/i18n/types";
 import {
@@ -87,7 +88,7 @@ async function clientGeocodeSuggestions(query: string, locale: Locale, apiKey: s
   const seen = new Set<string>();
 
   for (const variant of tripLocationQueryVariants(normalized)) {
-    const res = await fetch(geocodeUrl({ apiKey, address: variant, language, region }));
+    const res = await googleRestFetch(geocodeUrl({ apiKey, address: variant, language, region }));
     if (!res.ok) continue;
     const json = (await res.json()) as {
       status?: string;
@@ -124,7 +125,7 @@ async function clientResolveTripLocation(placeId: string, locale: Locale, apiKey
   const userLocale: Locale = coerceLocale(locale);
   const language = localeToGoogleLanguageCode(userLocale);
   const region = localeToGeocodeRegion(userLocale);
-  const res = await fetch(geocodeUrl({ apiKey, placeId, language, region }));
+  const res = await googleRestFetch(geocodeUrl({ apiKey, placeId, language, region }));
   if (!res.ok) return { location: null as TripLocation | null, error: "無法解析地點" };
   const json = (await res.json()) as {
     status?: string;
@@ -206,13 +207,7 @@ export async function unifiedSearchTripLocations(
     console.warn("[Location] server autocomplete failed", e);
   }
 
-  const key = getGoogleMapsBrowserKey();
-  if (!key) {
-    return {
-      suggestions: [],
-      error: "無法搜尋地點，請確認已設定 EXPO_PUBLIC_GOOGLE_MAPS_API_KEY。",
-    };
-  }
+  const key = getGoogleRestTransportToken();
 
   const client = await clientGeocodeSuggestions(normalized, locale, key);
   if (client.suggestions.length > 0) {
@@ -240,7 +235,7 @@ export async function unifiedResolveTripLocation(
     console.warn("[Location] server resolve failed", e);
   }
 
-  const key = getGoogleMapsBrowserKey();
+  const key = getGoogleRestTransportToken();
   if (key) {
     const resolved = await clientResolveTripLocation(placeId, locale, key);
     if (resolved.location) return { location: resolved.location, error: null };

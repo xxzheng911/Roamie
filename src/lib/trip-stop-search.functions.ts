@@ -1,3 +1,5 @@
+import { requireGoogleProviderRate } from "@/lib/google-rate-limit.server";
+import { googleRestFetch } from "@/lib/google-rest-transport";
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
@@ -64,12 +66,11 @@ function parseGoogleError(text: string): string {
 }
 
 export const searchTripStops = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
+  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
   .inputValidator((input) => StopSearchInput.parse(input))
   .handler(
     async ({ data }): Promise<{ suggestions: TripStopSuggestion[]; error: string | null }> => {
-      const { requireGoogleMapsServerKey } = await import("@/lib/google-maps.server");
-      const apiKey = requireGoogleMapsServerKey();
+      const apiKey = "roamie-server-proxy";
       const userLocale: Locale = data.locale ? coerceLocale(data.locale) : "zh-TW";
       const body: Record<string, unknown> = {
         input: data.query.trim(),
@@ -88,7 +89,7 @@ export const searchTripStops = createServerFn({ method: "POST" })
         };
       }
 
-      const res = await fetch(placesAutocompleteUrl(), {
+      const res = await googleRestFetch(placesAutocompleteUrl(), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -153,18 +154,17 @@ export const searchTripStops = createServerFn({ method: "POST" })
   );
 
 export const resolveTripStop = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
+  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
   .inputValidator((input) => ResolveStopInput.parse(input))
   .handler(async ({ data }): Promise<{ stop: ResolvedTripStop | null; error: string | null }> => {
     const normalizedPlaceId = normalizeGooglePlaceId(data.placeId);
-    const { requireGoogleMapsServerKey } = await import("@/lib/google-maps.server");
-    const apiKey = requireGoogleMapsServerKey();
+    const apiKey = "roamie-server-proxy";
     const userLocale: Locale = data.locale ? coerceLocale(data.locale) : "zh-TW";
     const languageCode = localeToGoogleLanguageCode(userLocale);
     const requestUrl = placeDetailsUrl(normalizedPlaceId, languageCode);
     console.info("[PLACES_DETAILS] start placeId=", normalizedPlaceId);
     console.info("[PLACES_DETAILS] request url=", requestUrl);
-    const res = await fetch(requestUrl, {
+    const res = await googleRestFetch(requestUrl, {
       method: "GET",
       headers: {
         "X-Goog-Api-Key": apiKey,

@@ -1,3 +1,4 @@
+import { googleRestFetch } from "@/lib/google-rest-transport";
 import {
   notePlacesRateLimited,
   runPlacesApiDeduped,
@@ -9,7 +10,7 @@ import {
   type TripStopSuggestion,
   type ResolvedTripStop,
 } from "@/lib/trip-stop-search.functions";
-import { getGoogleMapsBrowserKey } from "@/lib/google-maps-client";
+import { getGoogleRestTransportToken } from "@/lib/google-rest-transport";
 import {
   placesAutocompleteUrl,
   placeDetailsUrl,
@@ -37,7 +38,7 @@ export async function unifiedSearchTripStops(
   sessionToken?: string,
   requestOwner?: PlacesRequestOwner,
 ): Promise<{ suggestions: TripStopSuggestion[]; error: string | null }> {
-  const browserKey = getGoogleMapsBrowserKey();
+  const browserKey = getGoogleRestTransportToken();
   // Explicit Explore requests use the same guarded provider boundary on native.
   if (!requestOwner || !browserKey)
     try {
@@ -68,12 +69,6 @@ export async function unifiedSearchTripStops(
   if (requestOwner?.exploreSession?.controller.signal.aborted)
     return { suggestions: [], error: "autocomplete_cancelled" };
   const key = browserKey;
-  if (!key) {
-    return {
-      suggestions: [],
-      error: "無法搜尋地點，請確認已設定 EXPO_PUBLIC_GOOGLE_MAPS_API_KEY。",
-    };
-  }
 
   const body: Record<string, unknown> = {
     input: query.trim(),
@@ -91,7 +86,7 @@ export async function unifiedSearchTripStops(
 
   try {
     const invoke = (signal?: AbortSignal) =>
-      fetch(placesAutocompleteUrl(), {
+      googleRestFetch(placesAutocompleteUrl(), {
         signal,
         method: "POST",
         headers: {
@@ -187,11 +182,11 @@ export async function unifiedResolveTripStop(
     console.warn("[TripStop] resolve failed", e);
   }
 
-  const key = getGoogleMapsBrowserKey();
+  const key = getGoogleRestTransportToken();
   if (key) {
     try {
       const languageCode = localeToGoogleLanguageCode(locale);
-      const res = await fetch(placeDetailsUrl(normalizedPlaceId, languageCode), {
+      const res = await googleRestFetch(placeDetailsUrl(normalizedPlaceId, languageCode), {
         method: "GET",
         headers: {
           "X-Goog-Api-Key": key,

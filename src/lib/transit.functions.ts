@@ -1,3 +1,4 @@
+import { requireGoogleProviderRate } from "@/lib/google-rate-limit.server";
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
@@ -45,7 +46,7 @@ export type RecommendTransitResult = {
 
 /** 智慧交通建議：點到點分析（Google Routes API + Roamie 規則 / AI） */
 export const recommendTransitLegs = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
+  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
   .inputValidator((input) => InputSchema.parse(input))
   .handler(async ({ data }): Promise<RecommendTransitResult> => {
     const { buildTransitLegsForItinerary } = await import("@/lib/transit/build-legs.server");

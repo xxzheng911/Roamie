@@ -4,7 +4,7 @@ import {
 } from "@/lib/explore-request-session";
 import type { SearchPlacesFn } from "@/lib/explore-category-search";
 import { executeExploreSearch } from "@/lib/places.functions";
-import { getGoogleMapsBrowserKey } from "@/lib/google-maps-client";
+import { getGoogleRestTransportToken } from "@/lib/google-rest-transport";
 import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
 import {
   buildPlacesSearchKey,
@@ -36,17 +36,9 @@ async function runClientSearch(
 
   if (!session) markPlacesClientFallbackAttempted(key);
 
-  const mapsKey = getGoogleMapsBrowserKey();
+  const mapsKey = getGoogleRestTransportToken();
   logPlacesApiCall("client", args.data);
 
-  if (!mapsKey) {
-    markPlacesSearchFailed(key);
-    const empty = normalizePlacesSearchResult({
-      places: [],
-      error: "無法取得附近推薦。請確認已設定 EXPO_PUBLIC_GOOGLE_MAPS_API_KEY。",
-    });
-    return empty;
-  }
 
   try {
     const clientResult = normalizePlacesSearchResult(

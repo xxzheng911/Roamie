@@ -25,6 +25,7 @@ import { Route as LoginLegalRouteImport } from './routes/login/legal'
 import { Route as AuthCallbackRouteImport } from './routes/auth.callback'
 import { Route as ApiRoamieRouteImport } from './routes/api/roamie'
 import { Route as ApiPlacePhotoRouteImport } from './routes/api/place-photo'
+import { Route as ApiGoogleRouteImport } from './routes/api/google'
 import { Route as ApiGenerateItineraryRouteImport } from './routes/api/generate-itinerary'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
 import { Route as AppTravelDraftsRouteImport } from './routes/_app.travel-drafts'
@@ -123,6 +124,11 @@ const ApiRoamieRoute = ApiRoamieRouteImport.update({
 const ApiPlacePhotoRoute = ApiPlacePhotoRouteImport.update({
   id: '/api/place-photo',
   path: '/api/place-photo',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiGoogleRoute = ApiGoogleRouteImport.update({
+  id: '/api/google',
+  path: '/api/google',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiGenerateItineraryRoute = ApiGenerateItineraryRouteImport.update({
@@ -249,6 +255,7 @@ export interface FileRoutesByFullPath {
   '/travel-drafts': typeof AppTravelDraftsRoute
   '/api/chat': typeof ApiChatRoute
   '/api/generate-itinerary': typeof ApiGenerateItineraryRoute
+  '/api/google': typeof ApiGoogleRoute
   '/api/place-photo': typeof ApiPlacePhotoRouteWithChildren
   '/api/roamie': typeof ApiRoamieRoute
   '/auth/callback': typeof AuthCallbackRoute
@@ -284,6 +291,7 @@ export interface FileRoutesByTo {
   '/travel-drafts': typeof AppTravelDraftsRoute
   '/api/chat': typeof ApiChatRoute
   '/api/generate-itinerary': typeof ApiGenerateItineraryRoute
+  '/api/google': typeof ApiGoogleRoute
   '/api/place-photo': typeof ApiPlacePhotoRouteWithChildren
   '/api/roamie': typeof ApiRoamieRoute
   '/auth/callback': typeof AuthCallbackRoute
@@ -323,6 +331,7 @@ export interface FileRoutesById {
   '/_app/travel-drafts': typeof AppTravelDraftsRoute
   '/api/chat': typeof ApiChatRoute
   '/api/generate-itinerary': typeof ApiGenerateItineraryRoute
+  '/api/google': typeof ApiGoogleRoute
   '/api/place-photo': typeof ApiPlacePhotoRouteWithChildren
   '/api/roamie': typeof ApiRoamieRoute
   '/auth/callback': typeof AuthCallbackRoute
@@ -363,6 +372,7 @@ export interface FileRouteTypes {
     | '/travel-drafts'
     | '/api/chat'
     | '/api/generate-itinerary'
+    | '/api/google'
     | '/api/place-photo'
     | '/api/roamie'
     | '/auth/callback'
@@ -398,6 +408,7 @@ export interface FileRouteTypes {
     | '/travel-drafts'
     | '/api/chat'
     | '/api/generate-itinerary'
+    | '/api/google'
     | '/api/place-photo'
     | '/api/roamie'
     | '/auth/callback'
@@ -436,6 +447,7 @@ export interface FileRouteTypes {
     | '/_app/travel-drafts'
     | '/api/chat'
     | '/api/generate-itinerary'
+    | '/api/google'
     | '/api/place-photo'
     | '/api/roamie'
     | '/auth/callback'
@@ -465,6 +477,7 @@ export interface RootRouteChildren {
   WelcomeRoute: typeof WelcomeRoute
   ApiChatRoute: typeof ApiChatRoute
   ApiGenerateItineraryRoute: typeof ApiGenerateItineraryRoute
+  ApiGoogleRoute: typeof ApiGoogleRoute
   ApiPlacePhotoRoute: typeof ApiPlacePhotoRouteWithChildren
   ApiRoamieRoute: typeof ApiRoamieRoute
   AuthCallbackRoute: typeof AuthCallbackRoute
@@ -588,6 +601,13 @@ declare module '@tanstack/react-router' {
       path: '/api/place-photo'
       fullPath: '/api/place-photo'
       preLoaderRoute: typeof ApiPlacePhotoRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/google': {
+      id: '/api/google'
+      path: '/api/google'
+      fullPath: '/api/google'
+      preLoaderRoute: typeof ApiGoogleRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/generate-itinerary': {
@@ -812,6 +832,7 @@ const rootRouteChildren: RootRouteChildren = {
   WelcomeRoute: WelcomeRoute,
   ApiChatRoute: ApiChatRoute,
   ApiGenerateItineraryRoute: ApiGenerateItineraryRoute,
+  ApiGoogleRoute: ApiGoogleRoute,
   ApiPlacePhotoRoute: ApiPlacePhotoRouteWithChildren,
   ApiRoamieRoute: ApiRoamieRoute,
   AuthCallbackRoute: AuthCallbackRoute,

@@ -1,7 +1,14 @@
+import { requireGoogleProviderRate } from "@/lib/google-rate-limit.server";
+import { googleRestFetch } from "@/lib/google-rest-transport";
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
-import { geocodeForwardUrl, placesAutocompleteUrl, placeDetailsUrl } from "@/lib/google-maps-api";
+import {
+  GOOGLE_PLACES_MAX_RADIUS_METERS,
+  geocodeForwardUrl,
+  placesAutocompleteUrl,
+  placeDetailsUrl,
+} from "@/lib/google-maps-api";
 import { formatTripLocationLabel, timezoneLabelFromOffset } from "@/lib/location/format";
 import {
   buildFormattedName,
@@ -457,7 +464,7 @@ async function geocodeQueryToSuggestions(
   const seen = new Set<string>();
 
   for (const q of uniqueQueries) {
-    const res = await fetch(geocodeForwardUrl(q, apiKey, { language, region }));
+    const res = await googleRestFetch(geocodeForwardUrl(q, apiKey, { language, region }));
     if (!res.ok) continue;
 
     const json = (await res.json()) as {
@@ -497,12 +504,11 @@ function prefersGeocodeFirst(query: string): boolean {
 }
 
 export const searchTripLocations = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
+  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
   .inputValidator((input) => AutocompleteInput.parse(input))
   .handler(
     async ({ data }): Promise<{ suggestions: LocationSuggestion[]; error: string | null }> => {
-      const { requireGoogleMapsServerKey } = await import("@/lib/google-maps.server");
-      const apiKey = requireGoogleMapsServerKey();
+      const apiKey = "roamie-server-proxy";
       const userLocale: Locale = data.locale ? coerceLocale(data.locale) : "zh-TW";
       const trimmed = data.query.trim();
 
@@ -520,11 +526,11 @@ export const searchTripLocations = createServerFn({ method: "POST" })
         autocompleteBody.locationBias = {
           circle: {
             center: { latitude: 25.033963, longitude: 121.564472 },
-            radius: 80_000,
+            radius: GOOGLE_PLACES_MAX_RADIUS_METERS,
           },
         };
       }
-      const res = await fetch(placesAutocompleteUrl(), {
+      const res = await googleRestFetch(placesAutocompleteUrl(), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -678,7 +684,7 @@ async function resolveViaPlacesAutocompleteDetails(params: {
     const started = Date.now();
     let autoRes: Response;
     try {
-      autoRes = await fetch(placesAutocompleteUrl(), {
+      autoRes = await googleRestFetch(placesAutocompleteUrl(), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -789,7 +795,7 @@ async function resolveViaPlacesAutocompleteDetails(params: {
     platform: "server",
   });
   try {
-    detailRes = await fetch(placeDetailsUrl(placeId, language), {
+    detailRes = await googleRestFetch(placeDetailsUrl(placeId, language), {
       method: "GET",
       headers: {
         "X-Goog-Api-Key": apiKey,
@@ -902,7 +908,7 @@ async function resolveViaPlacesAutocompleteDetails(params: {
  * even when Server stdout is not visible in Xcode.
  */
 export const geocodeTripLocationFromText = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
+  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
   .inputValidator((input) => GeocodeTextInput.parse(input))
   .handler(
     async ({
@@ -912,8 +918,7 @@ export const geocodeTripLocationFromText = createServerFn({ method: "POST" })
       error: string | null;
       providerResult: DestinationProviderResult;
     }> => {
-      const { requireGoogleMapsServerKey } = await import("@/lib/google-maps.server");
-      const apiKey = requireGoogleMapsServerKey();
+      const apiKey = "roamie-server-proxy";
       const userLocale: Locale = data.locale
         ? coerceLocale(data.locale)
         : data.language
@@ -1011,7 +1016,7 @@ export const geocodeTripLocationFromText = createServerFn({ method: "POST" })
 
       let res: Response;
       try {
-        res = await fetch(geocodeForwardUrl(query, apiKey, { language, region }));
+        res = await googleRestFetch(geocodeForwardUrl(query, apiKey, { language, region }));
       } catch (error) {
         logProviderResponse({
           requestId,
@@ -1246,14 +1251,13 @@ export const geocodeTripLocationFromText = createServerFn({ method: "POST" })
   );
 
 export const resolveTripLocation = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
+  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
   .inputValidator((input) => ResolveInput.parse(input))
   .handler(async ({ data }): Promise<{ location: TripLocation | null; error: string | null }> => {
-    const { requireGoogleMapsServerKey } = await import("@/lib/google-maps.server");
-    const apiKey = requireGoogleMapsServerKey();
+    const apiKey = "roamie-server-proxy";
     const userLocale: Locale = data.locale ? coerceLocale(data.locale) : "zh-TW";
     const languageCode = localeToGoogleLanguageCode(userLocale);
-    const res = await fetch(placeDetailsUrl(data.placeId, languageCode), {
+    const res = await googleRestFetch(placeDetailsUrl(data.placeId, languageCode), {
       method: "GET",
       headers: {
         "X-Goog-Api-Key": apiKey,

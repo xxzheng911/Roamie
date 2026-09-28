@@ -1,6 +1,7 @@
+import { googleRestFetch } from "@/lib/google-rest-transport";
 import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
 import { geocodeForwardUrl, placeDetailsUrl, placesAutocompleteUrl } from "@/lib/google-maps-api";
-import { getGoogleMapsBrowserKey } from "@/lib/google-maps-client";
+import { getGoogleRestTransportToken } from "@/lib/google-rest-transport";
 import { localeToGeocodeRegion, localeToGoogleLanguageCode } from "@/lib/i18n/places-language";
 import type { Locale } from "@/lib/i18n/types";
 import type { RoamieItineraryItem } from "@/lib/ai/types";
@@ -69,12 +70,12 @@ async function fetchPlaceCoordsClient(
   placeId: string,
   locale: Locale,
 ): Promise<{ lat: number; lng: number } | null> {
-  const apiKey = getGoogleMapsBrowserKey();
+  const apiKey = getGoogleRestTransportToken();
   if (!apiKey) return null;
 
   const normalized = normalizePlaceId(placeId);
   const languageCode = localeToGoogleLanguageCode(locale);
-  const res = await fetch(placeDetailsUrl(normalized, languageCode), {
+  const res = await googleRestFetch(placeDetailsUrl(normalized, languageCode), {
     method: "GET",
     headers: {
       "X-Goog-Api-Key": apiKey,
@@ -104,7 +105,7 @@ async function geocodeTextToCoordsClient(
   query: string,
   locale: Locale,
 ): Promise<{ lat: number; lng: number } | null> {
-  const apiKey = getGoogleMapsBrowserKey();
+  const apiKey = getGoogleRestTransportToken();
   if (!apiKey) return null;
 
   const language = localeToGoogleLanguageCode(locale);
@@ -114,7 +115,7 @@ async function geocodeTextToCoordsClient(
 
   for (const q of uniqueQueries) {
     const regionParam = geocodeRegionForQuery(q, locale);
-    const res = await fetch(
+    const res = await googleRestFetch(
       geocodeForwardUrl(q, apiKey, { language, region: regionParam ?? region }),
     );
     const json = (await res.json()) as {
@@ -142,11 +143,11 @@ async function autocompleteTextToCoordsClient(
   query: string,
   locale: Locale,
 ): Promise<{ lat: number; lng: number } | null> {
-  const apiKey = getGoogleMapsBrowserKey();
+  const apiKey = getGoogleRestTransportToken();
   if (!apiKey) return null;
 
   try {
-    const res = await fetch(placesAutocompleteUrl(), {
+    const res = await googleRestFetch(placesAutocompleteUrl(), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

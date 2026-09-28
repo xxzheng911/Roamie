@@ -6,7 +6,8 @@ import type { PlaceResult } from "@/lib/place-result";
 import type { TripStopSuggestion } from "@/lib/trip-stop-search.functions";
 import type { PlaceDetailsScreenResult } from "@/lib/places.functions";
 import { fetchPlaceDetailsForScreenWithKeyViaGateway } from "@/lib/pie/places-gateway";
-import { getGoogleMapsBrowserKey, buildPlacePhotoUrl } from "@/lib/google-maps-client";
+import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
+import { getGoogleRestTransportToken } from "@/lib/google-rest-transport";
 import { preferJpegPngImageUrl } from "@/lib/safe-image-url";
 import { buildUnifiedPlaceCard } from "@/lib/unified-place-card";
 import type { UserProfileForReason } from "@/lib/build-place-recommendation-reason";
@@ -157,7 +158,7 @@ export async function resolveExplorePrimaryPlace(
 
   let details: PlaceDetailsScreenResult | PlaceResult | null = null;
 
-  const browserKey = getGoogleMapsBrowserKey();
+  const browserKey = getGoogleRestTransportToken();
   if (browserKey) {
     details = await fetchPlaceDetailsForScreenWithKeyViaGateway(
       placeId,

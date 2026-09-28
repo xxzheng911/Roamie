@@ -1,6 +1,6 @@
 import type { LatLng, RouteApiResult } from "@/lib/google-routes-fetch";
 import type { RoutesTravelMode } from "@/lib/routes/types";
-import { fetchHttp } from "@/lib/capacitor-http-fetch";
+import { googleRestFetch } from "@/lib/google-rest-transport";
 import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
 import {
   directionsLocationType,
@@ -215,15 +215,15 @@ export async function fetchGoogleDirectionsRoute(
   if (verbose) {
     logRouteOnce(
       logKey,
-      `[DIRECTIONS_API_REQUEST] url=${safeUrl} origin=${originStr} destination=${destinationStr} mode=${mode} region=${regionCode} departure_time=${mode === "transit" ? departureUnix : "n/a"} departure_iso=${departureTime ?? "now"} transport=${isCapacitorNativeShell() ? "capacitor_http" : "fetch"}`,
+      `[DIRECTIONS_API_REQUEST] url=${safeUrl} origin=${originStr} destination=${destinationStr} mode=${mode} region=${regionCode} departure_time=${mode === "transit" ? departureUnix : "n/a"} departure_iso=${departureTime ?? "now"} transport=${import.meta.env.SSR ? "server_provider" : "authenticated_proxy"}`,
     );
   }
 
   try {
-    const res = await fetchHttp(requestUrl, { signal: ctrl.signal });
+    const res = await googleRestFetch(requestUrl, { signal: ctrl.signal });
     let json: DirectionsResponse;
     try {
-      json = await res.json<DirectionsResponse>();
+      json = (await res.json()) as DirectionsResponse;
     } catch (parseError) {
       const parseMessage = parseError instanceof Error ? parseError.message : String(parseError);
       return {

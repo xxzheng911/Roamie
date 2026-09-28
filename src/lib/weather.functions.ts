@@ -1,3 +1,5 @@
+import { requireGoogleProviderRate } from "@/lib/google-rate-limit.server";
+import { googleRestFetch } from "@/lib/google-rest-transport";
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
@@ -36,7 +38,7 @@ async function reverseGeocodeGoogle(
   locale?: string,
 ): Promise<string> {
   const lang = locale ? localeToGoogleLanguageCode(coerceLocale(locale)) : "zh-TW";
-  const res = await fetch(
+  const res = await googleRestFetch(
     geocodeReverseUrl(lat, lng, apiKey, {
       language: lang,
       region: geocodeRegionFromCoordinates(lat, lng),
@@ -60,8 +62,7 @@ async function reverseGeocodeGoogle(
 
 async function reverseGeocodeCity(lat: number, lng: number, locale?: string): Promise<string> {
   try {
-    const { requireGoogleMapsServerKey } = await import("@/lib/google-maps.server");
-    const googleKey = requireGoogleMapsServerKey();
+    const googleKey = "roamie-server-proxy";
     const city = await reverseGeocodeGoogle(lat, lng, googleKey, locale);
     if (city) return city;
   } catch {
@@ -130,7 +131,7 @@ const ForecastInput = z.object({
 });
 
 export const getWeatherForecast = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
+  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
   .inputValidator((input) => ForecastInput.parse(input))
   .handler(async ({ data }): Promise<WeatherForecastResult> => {
     try {
@@ -153,7 +154,7 @@ export const getWeatherForecast = createServerFn({ method: "POST" })
   });
 
 export const getWeather = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
+  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
   .inputValidator((input) => Input.parse(input))
   .handler(async ({ data }): Promise<{ weather: WeatherSummary | null; error: string | null }> => {
     const { hasOpenWeatherApiKey } = await import("@/lib/openweather-key-resolve.server");
@@ -241,7 +242,7 @@ export const getWeather = createServerFn({ method: "POST" })
 
 /** dev / 連線測試：高雄市天氣 */
 export const weatherTestConnection = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
+  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
   .handler(async () => {
     const { lat, lng } = KAOHSIUNG_COORDS;
     try {

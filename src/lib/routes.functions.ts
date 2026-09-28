@@ -1,3 +1,4 @@
+import { requireGoogleProviderRate } from "@/lib/google-rate-limit.server";
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import type { RoutesTravelMode } from "@/lib/routes/types";
@@ -11,7 +12,7 @@ const LatLngSchema = z.object({
 const TravelModeSchema = z.enum(["WALK", "DRIVE", "TRANSIT", "BICYCLE", "TWO_WHEELER"]);
 
 export const routesComputeDuration = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
+  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
   .inputValidator((input) =>
     z
       .object({
@@ -28,7 +29,7 @@ export const routesComputeDuration = createServerFn({ method: "POST" })
   });
 
 export const routesComputeDistance = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
+  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
   .inputValidator((input) =>
     z
       .object({
@@ -44,7 +45,7 @@ export const routesComputeDistance = createServerFn({ method: "POST" })
   });
 
 export const routesComputeTripLegs = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
+  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
   .inputValidator((input) =>
     z
       .object({
@@ -59,7 +60,7 @@ export const routesComputeTripLegs = createServerFn({ method: "POST" })
   });
 
 export const routesComputeLegEstimates = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
+  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
   .inputValidator((input) =>
     z
       .object({
@@ -82,7 +83,7 @@ export const routesComputeLegEstimates = createServerFn({ method: "POST" })
   });
 
 export const routesTestConnection = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
+  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
   .handler(async () => {
     const { testRoutesApiConnection } = await import("@/lib/google-routes.server");
     return testRoutesApiConnection();
