@@ -3,10 +3,10 @@ import { createFileRoute } from "@tanstack/react-router";
 import { callRoamieAI, parseRoamieRequest, streamRoamieAI } from "@/lib/ai/service.server";
 import { applyTierToAiContext } from "@/lib/access/context";
 import type { RoamieAIErrorDetail } from "@/lib/ai/errors";
-import { AI_RATE_LIMITS, checkRateLimit } from "@/lib/rate-limit.server";
+import { aiSurfaceForMode } from "@/lib/abuse-guard-policy";
 import {
+  beginAiRequest,
   requireAuthenticatedAiRequest,
-  reserveServerCredits,
   rollbackServerCreditsByRequest,
   settleServerCredits,
 } from "@/lib/ai/endpoint-guard.server";
@@ -87,25 +87,12 @@ export const Route = createFileRoute("/api/roamie")({
           return new Response(null, { status: rolledBack ? 204 : 503 });
         }
 
-        const rateKey = auth?.userId ?? request.headers.get("cf-connecting-ip") ?? "anon";
-        const minuteLimit = checkRateLimit(
-          `ai:${rateKey}:min`,
-          AI_RATE_LIMITS.chatPerMinute,
-          60_000,
-        );
-        if (!minuteLimit.allowed) {
-          return new Response(
-            JSON.stringify({
-              error: "Too many requests",
-              retryAfterSec: minuteLimit.retryAfterSec,
-            }),
-            { status: 429, headers: { "Content-Type": "application/json" } },
-          );
-        }
-        const credits = await reserveServerCredits(
+        const credits = await beginAiRequest(
           auth,
           featureType,
+          aiSurfaceForMode(ctx.mode),
           request,
+          JSON.stringify(body),
         );
         if (credits.response || !credits.reservation) {
           console.info("[CHAT_CREDIT_LIFECYCLE]", { requestId: operationId, tier, reserved: false, committed: false, rolledBack: false, failureReason: "reservation_rejected" });

@@ -1,5 +1,6 @@
 import type { Locale } from "@/lib/i18n/types";
 import { aiLanguageInstruction } from "@/lib/i18n/ai-instructions";
+import { assertAiUse } from "@/lib/abuse-guard.server";
 import { getOpenAIKey } from "@/lib/env.server";
 import { mapOpenAIError } from "@/lib/ai/errors";
 import type { DailyForecast } from "@/lib/weather.functions";
@@ -100,6 +101,7 @@ ${dayBlocks}`;
 }
 
 export async function callOutfitAI(input: OutfitAIInput): Promise<OutfitAIItem[]> {
+  await assertAiUse("outfit");
   const apiKey = getOpenAIKey();
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",

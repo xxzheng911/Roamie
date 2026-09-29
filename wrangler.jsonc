@@ -11,4 +11,8 @@
       "simple": { "limit": 120, "period": 60 },
     },
   ],
+  "durable_objects": {
+    "bindings": [{ "name": "ABUSE_GUARD", "class_name": "AbuseGuard" }],
+  },
+  "migrations": [{ "tag": "v1-abuse-guard", "new_sqlite_classes": ["AbuseGuard"] }],
 }

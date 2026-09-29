@@ -5,6 +5,7 @@ import {
   validatePhotoResource,
 } from "../src/routes/api/place-photo.ts";
 import { signPlacePhoto } from "../src/lib/place-photo-signature.server.ts";
+import { createMemoryAbuseGuard } from "../src/lib/abuse-guard-memory.ts";
 
 const key = "AIza" + "x".repeat(35);
 const shortResource = "places/ChIJ_short/photos/short_photo";
@@ -18,6 +19,7 @@ const handlePlacePhotoRequest = (request, dependencies, env = signingEnv) =>
 const signingEnv = {
   GOOGLE_API_RATE_LIMITER: { limit: async () => ({ success: true }) },
   PLACE_PHOTO_SIGNING_SECRET: "test-signing-secret-at-least-32-bytes",
+  ABUSE_GUARD: createMemoryAbuseGuard().namespace,
 };
 process.env.PLACE_PHOTO_SIGNING_SECRET = signingEnv.PLACE_PHOTO_SIGNING_SECRET;
 

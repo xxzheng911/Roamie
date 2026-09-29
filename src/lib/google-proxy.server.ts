@@ -1,10 +1,13 @@
 import { readGoogleRequestJson } from "@/lib/google-request-body.server";
 import { createClient } from "@supabase/supabase-js";
+import { authorizeGoogleSpec, googleOperationId } from "@/lib/abuse-guard.server";
 import { fetchGoogleRestProvider } from "@/lib/google-rest-provider.server";
 import { googleRestRequest } from "@/lib/google-rest-contract";
+import { consumeGoogleBurst } from "@/lib/google-burst.server";
+import { fixedStatusResponse, isKillSwitchOn } from "@/lib/kill-switch.server";
 import type { CloudflareRuntimeEnv } from "@/lib/server-request-context";
+import { bindIncomingRequest, runWithVerifiedPrincipal, withGoogleOperation } from "@/lib/worker-request-scope";
 
-type Limiter = { limit(input: { key: string }): Promise<{ success: boolean }> };
 export async function authenticateGoogleRequest(
   request: Request,
   env: CloudflareRuntimeEnv,
@@ -20,6 +23,7 @@ export async function authenticateGoogleRequest(
   const result = await client.auth.getUser(auth.slice(7));
   return result.error ? null : (result.data.user?.id ?? null);
 }
+
 export async function handleGoogleProxy(
   request: Request,
   env: CloudflareRuntimeEnv,
@@ -40,34 +44,33 @@ export async function handleGoogleProxy(
   const origin = request.headers.get("origin");
   if (origin && origin !== "capacitor://localhost" && origin !== new URL(request.url).origin)
     return error("origin_forbidden", 403);
-  if (!request.headers.get("authorization")?.startsWith("Bearer "))
-    return error("unauthorized", 401);
+  if (!request.headers.get("authorization")?.startsWith("Bearer ")) return error("unauthorized", 401);
   if (!request.headers.get("content-type")?.startsWith("application/json"))
     return error("invalid_content_type", 415);
   try {
-    const limiter = env.GOOGLE_API_RATE_LIMITER as Limiter | undefined;
-    if (!limiter?.limit) return error("google_rate_limit_unavailable", 503);
-    if (
-      !(
-        await limiter.limit({
-          key: `google:ip:${request.headers.get("cf-connecting-ip") ?? "unknown"}`,
-        })
-      ).success
-    )
-      return error("rate_limited", 429);
     const userId = await deps.authenticate(request, env);
     if (!userId) return error("unauthorized", 401);
-    if (!(await limiter.limit({ key: `google:user:${userId}` })).success)
-      return error("rate_limited", 429);
-    let input;
-    try {
-      input = await readGoogleRequestJson(request);
-      googleRestRequest(input);
-    } catch (failure) {
-      return error("invalid_google_request", failure instanceof RangeError ? 413 : 400);
-    }
-    return await deps.provider(input, env);
+    return await runWithVerifiedPrincipal(userId, async () => {
+      bindIncomingRequest(request);
+      if (isKillSwitchOn(env, "DISABLE_GOOGLE_PROXY")) return fixedStatusResponse("google_unavailable");
+      let input: unknown;
+      let spec: ReturnType<typeof googleRestRequest>;
+      try {
+        input = await readGoogleRequestJson(request);
+        spec = googleRestRequest(input);
+      } catch (failure) {
+        return error("invalid_google_request", failure instanceof RangeError ? 413 : 400);
+      }
+      const burst = await consumeGoogleBurst(env, userId, request);
+      if (burst) return burst;
+      const operationId = await googleOperationId(spec, request);
+      return withGoogleOperation(operationId, async () => {
+        const denied = await authorizeGoogleSpec(spec, env, request);
+        if (denied) return denied;
+        return deps.provider(input, env);
+      });
+    });
   } catch {
-    return error("google_proxy_unavailable", 503);
+    return fixedStatusResponse("google_unavailable");
   }
 }

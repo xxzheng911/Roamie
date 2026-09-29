@@ -1,9 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { generateItinerary } from "@/lib/itinerary.functions";
+import { authorizeAiUse } from "@/lib/abuse-guard.server";
 import { requireAuthenticatedAiRequest } from "@/lib/ai/endpoint-guard.server";
 import { analyticsOperationEventId } from "@/lib/analytics/events";
 import { recordAnalyticsEventServer } from "@/lib/analytics/record.server";
-import { checkRateLimit, SECURITY_RATE_LIMITS } from "@/lib/rate-limit.server";
+import { bindVerifiedUserId } from "@/lib/worker-request-scope";
 import { INSUFFICIENT_CREDITS_ERROR_CODE, isInsufficientCreditsError } from "@/lib/credits/errors";
 import {
   invalidItineraryDurationFailure,
@@ -36,16 +37,7 @@ export const Route = createFileRoute("/api/generate-itinerary")({
 
         const auth = await requireAuthenticatedAiRequest(request);
         if (!auth) return Response.json({ error: "Unauthorized" }, { status: 401 });
-        const rate = checkRateLimit(
-          `itinerary:${auth.userId}:minute`,
-          SECURITY_RATE_LIMITS.itineraryPerMinute,
-          60_000,
-        );
-        if (!rate.allowed)
-          return Response.json(
-            { error: "rate_limited" },
-            { status: 429, headers: { "Retry-After": String(rate.retryAfterSec) } },
-          );
+        bindVerifiedUserId(auth.userId);
         const operationId =
           request.headers.get("x-roamie-request-id")?.trim() || crypto.randomUUID();
         let correlatedGenerationId = operationId;
@@ -114,6 +106,8 @@ export const Route = createFileRoute("/api/generate-itinerary")({
             source: typeof requestBody.days === "number" ? "explicit_days" : "none",
           });
         }
+        const fairUse = await authorizeAiUse("itinerary", request, JSON.stringify(payload));
+        if (fairUse) return fairUse;
         await recordAnalyticsEventServer(
           {
             eventId: analyticsOperationEventId(operationId, "started"),
@@ -145,6 +139,18 @@ export const Route = createFileRoute("/api/generate-itinerary")({
             headers: { "Content-Type": "application/json" },
           });
         } catch (e) {
+          if (e instanceof Error && (e.message === "rate_limited" || e.message === "ai_unavailable")) {
+            return Response.json(
+              { error: e.message },
+              {
+                status: e.message === "rate_limited" ? 429 : 503,
+                headers: {
+                  "Cache-Control": "no-store",
+                  ...(e.message === "rate_limited" ? { "Retry-After": "60" } : {}),
+                },
+              },
+            );
+          }
           const insufficientCredits = isInsufficientCreditsError(e);
           const durationError = isItineraryDurationValidationError(e);
           const classified = durationError

@@ -12,6 +12,23 @@ import {
   requireGoogleProviderRate,
 } from "../src/lib/google-rate-limit.server.ts";
 import { readGoogleRequestJson } from "../src/lib/google-request-body.server.ts";
+import { createMemoryAbuseGuard } from "../src/lib/abuse-guard-memory.ts";
+import { runWithGuardTestContext } from "../src/lib/worker-request-scope.ts";
+const abuseGuard = createMemoryAbuseGuard();
+const allowLimiter = { limit: async () => ({ success: true }) };
+async function withGuardedProvider(env, input, fetcher) {
+  return runWithGuardTestContext({ userId: "verified-user", ip: "203.0.113.10" }, () =>
+    fetchGoogleRestProvider(
+      input,
+      {
+        ...env,
+        ABUSE_GUARD: abuseGuard.namespace,
+        GOOGLE_API_RATE_LIMITER: env.GOOGLE_API_RATE_LIMITER ?? allowLimiter,
+      },
+      fetcher,
+    ),
+  );
+}
 const names = [
   "GOOGLE_PLACES_SERVER_API_KEY",
   "GOOGLE_ROUTES_SERVER_API_KEY",
@@ -101,7 +118,7 @@ try {
     return Response.json({ status: "OK", places: [], results: [], routes: [] });
   };
   for (const r of requests)
-    assert.equal((await fetchGoogleRestProvider(r, keys, provider)).status, 200);
+    assert.equal((await withGuardedProvider(keys, r, provider)).status, 200);
   assert.equal(calls, requests.length);
   const bad = [
     { ...requests[0], url: "https://evil.example/v1/places:searchText" },
@@ -205,11 +222,11 @@ try {
       async () => Response.json({ error: { message: secret } }, { status: 403 }),
       async () => Response.json({ status: "REQUEST_DENIED", error_message: secret }),
     ]) {
-      const res = await fetchGoogleRestProvider(requests[0], keys, fn);
+      const res = await withGuardedProvider(keys, requests[0], fn);
       assert.equal(res.status, 502);
       assert.ok(!(await res.text()).includes(secret));
     }
-    const res = await fetchGoogleRestProvider(requests[0], keys, async () =>
+    const res = await withGuardedProvider(keys, requests[0], async () =>
       Response.json({ name: secret }),
     );
     assert.ok(!(await res.text()).includes(secret));
@@ -222,6 +239,7 @@ try {
       method: "POST",
       headers: {
         "content-type": "application/json",
+        "cf-connecting-ip": "203.0.113.10",
         ...(auth ? { authorization: "Bearer fixture-token" } : {}),
         ...extra,
       },
@@ -230,6 +248,7 @@ try {
   const limitKeys = [];
   const env = {
     ...keys,
+    ABUSE_GUARD: abuseGuard.namespace,
     GOOGLE_API_RATE_LIMITER: {
       limit: async ({ key }) => {
         limitKeys.push(key);

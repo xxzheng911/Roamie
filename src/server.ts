@@ -1,4 +1,5 @@
 import "./lib/error-capture";
+import { installWorkerRequestStorage } from "./lib/worker-request-als.server";
 
 import { consumeLastCapturedError } from "./lib/error-capture";
 import { logAppError } from "@/lib/log-error";
@@ -8,6 +9,7 @@ import {
   type CloudflareRuntimeEnv,
   type RoamieServerRequestContext,
 } from "@/lib/server-request-context";
+import { runWithWorkerRequest } from "@/lib/worker-request-scope";
 import { renderErrorPageFromUnknown } from "./lib/error-page";
 
 type ServerEntry = {
@@ -118,16 +120,23 @@ async function normalizeCatastrophicSsrResponse(response: Response): Promise<Res
   return brandedErrorResponse(captured);
 }
 
+export { AbuseGuard } from "./lib/abuse-guard-do";
+
 export default {
   async fetch(request: Request, env: CloudflareRuntimeEnv, ctx: CloudflareExecutionContext) {
+    installWorkerRequestStorage();
     try {
       if (request.method === "OPTIONS" && isTrustedNativeApiRequest(request)) {
         return withNativeApiCors(request, new Response(null, { status: 204 }));
       }
       const handler = await getServerEntry();
-      const response = await handler.fetch(request, {
-        context: createRoamieServerRequestContext(env, ctx),
-      });
+      const response = await runWithWorkerRequest(
+        { env, request, allowLocalIp: import.meta.env?.PROD !== true },
+        () =>
+          handler.fetch(request, {
+            context: createRoamieServerRequestContext(env, ctx),
+          }),
+      );
       return withSecurityHeaders(
         request,
         withNativeApiCors(request, await normalizeCatastrophicSsrResponse(response)),

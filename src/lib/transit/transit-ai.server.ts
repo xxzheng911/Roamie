@@ -1,3 +1,4 @@
+import { assertAiUse } from "@/lib/abuse-guard.server";
 import { getOpenAIKey } from "@/lib/env.server";
 import type { TransitLegAdvice, TransitPreferences } from "@/lib/transit/types";
 
@@ -14,6 +15,7 @@ export async function enrichTransitLegsWithAI(
 ): Promise<TransitLegAdvice[]> {
   if (legs.length === 0) return legs;
 
+  await assertAiUse("transit");
   const apiKey = getOpenAIKey();
   const payload = {
     destination: ctx.destination ?? "",

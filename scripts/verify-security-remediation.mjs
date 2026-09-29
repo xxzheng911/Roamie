@@ -135,7 +135,9 @@ const protectedFiles = [
 for (const file of protectedFiles) {
   const source = read(file);
   const count = (source.match(/createServerFn\(/g) ?? []).length;
-  const guards = (source.match(/\.middleware\(\[requireSupabaseAuth\]\)/g) ?? []).length;
+  const guards = (
+    source.match(/\.middleware\(\[requireSupabaseAuth(?:, requireGoogleProviderRate)?\]\)/g) ?? []
+  ).length;
   assert.equal(guards, count, `${file}: every server function must be authenticated`);
 }
 assert.match(read("src/lib/itinerary.functions.ts"), /\.middleware\(\[requireItineraryCredits\]\)/);

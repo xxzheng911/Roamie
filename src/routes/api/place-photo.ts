@@ -1,13 +1,15 @@
+import { authorizePlacePhotoFetch } from "@/lib/abuse-guard.server";
 import { checkGoogleProviderRate } from "@/lib/google-rate-limit.server";
+import { fixedStatusResponse, isKillSwitchOn } from "@/lib/kill-switch.server";
 import { createFileRoute } from "@tanstack/react-router";
 import {
   resolveGoogleMapsKeyFromServerEnv,
   type GoogleMapsServerKeySource,
 } from "@/lib/google-maps-key-resolve.server";
 import { recordPlacesHttpCall } from "@/lib/places-api-stats";
-import { checkRateLimit, SECURITY_RATE_LIMITS } from "@/lib/rate-limit.server";
 import type { CloudflareRuntimeEnv } from "@/lib/server-request-context";
 import { verifyPlacePhotoSignature } from "@/lib/place-photo-signature.server";
+import { resolveTrustedIp } from "@/lib/worker-request-scope";
 
 const MAX_PHOTO_RESOURCE_LENGTH = 2_048;
 const MAX_PHOTO_BYTES = 8 * 1024 * 1024;
@@ -230,13 +232,6 @@ export async function handlePlacePhotoRequest(
   dependencies: PlacePhotoDependencies = DEFAULT_DEPENDENCIES,
   runtimeEnv?: CloudflareRuntimeEnv,
 ): Promise<Response> {
-  const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
-  const rate = checkRateLimit(`photo:${ip}:minute`, SECURITY_RATE_LIMITS.photoPerMinute, 60_000);
-  if (!rate.allowed)
-    return new Response(null, {
-      status: 429,
-      headers: { "Retry-After": String(rate.retryAfterSec) },
-    });
   const url = new URL(request.url);
   const photo = url.searchParams.get("photo");
   const maxW = Math.min(1600, Math.max(120, Number(url.searchParams.get("w") ?? 480) || 480));
@@ -266,9 +261,17 @@ export async function handlePlacePhotoRequest(
   if (!(await verifyPlacePhotoSignature(runtimeEnv, photo!, maxW, expires, signature))) {
     return new Response("Unauthorized", { status: 401 });
   }
+  if (isKillSwitchOn(runtimeEnv, "DISABLE_GOOGLE_PROXY")) return fixedStatusResponse("google_unavailable");
+  const ip = resolveTrustedIp(request) ?? "";
   try {
-    if (!await checkGoogleProviderRate(runtimeEnv, `google:photo:${ip}`)) return new Response("Rate limited", {status:429,headers:{"Retry-After":"60"}});
-  } catch { return new Response("Photo unavailable", {status:503}); }
+    if (!ip || !(await checkGoogleProviderRate(runtimeEnv, `google:photo:${ip}`))) {
+      return ip ? fixedStatusResponse("rate_limited", 60) : fixedStatusResponse("google_unavailable");
+    }
+  } catch {
+    return fixedStatusResponse("google_unavailable");
+  }
+  const photoGuard = await authorizePlacePhotoFetch(runtimeEnv, request);
+  if (photoGuard) return photoGuard;
   const validPhoto = photo!;
 
   let keySource: GoogleMapsServerKeySource = "none";

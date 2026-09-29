@@ -11,6 +11,10 @@ import { ROAMIE_JSON_SCHEMA, normalizeAiGeneratedResponse, type RoamieResponse }
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { mergeBoundsForStage, stageAllowsPlacesFirst } from "@/lib/ai/conversation-stage";
 import { MAX_ITINERARY_DAYS, MIN_ITINERARY_DAYS } from "@/lib/ai/itinerary-days";
+import { assertAiUse } from "@/lib/abuse-guard.server";
+import { aiSurfaceForMode } from "@/lib/abuse-guard-policy";
+import { isKillSwitchOn } from "@/lib/kill-switch.server";
+import { getWorkerScope } from "@/lib/worker-request-scope";
 
 const PlaceItemSchema = z
   .object({
@@ -178,6 +182,10 @@ async function withPlacesFirstPrep(ctx: RoamieRequestContext) {
 }
 
 export async function callRoamieAI(ctx: RoamieRequestContext): Promise<RoamieResponse> {
+  if (isKillSwitchOn(getWorkerScope()?.env, "DISABLE_AI")) {
+    throw new Error("ai_unavailable");
+  }
+  await assertAiUse(aiSurfaceForMode(ctx.mode));
   const prep = await withPlacesFirstPrep(ctx);
   ctx = prep.ctx;
   const apiKey = getOpenAIKey();
@@ -320,6 +328,10 @@ export function streamRoamieAI(
         controller.enqueue(encoded);
       };
       try {
+        if (isKillSwitchOn(getWorkerScope()?.env, "DISABLE_AI")) {
+          throw new Error("ai_unavailable");
+        }
+        await assertAiUse(aiSurfaceForMode(initialCtx.mode));
         const prep = await withPlacesFirstPrep(initialCtx);
         let ctx = prep.ctx;
         const apiKey = getOpenAIKey();

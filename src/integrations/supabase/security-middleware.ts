@@ -4,6 +4,7 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { parsePlusEntitlementSnapshot } from "@/lib/plan-tier/entitlement";
 import { CREDITS_COSTS } from "@/lib/credits/constants";
 import { InsufficientCreditsError } from "@/lib/credits/errors";
+import { authorizeAiUse } from "@/lib/abuse-guard.server";
 
 /** Server-function boundary for Plus-only capabilities. Client tier flags are ignored. */
 export const requireSupabasePlus = createMiddleware({ type: "function" })
@@ -23,6 +24,16 @@ export const requireItineraryCredits = createMiddleware({ type: "function" })
   .middleware([requireSupabaseAuth])
   .server(async ({ next, context }) => {
     const request = getRequest();
+    let material: string | undefined;
+    try {
+      material = await request.clone().text();
+    } catch {
+      material = undefined;
+    }
+    const fairUse = await authorizeAiUse("itinerary", request, material);
+    if (fairUse) {
+      throw new Error(fairUse.status === 429 ? "rate_limited" : "ai_unavailable");
+    }
     const { data: entitlement, error: entitlementError } = await context.supabase.rpc(
       "resolve_user_plus_entitlement",
       { p_user_id: context.userId },

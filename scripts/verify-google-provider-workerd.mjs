@@ -5,10 +5,19 @@ import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 // Real adapter and real workerd fetch. All outbound traffic terminates at a mock.
 const key = "AIza" + "x".repeat(35);
 const entry = `import {fetchGoogleRestProvider} from './src/lib/google-rest-provider.server';
+import {runWithGuardTestContext} from './src/lib/worker-request-scope';
+import {createMemoryAbuseGuard} from './src/lib/abuse-guard-memory';
+const guard = createMemoryAbuseGuard();
+const env = {
+ GOOGLE_PLACES_SERVER_API_KEY:${JSON.stringify(key)},
+ GOOGLE_API_RATE_LIMITER:{limit:async()=>({success:true})},
+ ABUSE_GUARD:guard.namespace,
+};
 export default {async fetch(request) {
  const {input,exception}=await request.json();
- return fetchGoogleRestProvider(input,{GOOGLE_PLACES_SERVER_API_KEY:${JSON.stringify(key)}},
- exception ? async()=>{throw new TypeError('synthetic network failure')} : fetch);
+ return runWithGuardTestContext({userId:'workerd-user',ip:'203.0.113.50'},()=>
+  fetchGoogleRestProvider(input,env,
+   exception ? async()=>{throw new TypeError('synthetic network failure')} : fetch));
 }};`;
 const result = await build({
   stdin: { contents: entry, resolveDir: process.cwd(), loader: "ts" },
@@ -16,6 +25,7 @@ const result = await build({
   write: false,
   format: "esm",
   platform: "browser",
+  external: ["node:async_hooks"],
 });
 let status = 200,
   calls = 0,

@@ -1,5 +1,5 @@
-/** Per-isolate development/advisory limiter. Production security is enforced by
- * Cloudflare WAF Rate Limiting rules; this must never be treated as durable. */
+/** Per-isolate advisory limiter for non-paid routes such as admin.
+ * Paid Google and AI calls must not use this map as their production authority. */
 
 export type RateLimitResult = { allowed: true } | { allowed: false; retryAfterSec: number };
 

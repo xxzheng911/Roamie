@@ -2,6 +2,7 @@ import type { Locale } from "@/lib/i18n/types";
 import { translate } from "@/lib/i18n/translate";
 import { localizedOutfitCopy } from "./localized-outfit-copy";
 import { aiLanguageInstruction } from "@/lib/i18n/ai-instructions";
+import { assertAiUse } from "@/lib/abuse-guard.server";
 import { getOpenAIKey } from "@/lib/env.server";
 import { mapOpenAIError } from "@/lib/ai/errors";
 import type { DailyForecast } from "@/lib/weather-types";
@@ -113,6 +114,7 @@ ${params.mood ? `旅行心情：${params.mood}` : ""}
 }
 
 async function callTripOutfitAI(userMessage: string, locale: Locale): Promise<string> {
+  await assertAiUse("outfit");
   const apiKey = getOpenAIKey();
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",

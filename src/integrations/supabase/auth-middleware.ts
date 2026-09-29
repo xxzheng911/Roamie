@@ -3,7 +3,8 @@ import { createMiddleware } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { createClient } from "@supabase/supabase-js";
 import type { Database } from "./types";
-import { checkRateLimit, SECURITY_RATE_LIMITS } from "@/lib/rate-limit.server";
+import { consumeServerFunctionSlot } from "@/lib/abuse-guard.server";
+import { bindVerifiedUserId } from "@/lib/worker-request-scope";
 
 export const requireSupabaseAuth = createMiddleware({ type: "function" }).server(
   async ({ next }) => {
@@ -64,12 +65,10 @@ export const requireSupabaseAuth = createMiddleware({ type: "function" }).server
       throw new Error("Unauthorized: No user ID found in token");
     }
 
-    const rate = checkRateLimit(
-      `server-function:${data.claims.sub}:minute`,
-      SECURITY_RATE_LIMITS.serverFunctionPerMinute,
-      60_000,
-    );
-    if (!rate.allowed) throw new Error("Too Many Requests");
+    bindVerifiedUserId(data.claims.sub);
+    const slot = await consumeServerFunctionSlot(data.claims.sub);
+    if (slot === "limited") throw new Error("Too Many Requests");
+    if (slot === "unavailable") throw new Error("service_unavailable");
 
     return next({ context: { supabase, userId: data.claims.sub, claims: data.claims } });
   },

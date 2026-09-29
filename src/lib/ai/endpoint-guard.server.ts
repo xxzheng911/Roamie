@@ -1,7 +1,10 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { authorizeAiUse } from "@/lib/abuse-guard.server";
+import type { AiSurface } from "@/lib/abuse-guard-policy";
 import type { CreditsFeatureType } from "@/lib/credits/constants";
 import { CREDITS_COSTS } from "@/lib/credits/constants";
 import { parsePlusEntitlementSnapshot } from "@/lib/plan-tier/entitlement";
+import { bindVerifiedUserId } from "@/lib/worker-request-scope";
 
 type AuthenticatedAiRequest = {
   userId: string;
@@ -38,6 +41,20 @@ export async function requireAuthenticatedAiRequest(
     ? false
     : parsePlusEntitlementSnapshot(entitlementData).hasPlus;
   return { userId: data.user.id, email: data.user.email ?? null, client, hasPlusAccess };
+}
+
+/** Fair-use runs before any credit reservation. A rejection does not reserve. */
+export async function beginAiRequest(
+  auth: AuthenticatedAiRequest,
+  featureType: CreditsFeatureType,
+  surface: AiSurface,
+  request: Request,
+  material?: string,
+): Promise<{ reservation: ServerCreditReservation | null; response: Response | null }> {
+  bindVerifiedUserId(auth.userId);
+  const denied = await authorizeAiUse(surface, request, material);
+  if (denied) return { reservation: null, response: denied };
+  return reserveServerCredits(auth, featureType, request);
 }
 
 export async function reserveServerCredits(

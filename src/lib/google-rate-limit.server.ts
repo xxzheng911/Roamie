@@ -1,26 +1,31 @@
 import { createMiddleware } from "@tanstack/react-start";
+import {
+  checkGoogleProviderRate,
+  resolveGoogleRuntimeEnv,
+} from "@/lib/google-burst.server";
+import { isKillSwitchOn } from "@/lib/kill-switch.server";
 import type { CloudflareRuntimeEnv } from "@/lib/server-request-context";
+import { getWorkerScope } from "@/lib/worker-request-scope";
 
-type RateBinding = { limit(input: { key: string }): Promise<{ success: boolean }> };
-export async function checkGoogleProviderRate(
-  env: CloudflareRuntimeEnv | undefined,
-  key: string,
-): Promise<boolean> {
-  const binding = env?.GOOGLE_API_RATE_LIMITER as RateBinding | undefined;
-  if (!binding?.limit) throw new Error("google_rate_limit_unavailable");
-  try {
-    return (await binding.limit({ key })).success;
-  } catch {
-    throw new Error("google_rate_limit_unavailable");
-  }
-}
+export { checkGoogleProviderRate, consumeGoogleBurst, resolveGoogleRuntimeEnv } from "@/lib/google-burst.server";
+
 /** Applied after Supabase auth to existing Google server functions, before any provider call. */
 export const requireGoogleProviderRate = createMiddleware({ type: "function" }).server(
   async ({ next, context }) => {
     const auth = context as unknown as { userId?: string; cloudflareEnv?: CloudflareRuntimeEnv };
     if (!auth.userId) throw new Error("Unauthorized");
-    if (!(await checkGoogleProviderRate(auth.cloudflareEnv, `google:user:${auth.userId}`)))
-      throw new Error("Too Many Requests");
+    const env = resolveGoogleRuntimeEnv(auth.cloudflareEnv);
+    if (isKillSwitchOn(env, "DISABLE_GOOGLE_PROXY")) throw new Error("google_unavailable");
+    try {
+      if (!(await checkGoogleProviderRate(env, `google:user:${auth.userId}`))) {
+        throw new Error("Too Many Requests");
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message === "Too Many Requests") throw error;
+      throw new Error("google_unavailable");
+    }
+    const store = getWorkerScope();
+    if (store) store.userBurstDone = true;
     return next();
   },
 );
