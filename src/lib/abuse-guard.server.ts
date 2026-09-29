@@ -13,7 +13,9 @@ import {
   type AiSurface,
   type GoogleBillingFamily,
 } from "@/lib/abuse-guard-policy";
+import { isAbuseGuardEnforcementOn } from "@/lib/abuse-guard-enforcement.server";
 import { fixedStatusResponse, isKillSwitchOn, type KillSwitchName } from "@/lib/kill-switch.server";
+import { checkRateLimit, SECURITY_RATE_LIMITS } from "@/lib/rate-limit.server";
 import type { CloudflareRuntimeEnv } from "@/lib/server-request-context";
 import {
   currentAiOperation,
@@ -152,6 +154,7 @@ export async function authorizeGoogleBilling(input: {
   ip?: string | null;
 }): Promise<Response | null> {
   const env = runtimeGuardEnv(input.env);
+  if (!isAbuseGuardEnforcementOn(env)) return null;
   const userId = input.userId ?? resolveTrustedUserId();
   const ip = input.ip ?? resolveTrustedIp();
   if (isKillSwitchOn(env, "DISABLE_GOOGLE_PROXY")) {
@@ -294,6 +297,7 @@ async function decideAi(
   material?: string,
 ): Promise<Denial | null> {
   const env = runtimeGuardEnv();
+  if (!isAbuseGuardEnforcementOn(env)) return null;
   if (isKillSwitchOn(env, "DISABLE_AI")) {
     await logGuard(surface, resolveTrustedUserId() ?? "anonymous", "kill_switch");
     return unavailable("ai_unavailable");
@@ -342,6 +346,7 @@ export async function assertAiUse(
 }
 
 export async function consumeServerFunctionSlot(userId: string): Promise<"ok" | "limited" | "unavailable"> {
+  if (!isAbuseGuardEnforcementOn()) return "ok";
   try {
     const result = await chargeNamed(
       runtimeGuardEnv(),
@@ -358,6 +363,22 @@ export async function consumeServerFunctionSlot(userId: string): Promise<"ok" | 
     await logGuard("server_function", userId, "guard_unavailable");
     return "unavailable";
   }
+}
+
+/** Bootstrap keeps the pre-migration per-isolate server-function limit. Enforcement uses the DO. */
+export async function admitAuthenticatedServerFunction(userId: string): Promise<void> {
+  if (!isAbuseGuardEnforcementOn()) {
+    const rate = checkRateLimit(
+      `server-function:${userId}:minute`,
+      SECURITY_RATE_LIMITS.serverFunctionPerMinute,
+      60_000,
+    );
+    if (!rate.allowed) throw new Error("Too Many Requests");
+    return;
+  }
+  const slot = await consumeServerFunctionSlot(userId);
+  if (slot === "limited") throw new Error("Too Many Requests");
+  if (slot === "unavailable") throw new Error("service_unavailable");
 }
 
 export function killSwitchResponse(

@@ -3,7 +3,7 @@ import { createMiddleware } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { createClient } from "@supabase/supabase-js";
 import type { Database } from "./types";
-import { consumeServerFunctionSlot } from "@/lib/abuse-guard.server";
+import { admitAuthenticatedServerFunction } from "@/lib/abuse-guard.server";
 import { bindVerifiedUserId } from "@/lib/worker-request-scope";
 
 export const requireSupabaseAuth = createMiddleware({ type: "function" }).server(
@@ -66,9 +66,7 @@ export const requireSupabaseAuth = createMiddleware({ type: "function" }).server
     }
 
     bindVerifiedUserId(data.claims.sub);
-    const slot = await consumeServerFunctionSlot(data.claims.sub);
-    if (slot === "limited") throw new Error("Too Many Requests");
-    if (slot === "unavailable") throw new Error("service_unavailable");
+    await admitAuthenticatedServerFunction(data.claims.sub);
 
     return next({ context: { supabase, userId: data.claims.sub, claims: data.claims } });
   },

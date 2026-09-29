@@ -1,4 +1,5 @@
 import { createMiddleware } from "@tanstack/react-start";
+import { isAbuseGuardEnforcementOn } from "@/lib/abuse-guard-enforcement.server";
 import {
   checkGoogleProviderRate,
   resolveGoogleRuntimeEnv,
@@ -15,6 +16,12 @@ export const requireGoogleProviderRate = createMiddleware({ type: "function" }).
     const auth = context as unknown as { userId?: string; cloudflareEnv?: CloudflareRuntimeEnv };
     if (!auth.userId) throw new Error("Unauthorized");
     const env = resolveGoogleRuntimeEnv(auth.cloudflareEnv);
+    if (!isAbuseGuardEnforcementOn(env)) {
+      if (!(await checkGoogleProviderRate(auth.cloudflareEnv, `google:user:${auth.userId}`))) {
+        throw new Error("Too Many Requests");
+      }
+      return next();
+    }
     if (isKillSwitchOn(env, "DISABLE_GOOGLE_PROXY")) throw new Error("google_unavailable");
     try {
       if (!(await checkGoogleProviderRate(env, `google:user:${auth.userId}`))) {

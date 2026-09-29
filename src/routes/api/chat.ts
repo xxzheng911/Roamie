@@ -2,11 +2,14 @@ import { encodeGeneratedChatContent } from "@/lib/generated-locale";
 import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 import { parseRoamieRequest, streamRoamieAI } from "@/lib/ai/service.server";
+import { isAbuseGuardEnforcementOn } from "@/lib/abuse-guard-enforcement.server";
 import {
   beginAiRequest,
   requireAuthenticatedAiRequest,
+  reserveServerCredits,
   settleServerCredits,
 } from "@/lib/ai/endpoint-guard.server";
+import { checkRateLimit, SECURITY_RATE_LIMITS } from "@/lib/rate-limit.server";
 
 const BodySchema = z.object({
   locale: z.enum(["zh-TW", "en", "ja", "ko"]).optional(),
@@ -73,13 +76,31 @@ export const Route = createFileRoute("/api/chat")({
         try {
           const auth = await requireAuthenticatedAiRequest(request);
           if (!auth) return Response.json({ error: "Unauthorized" }, { status: 401 });
-          const credits = await beginAiRequest(
-            auth,
-            "PLACE_RECOMMENDATION",
-            "chat",
-            request,
-            JSON.stringify(body),
-          );
+          const credits = isAbuseGuardEnforcementOn()
+            ? await beginAiRequest(
+                auth,
+                "PLACE_RECOMMENDATION",
+                "chat",
+                request,
+                JSON.stringify(body),
+              )
+            : await (async () => {
+                const rate = checkRateLimit(
+                  `chat:${auth.userId}:minute`,
+                  SECURITY_RATE_LIMITS.chatPerMinute,
+                  60_000,
+                );
+                if (!rate.allowed) {
+                  return {
+                    reservation: null,
+                    response: Response.json(
+                      { error: "rate_limited" },
+                      { status: 429, headers: { "Retry-After": String(rate.retryAfterSec) } },
+                    ),
+                  };
+                }
+                return reserveServerCredits(auth, "PLACE_RECOMMENDATION", request);
+              })();
           if (credits.response || !credits.reservation) return credits.response!;
           const reservation = credits.reservation;
           request.signal.addEventListener(

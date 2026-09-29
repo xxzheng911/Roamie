@@ -1,5 +1,6 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { authorizeAiUse } from "@/lib/abuse-guard.server";
+import { isAbuseGuardEnforcementOn } from "@/lib/abuse-guard-enforcement.server";
 import type { AiSurface } from "@/lib/abuse-guard-policy";
 import type { CreditsFeatureType } from "@/lib/credits/constants";
 import { CREDITS_COSTS } from "@/lib/credits/constants";
@@ -52,8 +53,10 @@ export async function beginAiRequest(
   material?: string,
 ): Promise<{ reservation: ServerCreditReservation | null; response: Response | null }> {
   bindVerifiedUserId(auth.userId);
-  const denied = await authorizeAiUse(surface, request, material);
-  if (denied) return { reservation: null, response: denied };
+  if (isAbuseGuardEnforcementOn()) {
+    const denied = await authorizeAiUse(surface, request, material);
+    if (denied) return { reservation: null, response: denied };
+  }
   return reserveServerCredits(auth, featureType, request);
 }
 

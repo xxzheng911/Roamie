@@ -12,6 +12,7 @@ import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { mergeBoundsForStage, stageAllowsPlacesFirst } from "@/lib/ai/conversation-stage";
 import { MAX_ITINERARY_DAYS, MIN_ITINERARY_DAYS } from "@/lib/ai/itinerary-days";
 import { assertAiUse } from "@/lib/abuse-guard.server";
+import { isAbuseGuardEnforcementOn } from "@/lib/abuse-guard-enforcement.server";
 import { aiSurfaceForMode } from "@/lib/abuse-guard-policy";
 import { isKillSwitchOn } from "@/lib/kill-switch.server";
 import { getWorkerScope } from "@/lib/worker-request-scope";
@@ -181,11 +182,16 @@ async function withPlacesFirstPrep(ctx: RoamieRequestContext) {
   return preparePlacesFirstContext(ctx);
 }
 
-export async function callRoamieAI(ctx: RoamieRequestContext): Promise<RoamieResponse> {
+async function enforceModelCall(mode: RoamieRequestContext["mode"]): Promise<void> {
+  if (!isAbuseGuardEnforcementOn(getWorkerScope()?.env)) return;
   if (isKillSwitchOn(getWorkerScope()?.env, "DISABLE_AI")) {
     throw new Error("ai_unavailable");
   }
-  await assertAiUse(aiSurfaceForMode(ctx.mode));
+  await assertAiUse(aiSurfaceForMode(mode));
+}
+
+export async function callRoamieAI(ctx: RoamieRequestContext): Promise<RoamieResponse> {
+  await enforceModelCall(ctx.mode);
   const prep = await withPlacesFirstPrep(ctx);
   ctx = prep.ctx;
   const apiKey = getOpenAIKey();
@@ -328,10 +334,7 @@ export function streamRoamieAI(
         controller.enqueue(encoded);
       };
       try {
-        if (isKillSwitchOn(getWorkerScope()?.env, "DISABLE_AI")) {
-          throw new Error("ai_unavailable");
-        }
-        await assertAiUse(aiSurfaceForMode(initialCtx.mode));
+        await enforceModelCall(initialCtx.mode);
         const prep = await withPlacesFirstPrep(initialCtx);
         let ctx = prep.ctx;
         const apiKey = getOpenAIKey();

@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { requireAuthenticatedAiRequest } from "@/lib/ai/endpoint-guard.server";
+import { isAbuseGuardEnforcementOn } from "@/lib/abuse-guard-enforcement.server";
 import { isKillSwitchOn, fixedStatusResponse } from "@/lib/kill-switch.server";
 import { syncRevenueCatSubscription } from "@/lib/subscription/revenuecat-sync.server";
 
@@ -7,7 +8,10 @@ export const Route = createFileRoute("/api/subscription/sync")({
   server: {
     handlers: {
       POST: async ({ request, context }) => {
-        if (isKillSwitchOn(context.cloudflareEnv, "DISABLE_SUBSCRIPTION_SYNC")) {
+        if (
+          isAbuseGuardEnforcementOn(context.cloudflareEnv) &&
+          isKillSwitchOn(context.cloudflareEnv, "DISABLE_SUBSCRIPTION_SYNC")
+        ) {
           return fixedStatusResponse("sync_unavailable");
         }
         const auth = await requireAuthenticatedAiRequest(request);

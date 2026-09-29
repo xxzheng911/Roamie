@@ -1,7 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { generateItinerary } from "@/lib/itinerary.functions";
 import { authorizeAiUse } from "@/lib/abuse-guard.server";
+import { isAbuseGuardEnforcementOn } from "@/lib/abuse-guard-enforcement.server";
 import { requireAuthenticatedAiRequest } from "@/lib/ai/endpoint-guard.server";
+import { checkRateLimit, SECURITY_RATE_LIMITS } from "@/lib/rate-limit.server";
 import { analyticsOperationEventId } from "@/lib/analytics/events";
 import { recordAnalyticsEventServer } from "@/lib/analytics/record.server";
 import { bindVerifiedUserId } from "@/lib/worker-request-scope";
@@ -37,6 +39,19 @@ export const Route = createFileRoute("/api/generate-itinerary")({
 
         const auth = await requireAuthenticatedAiRequest(request);
         if (!auth) return Response.json({ error: "Unauthorized" }, { status: 401 });
+        if (!isAbuseGuardEnforcementOn()) {
+          const rate = checkRateLimit(
+            `itinerary:${auth.userId}:minute`,
+            SECURITY_RATE_LIMITS.itineraryPerMinute,
+            60_000,
+          );
+          if (!rate.allowed) {
+            return Response.json(
+              { error: "rate_limited" },
+              { status: 429, headers: { "Retry-After": String(rate.retryAfterSec) } },
+            );
+          }
+        }
         bindVerifiedUserId(auth.userId);
         const operationId =
           request.headers.get("x-roamie-request-id")?.trim() || crypto.randomUUID();
@@ -106,8 +121,10 @@ export const Route = createFileRoute("/api/generate-itinerary")({
             source: typeof requestBody.days === "number" ? "explicit_days" : "none",
           });
         }
-        const fairUse = await authorizeAiUse("itinerary", request, JSON.stringify(payload));
-        if (fairUse) return fairUse;
+        if (isAbuseGuardEnforcementOn()) {
+          const fairUse = await authorizeAiUse("itinerary", request, JSON.stringify(payload));
+          if (fairUse) return fairUse;
+        }
         await recordAnalyticsEventServer(
           {
             eventId: analyticsOperationEventId(operationId, "started"),

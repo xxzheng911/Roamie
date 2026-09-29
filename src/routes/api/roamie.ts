@@ -3,13 +3,16 @@ import { createFileRoute } from "@tanstack/react-router";
 import { callRoamieAI, parseRoamieRequest, streamRoamieAI } from "@/lib/ai/service.server";
 import { applyTierToAiContext } from "@/lib/access/context";
 import type { RoamieAIErrorDetail } from "@/lib/ai/errors";
+import { isAbuseGuardEnforcementOn } from "@/lib/abuse-guard-enforcement.server";
 import { aiSurfaceForMode } from "@/lib/abuse-guard-policy";
 import {
   beginAiRequest,
   requireAuthenticatedAiRequest,
+  reserveServerCredits,
   rollbackServerCreditsByRequest,
   settleServerCredits,
 } from "@/lib/ai/endpoint-guard.server";
+import { AI_RATE_LIMITS, checkRateLimit } from "@/lib/rate-limit.server";
 import { analyticsOperationEventId } from "@/lib/analytics/events";
 import { recordAnalyticsEventServer } from "@/lib/analytics/record.server";
 
@@ -87,13 +90,35 @@ export const Route = createFileRoute("/api/roamie")({
           return new Response(null, { status: rolledBack ? 204 : 503 });
         }
 
-        const credits = await beginAiRequest(
-          auth,
-          featureType,
-          aiSurfaceForMode(ctx.mode),
-          request,
-          JSON.stringify(body),
-        );
+        const credits = isAbuseGuardEnforcementOn()
+          ? await beginAiRequest(
+              auth,
+              featureType,
+              aiSurfaceForMode(ctx.mode),
+              request,
+              JSON.stringify(body),
+            )
+          : await (async () => {
+              const rateKey = auth?.userId ?? request.headers.get("cf-connecting-ip") ?? "anon";
+              const minuteLimit = checkRateLimit(
+                `ai:${rateKey}:min`,
+                AI_RATE_LIMITS.chatPerMinute,
+                60_000,
+              );
+              if (!minuteLimit.allowed) {
+                return {
+                  reservation: null,
+                  response: new Response(
+                    JSON.stringify({
+                      error: "Too many requests",
+                      retryAfterSec: minuteLimit.retryAfterSec,
+                    }),
+                    { status: 429, headers: { "Content-Type": "application/json" } },
+                  ),
+                };
+              }
+              return reserveServerCredits(auth, featureType, request);
+            })();
         if (credits.response || !credits.reservation) {
           console.info("[CHAT_CREDIT_LIFECYCLE]", { requestId: operationId, tier, reserved: false, committed: false, rolledBack: false, failureReason: "reservation_rejected" });
           return credits.response!;

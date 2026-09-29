@@ -1,3 +1,4 @@
+import { isAbuseGuardEnforcementOn } from "@/lib/abuse-guard-enforcement.server";
 import { authorizeGoogleSpec, runtimeGuardEnv } from "@/lib/abuse-guard.server";
 import { googleRestRequest } from "@/lib/google-rest-contract";
 import { consumeGoogleBurst } from "@/lib/google-burst.server";
@@ -18,10 +19,12 @@ export async function fetchGoogleRestProvider(
     return Response.json({ error: "invalid_google_request" }, { status: 400 });
   }
   const envForGuard = runtimeGuardEnv(env);
-  const burst = await consumeGoogleBurst(envForGuard, resolveTrustedUserId() ?? "");
-  if (burst) return burst;
-  const denied = await authorizeGoogleSpec(spec, envForGuard);
-  if (denied) return denied;
+  if (isAbuseGuardEnforcementOn(envForGuard)) {
+    const burst = await consumeGoogleBurst(envForGuard, resolveTrustedUserId() ?? "");
+    if (burst) return burst;
+    const denied = await authorizeGoogleSpec(spec, envForGuard);
+    if (denied) return denied;
+  }
   let key;
   try {
     key = requireGoogleServerKey(spec.family, envForGuard);

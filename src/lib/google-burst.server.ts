@@ -1,3 +1,4 @@
+import { isAbuseGuardEnforcementOn } from "@/lib/abuse-guard-enforcement.server";
 import { fixedStatusResponse } from "@/lib/kill-switch.server";
 import type { CloudflareRuntimeEnv } from "@/lib/server-request-context";
 import { getWorkerScope, resolveTrustedIp } from "@/lib/worker-request-scope";
@@ -29,6 +30,7 @@ export async function consumeGoogleBurst(
   userId: string,
   request?: Request,
 ): Promise<Response | null> {
+  if (!isAbuseGuardEnforcementOn(env)) return null;
   const store = getWorkerScope();
   const ip = resolveTrustedIp(request);
   if (!userId || !ip) return fixedStatusResponse("google_unavailable");

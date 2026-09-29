@@ -67,7 +67,7 @@ export default {
       return Response.json({ thrown, userId, ip });
     }
     if (job.kind === "missing-do") {
-      const response = await runWithWorkerRequest({ env: {}, request, allowLocalIp: false }, () =>
+      const response = await runWithWorkerRequest({ env: { ABUSE_GUARD_ENFORCEMENT: "1" }, request, allowLocalIp: false }, () =>
         authorizeGoogleBilling({
           family: "places_text",
           operationId: "missing-do",
@@ -84,7 +84,7 @@ export default {
         idFromName: (name) => name,
         get: () => ({ fetch: async () => { throw new Error("storage down"); } }),
       };
-      const response = await runWithWorkerRequest({ env: { ABUSE_GUARD: broken }, request, allowLocalIp: false }, () =>
+      const response = await runWithWorkerRequest({ env: { ABUSE_GUARD: broken, ABUSE_GUARD_ENFORCEMENT: "1" }, request, allowLocalIp: false }, () =>
         authorizeGoogleBilling({
           family: "places_text",
           operationId: "explode",
@@ -95,6 +95,35 @@ export default {
         }),
       );
       return Response.json({ status: response?.status ?? 200 });
+    }
+    if (job.kind === "bootstrap-no-do") {
+      let calls = 0;
+      const watched = {
+        idFromName() {
+          calls += 1;
+          return "id";
+        },
+        get() {
+          calls += 1;
+          return { fetch: async () => { calls += 1; return new Response("{}"); } };
+        },
+      };
+      const headerRequest = new Request("https://roamie.tw/", {
+        headers: { "cf-connecting-ip": "203.0.113.70", "x-abuse-guard-enforcement": "1" },
+      });
+      const response = await runWithWorkerRequest(
+        { env: { ABUSE_GUARD: watched }, request: headerRequest, allowLocalIp: false },
+        () =>
+          authorizeGoogleBilling({
+            family: "places_text",
+            operationId: "bootstrap-no-call",
+            chargeUser: true,
+            chargeIp: true,
+            userId: "runtime-user",
+            ip: "203.0.113.70",
+          }),
+      );
+      return Response.json({ status: response?.status ?? 200, calls });
     }
     if (job.kind === "sql-command") {
       const stub = env.ABUSE_GUARD.get(env.ABUSE_GUARD.idFromName("user:sql"));
@@ -194,6 +223,10 @@ assert.equal(production.ip, null);
 const missing = await call("missing-do");
 assert.equal(missing.status, 503);
 assert.deepEqual(missing.body, { error: "google_unavailable" });
+
+const bootstrap = await call("bootstrap-no-do");
+assert.equal(bootstrap.status, 200);
+assert.equal(bootstrap.calls, 0);
 
 const exploded = await call("do-exception");
 assert.equal(exploded.status, 503);

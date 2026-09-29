@@ -22,6 +22,8 @@ import {
   setGuardProductionForTests,
 } from "../src/lib/worker-request-scope.ts";
 
+process.env.ABUSE_GUARD_ENFORCEMENT = "1";
+
 const text = {
   url: "https://places.googleapis.com/v1/places:searchText",
   method: "POST",

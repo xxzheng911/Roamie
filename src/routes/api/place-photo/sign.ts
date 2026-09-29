@@ -1,4 +1,5 @@
 import { authorizePlacePhotoSign } from "@/lib/abuse-guard.server";
+import { isAbuseGuardEnforcementOn } from "@/lib/abuse-guard-enforcement.server";
 import { checkGoogleProviderRate } from "@/lib/google-rate-limit.server";
 import { fixedStatusResponse, isKillSwitchOn } from "@/lib/kill-switch.server";
 import { bindVerifiedUserId } from "@/lib/worker-request-scope";
@@ -41,14 +42,23 @@ export const Route = createFileRoute("/api/place-photo/sign")({
         try {
           const runtimeEnv = (context as { cloudflareEnv?: CloudflareRuntimeEnv } | undefined)
             ?.cloudflareEnv;
-          if (isKillSwitchOn(runtimeEnv, "DISABLE_GOOGLE_PROXY")) {
+          const enforced = isAbuseGuardEnforcementOn(runtimeEnv);
+          if (enforced && isKillSwitchOn(runtimeEnv, "DISABLE_GOOGLE_PROXY")) {
             return fixedStatusResponse("google_unavailable");
           }
           bindVerifiedUserId(auth.userId);
-          if (!(await checkGoogleProviderRate(runtimeEnv, `google:sign:${auth.userId}`)))
-            return fixedStatusResponse("rate_limited", 60);
-          const photoGuard = await authorizePlacePhotoSign(body.photo, runtimeEnv, request, auth.userId);
-          if (photoGuard) return photoGuard;
+          if (!(await checkGoogleProviderRate(runtimeEnv, `google:sign:${auth.userId}`))) {
+            return enforced
+              ? fixedStatusResponse("rate_limited", 60)
+              : Response.json(
+                  { error: "rate_limited" },
+                  { status: 429, headers: { "Retry-After": "60" } },
+                );
+          }
+          if (enforced) {
+            const photoGuard = await authorizePlacePhotoSign(body.photo, runtimeEnv, request, auth.userId);
+            if (photoGuard) return photoGuard;
+          }
           const token = await signPlacePhoto(runtimeEnv ?? {}, body.photo, body.width);
           const base = buildPlacePhotoProxyUrl(body.photo, body.width);
           const separator = base.includes("?") ? "&" : "?";
