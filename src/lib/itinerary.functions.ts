@@ -88,7 +88,10 @@ import {
   applyFinalDayRouteOrdering,
   type ItineraryRouteOrderStage,
 } from "@/lib/ai/final-day-route-ordering";
-import { repairCrossDayGeographicCohesion } from "@/lib/ai/cross-day-geographic-cohesion";
+import {
+  repairCrossDayGeographicCohesion,
+  type TimelineNormalizationObservation,
+} from "@/lib/ai/cross-day-geographic-cohesion";
 import { isExcludedByPlaceOrAncestor } from "@/lib/ai/venue-hierarchy-relation";
 import { resolveItineraryCandidateCapacityTarget } from "@/lib/ai/real-place-supplement";
 import {
@@ -1108,6 +1111,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
     }
 
     let finalStops = coalesceItineraryItems(ai.itinerary);
+    let finalTimelineNormalization: TimelineNormalizationObservation | undefined;
     const routeFinalStops = (stage: ItineraryRouteOrderStage): void => {
       let composedPlans = composedPlansFromItineraryItems(finalStops, data.days, startDate);
       if (
@@ -1116,6 +1120,8 @@ export const generateItinerary = createServerFn({ method: "POST" })
         stage === "post_rebuild" ||
         stage === "final_pre_persistence"
       ) {
+        const normalizationOutcome: TimelineNormalizationObservation | undefined =
+          stage === "final_pre_persistence" ? { status: "not_called" } : undefined;
         composedPlans = repairCrossDayGeographicCohesion(composedPlans, {
           generationId,
           stage,
@@ -1124,7 +1130,9 @@ export const generateItinerary = createServerFn({ method: "POST" })
             style: data.style,
             quizPace: data.preferences?.pace as "slow" | "medium" | "active" | null,
           }),
+          normalizationOutcome,
         });
+        if (normalizationOutcome) finalTimelineNormalization = normalizationOutcome;
       }
       const routedPlans = applyFinalDayRouteOrdering(composedPlans, {
         generationId,
@@ -2056,6 +2064,8 @@ export const generateItinerary = createServerFn({ method: "POST" })
               day: plan.day,
               times: plan.entries.map((entry) => entry.time),
             })),
+            timelineNormalization: finalTimelineNormalization,
+            requestedDayCount: data.days,
           });
         } catch {
           failureDiagnostics = undefined;

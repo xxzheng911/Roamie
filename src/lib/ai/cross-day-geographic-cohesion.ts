@@ -17,12 +17,23 @@ export type CrossDayCohesionStage =
   | "post_rebuild"
   | "final_pre_persistence";
 
+export const TIMELINE_NORMALIZATION_STATUSES = ["not_called", "safe", "no_safe_slot"] as const;
+
+export type TimelineNormalizationStatus = (typeof TIMELINE_NORMALIZATION_STATUSES)[number];
+
+/** Observational result of this repair's normalization invocations. Never read by the repair. */
+export type TimelineNormalizationObservation = {
+  status: TimelineNormalizationStatus;
+  affectedDays?: number[];
+};
+
 export type CrossDayCohesionContext = {
   generationId?: string;
   stage: CrossDayCohesionStage;
   plannedDate?: string;
   pace?: PlannerPaceHint;
   logDiagnostics?: boolean;
+  normalizationOutcome?: TimelineNormalizationObservation;
 };
 
 const FIXED_DAY_RE =
@@ -253,6 +264,32 @@ function membershipChanged(
   return after.some((entry, index) => entry !== before[index]);
 }
 
+function uniqueDays(days: readonly number[]): number[] {
+  return [...new Set(days)].sort((left, right) => left - right);
+}
+
+/** Records invocations that already returned. Does not choose clocks or membership. */
+function publishNormalizationOutcome(
+  context: CrossDayCohesionContext,
+  invoked: readonly { day: number; safe: boolean }[],
+): void {
+  const outcome = context.normalizationOutcome;
+  if (!outcome) return;
+  const failedDays = uniqueDays(invoked.filter((item) => !item.safe).map((item) => item.day));
+  if (invoked.length === 0) {
+    outcome.status = "not_called";
+    outcome.affectedDays = undefined;
+    return;
+  }
+  if (failedDays.length > 0) {
+    outcome.status = "no_safe_slot";
+    outcome.affectedDays = failedDays;
+    return;
+  }
+  outcome.status = "safe";
+  outcome.affectedDays = uniqueDays(invoked.map((item) => item.day));
+}
+
 function bucketDistance(value: number): string {
   if (value < 250) return "lt_250m";
   if (value < 750) return "250_749m";
@@ -273,7 +310,11 @@ export function repairCrossDayGeographicCohesion(
   const plans = input.map((plan) => ({ ...plan, entries: [...plan.entries] }));
   const entriesBeforeRepair = new Map(plans.map((plan) => [plan.day, [...plan.entries]]));
   const located = plans.flatMap((plan) => plan.entries.map((entry) => ({ entry, day: plan.day }))).filter((item) => coords(item.entry));
-  if (located.length < 2 || plans.length < 2) return plans;
+  const invoked: { day: number; safe: boolean }[] = [];
+  if (located.length < 2 || plans.length < 2) {
+    publishNormalizationOutcome(context, invoked);
+    return plans;
+  }
   const { clusters } = clusterItemsByGeography(located, plans.length, ACCESSOR, { fitToDays: false });
   const maxPerDay = maxEffectivePlacesPerDay(context.pace);
   const minPerDay = minItemsPerDayForTrip(plans.length);
@@ -335,7 +376,9 @@ export function repairCrossDayGeographicCohesion(
       plan.day,
     );
     plan.entries = normalized.entries;
+    invoked.push({ day: plan.day, safe: normalized.safe });
   }
+  publishNormalizationOutcome(context, invoked);
 
   if (context.logDiagnostics !== false) {
     const finalItems = plans.flatMap((plan) => plan.entries.map((entry) => ({ entry, day: plan.day })));

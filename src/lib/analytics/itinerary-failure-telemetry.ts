@@ -37,6 +37,15 @@ export type TimelineConflictDiagnostic = {
   count: number;
 };
 
+export const TIMELINE_NORMALIZATION_STATUSES = ["not_called", "safe", "no_safe_slot"] as const;
+
+export type TimelineNormalizationStatus = (typeof TIMELINE_NORMALIZATION_STATUSES)[number];
+
+export type TimelineNormalizationTelemetry = {
+  status: TimelineNormalizationStatus;
+  affected_days?: number[];
+};
+
 export type ItineraryFailureTelemetry = {
   rules: ItineraryFailureRuleCode[];
   selected_input_count?: number;
@@ -49,6 +58,7 @@ export type ItineraryFailureTelemetry = {
   dedupe_rejection_count?: number;
   eligibility_rejection_count?: number;
   timeline_conflicts?: TimelineConflictDiagnostic[];
+  timeline_normalization?: TimelineNormalizationTelemetry;
 };
 
 const COUNT_KEYS = [
@@ -77,6 +87,12 @@ export type ItineraryFailureTelemetryInput = {
   eligibilityRejectionCount?: number | null;
   /** Clock strings already on the validated plan. No place identity. */
   timelineDayTimes?: readonly { day?: unknown; times?: readonly unknown[] }[] | null;
+  /** Outcome already returned by normalization invocations. Not inferred from conflicts. */
+  timelineNormalization?: {
+    status?: unknown;
+    affectedDays?: readonly unknown[] | null;
+  } | null;
+  requestedDayCount?: number | null;
 };
 
 const MAX_TIMELINE_CONFLICTS = 4;
@@ -225,8 +241,54 @@ export function buildItineraryValidatorFailureTelemetry(
   if (telemetry.rules.includes("timeline_conflict")) {
     const conflicts = collectTimelineConflictDiagnostics(input.timelineDayTimes);
     if (conflicts.length > 0) telemetry.timeline_conflicts = conflicts;
+    const normalization = timelineNormalizationOrOmit(
+      input.timelineNormalization,
+      normalizationDayLimit(input.requestedDayCount, input.perDayPlaceCounts),
+    );
+    if (normalization) telemetry.timeline_normalization = normalization;
   }
   return telemetry;
+}
+
+const NORMALIZATION_STATUSES = new Set<string>(TIMELINE_NORMALIZATION_STATUSES);
+
+function normalizationDayLimit(requestedDayCount: unknown, perDayPlaceCounts: unknown): number {
+  const requested = countOrOmit(requestedDayCount);
+  if (requested != null && requested >= 1 && requested <= MAX_ITINERARY_DAYS) return requested;
+  const perDay = dayCountsOrOmit(perDayPlaceCounts);
+  if (perDay) return perDay.length;
+  return MAX_ITINERARY_DAYS;
+}
+
+function affectedDaysOrOmit(value: unknown, maxDay: number): number[] | undefined {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_ITINERARY_DAYS) return undefined;
+  const seen = new Set<number>();
+  for (const item of value) {
+    if (typeof item !== "number" || !Number.isInteger(item) || item < 1 || item > maxDay) {
+      return undefined;
+    }
+    seen.add(item);
+  }
+  if (seen.size === 0 || seen.size > maxDay) return undefined;
+  return [...seen].sort((left, right) => left - right);
+}
+
+/**
+ * Accepts an invocation outcome only. Illegal days omit the whole day list
+ * instead of keeping a partial guess.
+ */
+export function timelineNormalizationOrOmit(
+  value: unknown,
+  maxDay = MAX_ITINERARY_DAYS,
+): TimelineNormalizationTelemetry | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const status = record.status;
+  if (typeof status !== "string" || !NORMALIZATION_STATUSES.has(status)) return undefined;
+  if (status === "not_called") return { status: "not_called" };
+  const days = affectedDaysOrOmit(record.affected_days ?? record.affectedDays, maxDay);
+  if (!days) return { status };
+  return { status, affected_days: days };
 }
 
 /** Last gate before analytics JSON. Drops every key that is not an allowlisted count or rule code. */
@@ -251,6 +313,11 @@ export function sanitizeItineraryFailureTelemetry(value: unknown): ItineraryFail
   if (telemetry.rules.includes("timeline_conflict")) {
     const conflicts = timelineConflictsOrOmit(source.timeline_conflicts);
     if (conflicts) telemetry.timeline_conflicts = conflicts;
+    const normalization = timelineNormalizationOrOmit(
+      source.timeline_normalization,
+      normalizationDayLimit(source.requested_day_count, source.per_day_place_counts),
+    );
+    if (normalization) telemetry.timeline_normalization = normalization;
   }
   return telemetry;
 }

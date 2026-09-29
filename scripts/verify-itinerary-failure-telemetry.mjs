@@ -155,12 +155,15 @@ const allowedKeys = new Set([
   "dedupe_rejection_count",
   "eligibility_rejection_count",
   "timeline_conflicts",
+  "timeline_normalization",
 ]);
 for (const key of Object.keys(sanitized)) assert.ok(allowedKeys.has(key), key);
 for (const [key, value] of Object.entries(sanitized)) {
   if (key === "rules") continue;
   if (key === "timeline_conflicts") {
     assert.equal(Array.isArray(value), true);
+  } else if (key === "timeline_normalization") {
+    assert.equal(typeof value.status, "string");
   } else if (key === "per_day_place_counts") {
     assert.ok(value.every((item) => Number.isInteger(item)));
   } else {
