@@ -4,6 +4,9 @@ import { maxEffectivePlacesPerDay, type PlannerPaceHint } from "@/lib/ai/planner
 import { clusterItemsByGeography, type GeoAccessor } from "@/lib/ai/geographic-clustering";
 import { isClearlyClosedAtSlot } from "@/lib/ai/itinerary-validator/place-checks";
 import { dailyDiversityFamilyCounts, resolveDailyDiversityLimits } from "@/lib/ai/daily-category-diversity";
+import { LEGAL_DAY_TIME_SLOTS } from "@/lib/ai/day-time-slots";
+import { resolveNightlifeClassification } from "@/lib/ai/nightlife-classification";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { distanceMeters } from "@/lib/geo-distance";
 
 export type CrossDayCohesionStage =
@@ -111,6 +114,145 @@ const ACCESSOR: GeoAccessor<{ entry: DayPlanEntry; day: number }> = {
   weight: (item) => item.entry.place.userRatingCount ?? 0,
 };
 
+function clockMinutes(value: string): number | null {
+  const match = value.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (hour > 23 || minute > 59) return null;
+  return hour * 60 + minute;
+}
+
+function formatClock(minutes: number): string {
+  const hour = Math.floor(minutes / 60) % 24;
+  const minute = minutes % 60;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+const LEGAL_DAY_MINUTES = LEGAL_DAY_TIME_SLOTS.map((slot) => ({
+  slot,
+  minutes: clockMinutes(slot)!,
+}));
+
+/** Meal windows already enforced by the itinerary validator. */
+function mealWindow(label: string): { start: number; end: number } | null {
+  if (/早餐|breakfast/i.test(label)) return { start: 7 * 60, end: 10 * 60 };
+  if (/午餐|lunch/i.test(label)) return { start: 11 * 60 + 30, end: 13 * 60 + 30 };
+  if (/晚餐|dinner/i.test(label)) return { start: 17 * 60 + 30, end: 19 * 60 + 30 };
+  return null;
+}
+
+function nightlifeFloor(entry: DayPlanEntry): number | null {
+  const classification = resolveNightlifeClassification(entry.place);
+  if (!classification.isNightlife || classification.confidence < 0.9) return null;
+  return classification.nightlifeSubtype === "night_market" ? 17 * 60 + 30 : 18 * 60;
+}
+
+function replacementWindow(entry: DayPlanEntry): { start: number; end: number } | null {
+  const meal = mealWindow(entry.label ?? "");
+  if (meal) return meal;
+  const floor = nightlifeFloor(entry);
+  if (floor == null) return null;
+  return { start: floor, end: 24 * 60 };
+}
+
+function slotIsOpen(entry: DayPlanEntry, plannedDate: string | undefined, slot: string): boolean {
+  return isClearlyClosedAtSlot(entry.place, plannedDate, slot) !== true;
+}
+
+function fitsWindow(minutes: number, window: { start: number; end: number } | null): boolean {
+  if (!window) return true;
+  return minutes >= window.start && minutes < window.end;
+}
+
+export type SameDayClockNormalization = {
+  entries: DayPlanEntry[];
+  /** False when any stop had no clock that is unique, later, open, and in-contract. */
+  safe: boolean;
+};
+
+function nextSafeClock(
+  entry: DayPlanEntry,
+  previous: number,
+  used: ReadonlySet<number>,
+  plannedDate: string | undefined,
+): { slot: string; minutes: number } | undefined {
+  const window = replacementWindow(entry);
+  return LEGAL_DAY_MINUTES.find(
+    ({ minutes, slot }) =>
+      minutes > previous &&
+      !used.has(minutes) &&
+      slotIsOpen(entry, plannedDate, slot) &&
+      fitsWindow(minutes, window),
+  );
+}
+
+/**
+ * Give one affected day strictly increasing, unique clocks.
+ * A replacement is applied only when every stop can keep its clock or move to a
+ * slot that is unused, later, not clearly closed, inside meal/nightlife rules,
+ * and drawn from the existing day-slot lists.
+ * If any stop has no such slot, the day is left unchanged so the existing
+ * timeline validator still blocks delivery.
+ */
+export function normalizeSameDayClockConflicts(
+  entries: readonly DayPlanEntry[],
+  plannedDate?: string,
+  day?: number,
+): SameDayClockNormalization {
+  const used = new Set<number>();
+  const assigned = new Map<number, number>();
+  let previous = -1;
+
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index]!;
+    const current = clockMinutes(entry.time);
+    const window = replacementWindow(entry);
+    const canKeep =
+      current != null &&
+      current > previous &&
+      !used.has(current) &&
+      fitsWindow(current, window) &&
+      slotIsOpen(entry, plannedDate, entry.time);
+    if (canKeep) {
+      used.add(current);
+      previous = current;
+      continue;
+    }
+    const choice = nextSafeClock(entry, previous, used, plannedDate);
+    if (!choice) {
+      logAiPipeline(
+        "[ITINERARY_TIMELINE_NORMALIZE]",
+        "safe=false",
+        "reason=no_safe_slot",
+        `day=${day ?? ""}`,
+        `stops=${entries.length}`,
+      );
+      return { entries: [...entries], safe: false };
+    }
+    assigned.set(index, choice.minutes);
+    used.add(choice.minutes);
+    previous = choice.minutes;
+  }
+
+  return {
+    safe: true,
+    entries: entries.map((entry, index) => {
+      const minutes = assigned.get(index);
+      if (minutes == null) return entry;
+      return { ...entry, time: formatClock(minutes) };
+    }),
+  };
+}
+
+function membershipChanged(
+  before: readonly DayPlanEntry[],
+  after: readonly DayPlanEntry[],
+): boolean {
+  if (before.length !== after.length) return true;
+  return after.some((entry, index) => entry !== before[index]);
+}
+
 function bucketDistance(value: number): string {
   if (value < 250) return "lt_250m";
   if (value < 750) return "250_749m";
@@ -119,12 +261,17 @@ function bucketDistance(value: number): string {
   return "gte_5km";
 }
 
-/** Final deterministic cross-day authority. It changes day membership only, never intraday order. */
+/**
+ * Final deterministic cross-day authority.
+ * Move and swap change day membership only. Intraday order stays put.
+ * Days whose membership changed then get unique, increasing clocks.
+ */
 export function repairCrossDayGeographicCohesion(
   input: readonly ComposedDayPlan[],
   context: CrossDayCohesionContext,
 ): ComposedDayPlan[] {
   const plans = input.map((plan) => ({ ...plan, entries: [...plan.entries] }));
+  const entriesBeforeRepair = new Map(plans.map((plan) => [plan.day, [...plan.entries]]));
   const located = plans.flatMap((plan) => plan.entries.map((entry) => ({ entry, day: plan.day }))).filter((item) => coords(item.entry));
   if (located.length < 2 || plans.length < 2) return plans;
   const { clusters } = clusterItemsByGeography(located, plans.length, ACCESSOR, { fitToDays: false });
@@ -177,6 +324,17 @@ export function repairCrossDayGeographicCohesion(
         }
       }
     }
+  }
+
+  for (const plan of plans) {
+    const before = entriesBeforeRepair.get(plan.day) ?? [];
+    if (!membershipChanged(before, plan.entries)) continue;
+    const normalized = normalizeSameDayClockConflicts(
+      plan.entries,
+      dateForDay(context.plannedDate, plan.day),
+      plan.day,
+    );
+    plan.entries = normalized.entries;
   }
 
   if (context.logDiagnostics !== false) {

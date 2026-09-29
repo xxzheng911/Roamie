@@ -56,6 +56,7 @@
     "verify:p49-parent-venue-exclusion": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-p49-parent-venue-exclusion.mjs",
     "verify:p50-destination-duration": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-p50-destination-duration-normalization.mjs",
     "verify:p51-cross-day-cohesion": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-p51-cross-day-cohesion.mjs",
+    "verify:cross-day-timeline": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-cross-day-timeline.mjs",
     "verify:p52-affiliate-exclusion": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-p52-affiliate-exclusion.mjs",
     "verify:p521-ticketable-landmark-cta": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-p521-ticketable-landmark-cta.mjs",
     "verify:p522-cultural-affiliate-layout": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-p522-cultural-affiliate-layout.mjs",

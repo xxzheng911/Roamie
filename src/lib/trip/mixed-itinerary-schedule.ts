@@ -26,6 +26,7 @@ import {
 import { computeMinimumPerSelectedCombination } from "@/lib/ai/combination-itinerary-integrity";
 import { enforceGlobalFamilyFeasibility } from "@/lib/ai/global-family-feasibility";
 import { assignDiversityAwareSeedDays } from "@/lib/ai/diversity-aware-seed-assignment";
+import { SCHEDULED_DAY_TIME_SLOTS } from "@/lib/ai/day-time-slots";
 
 type PlaceBucket =
   | "attraction"
@@ -193,7 +194,7 @@ const GEO_ACCESSOR: GeoAccessor<RoamieRecommendationItem> = {
   weight: (p) => p.userRatingCount ?? 0,
 };
 
-const DAY_TIME_SLOTS = ["09:30", "11:00", "12:30", "14:00", "15:30", "17:00", "19:00", "20:30"];
+const DAY_TIME_SLOTS = SCHEDULED_DAY_TIME_SLOTS;
 
 /** Order a day's places by time-of-day intent then assign non-colliding clock times. */
 function scheduleDayPlaces(

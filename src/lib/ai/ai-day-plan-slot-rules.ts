@@ -38,6 +38,7 @@ import {
   resolveDailyDiversityLimits,
   wouldViolateDailyDiversity,
 } from "@/lib/ai/daily-category-diversity";
+import { DEDUPE_DAY_TIME_SLOTS } from "@/lib/ai/day-time-slots";
 
 export const EXCLUDED_RETAIL_RE =
   /公有市場|零售市場|傳統市場|黃昏市場|早市|菜市場|批發市場|批發商圈|魚市場|肉品市場|果菜市場|肉市場|農產品市場|農產品市集|第三公有|新民市場|中央市場|五金賣場|超市|量販|量販店|大賣場|生鮮超市|賣場|全聯|px\s*mart|家樂福|costco|carrefour|大潤發|愛買|hypermarket|wholesale|supermarket|grocery_store|grocery_or_supermarket|convenience_store|department_store|福利中心|福利量販|便利商店|7-eleven|7\s*eleven|familymart|family\s*mart|萊爾富|萬家福|停車場|停车场|parking|學校|学校|school|university|college|辦公大樓|办公大楼|office\s*building|corporate\s*office|meeting\s*point|集合點|集合点|walking\s*tour|route\s*meeting/i;
@@ -1240,7 +1241,7 @@ export function buildStructuredDayPlans(params: {
 
 export function dedupeEntryTimes(entries: DayPlanEntry[]): DayPlanEntry[] {
   const seen = new Set<number>();
-  const fallbackTimes = ["08:30", "10:00", "12:00", "14:00", "16:00", "18:00", "20:00"];
+  const fallbackTimes = DEDUPE_DAY_TIME_SLOTS;
   const out: DayPlanEntry[] = [];
 
   for (const entry of entries) {
