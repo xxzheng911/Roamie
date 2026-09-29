@@ -1,4 +1,5 @@
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
+import { sanitizeItineraryFailureTelemetry } from "@/lib/analytics/itinerary-failure-telemetry";
 import type { AnalyticsEventV1 } from "./events";
 
 export async function recordAnalyticsEventServer(
@@ -13,20 +14,24 @@ export async function recordAnalyticsEventServer(
       ) => Promise<{ error: { message: string } | null }>;
     };
   };
+  const row: Record<string, unknown> = {
+    event_id: event.eventId,
+    event_name: event.eventName,
+    occurred_at: event.occurredAt ?? new Date().toISOString(),
+    user_id: userId ?? null,
+    tier: event.tier ?? null,
+    session_id: event.sessionId?.slice(0, 160) ?? null,
+    surface: event.surface ?? null,
+    place_id: event.placeId?.replace(/^places\//, "").slice(0, 255) ?? null,
+    recommendation_family: event.recommendationFamily?.slice(0, 80) ?? null,
+    provider: event.provider?.slice(0, 80) ?? null,
+    failure_code: event.failureCode?.slice(0, 100) ?? null,
+  };
+  if (event.failureDiagnostics) {
+    row.metadata = sanitizeItineraryFailureTelemetry(event.failureDiagnostics);
+  }
   const { error } = await analyticsClient.from("analytics_events").upsert(
-    {
-      event_id: event.eventId,
-      event_name: event.eventName,
-      occurred_at: event.occurredAt ?? new Date().toISOString(),
-      user_id: userId ?? null,
-      tier: event.tier ?? null,
-      session_id: event.sessionId?.slice(0, 160) ?? null,
-      surface: event.surface ?? null,
-      place_id: event.placeId?.replace(/^places\//, "").slice(0, 255) ?? null,
-      recommendation_family: event.recommendationFamily?.slice(0, 80) ?? null,
-      provider: event.provider?.slice(0, 80) ?? null,
-      failure_code: event.failureCode?.slice(0, 100) ?? null,
-    },
+    row,
     { onConflict: "event_id,event_name", ignoreDuplicates: true },
   );
   if (error) console.error("[ANALYTICS_EVENT_WRITE]", event.eventName, error.message);

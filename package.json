@@ -118,6 +118,7 @@
     "verify:rec-engine-planner-p2-3": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-rec-engine-planner-p2-3.mjs",
     "verify:rec-engine-planner-p4": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-rec-engine-planner-p4.mjs",
     "verify:itinerary-validator-p4-2": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-itinerary-validator-p4-2.mjs",
+    "verify:itinerary-failure-telemetry": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-itinerary-failure-telemetry.mjs",
     "verify:empty-day-coverage-p0": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-empty-day-coverage-p0.mjs",
     "verify:itinerary-persistence-day-index": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-itinerary-persistence-day-index.mjs",
     "verify:itinerary-delivery-pipeline": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-itinerary-delivery-pipeline.mjs",

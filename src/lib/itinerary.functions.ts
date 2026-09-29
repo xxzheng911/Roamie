@@ -821,11 +821,19 @@ export const generateItinerary = createServerFn({ method: "POST" })
       crypto.randomUUID();
     const { analyticsOperationEventId } = await import("@/lib/analytics/events");
     const { recordAnalyticsEventServer } = await import("@/lib/analytics/record.server");
-    const recordGenerationOutcome = async (success: boolean, failureCode?: string) =>
+    const { buildItineraryValidatorFailureTelemetry } = await import(
+      "@/lib/analytics/itinerary-failure-telemetry"
+    );
+    const recordGenerationOutcome = async (
+      success: boolean,
+      failureCode?: string,
+      failureDiagnostics?: ReturnType<typeof buildItineraryValidatorFailureTelemetry>,
+    ) =>
       recordAnalyticsEventServer({
         eventId: analyticsOperationEventId(analyticsOperationId, success ? "succeeded" : "failed"),
         eventName: success ? "itinerary_generation_succeeded" : "itinerary_generation_failed",
         failureCode,
+        failureDiagnostics,
       });
     await recordAnalyticsEventServer({
       eventId: analyticsOperationEventId(analyticsOperationId, "started"),
@@ -2000,7 +2008,54 @@ export const generateItinerary = createServerFn({ method: "POST" })
       if (shouldBlockItineraryDelivery(validation)) {
         logGenerationTiming("validator_done", false, "validator_failed");
         logItineraryDeliveryBlocked("validator_failed", validation);
-        await recordGenerationOutcome(false, "itinerary_validator_failed");
+        const supplementalPrePoolDrop = Math.max(
+          0,
+          inputSupplementalCandidates.length - inputSupplementalPlaces.length,
+        );
+        const eligibilityReasonCount = (
+          reasons: Record<string, number>,
+          keys: readonly string[],
+        ) => keys.reduce((sum, key) => sum + (reasons[key] ?? 0), 0);
+        let failureDiagnostics;
+        try {
+          failureDiagnostics = buildItineraryValidatorFailureTelemetry({
+            failedRules: validation.failedRules,
+            selectedInputCount: data.selectedPlaces.length,
+            usableCandidateCount: serverDeliverablePool.deliverableCount,
+            deliveredPlaceCount: finalStops.length,
+            perDayPlaceCounts: dayCountsOfPlans(
+              composedPlansFromItineraryItems(finalStops, data.days, startDate),
+            ),
+            requiredCapacity: serverCapacityTarget.hardMinimum,
+            geographicRejectionCount:
+              supplementalScope.filter(({ scope }) => scope === "out_of_scope").length +
+              (serverDeliverablePool.rejectionReasonCounts.out_of_scope ?? 0),
+            eligibilityRejectionCount:
+              supplementalPrePoolDrop > 0
+                ? null
+                : eligibilityReasonCount(requiredRejectionReasonCounts, [
+                    "unsuitable_type",
+                    "invalid_identity",
+                    "invalid_coordinates",
+                    "closed_temporarily",
+                    "closed_permanently",
+                  ]) +
+                  eligibilityReasonCount(serverDeliverablePool.rejectionReasonCounts, [
+                    "missing_google_identity",
+                    "invalid_coordinates",
+                    "generic_name",
+                    "operational_ineligible",
+                    "other",
+                  ]),
+          });
+        } catch {
+          failureDiagnostics = undefined;
+        }
+        try {
+          await recordGenerationOutcome(false, "itinerary_validator_failed", failureDiagnostics);
+        } catch {
+          // Analytics must not change the itinerary response.
+        }
         const finalIdentities = finalStops.map((stop) =>
           (stop.googlePlaceId?.trim() || stop.placeName?.trim() || stop.title.trim()).toLowerCase(),
         );

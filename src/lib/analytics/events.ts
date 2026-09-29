@@ -33,6 +33,8 @@ export type AnalyticsEventV1 = {
   recommendationFamily?: string;
   provider?: string;
   failureCode?: string;
+  /** Counts-only validator diagnostics. Sanitized again before persistence. */
+  failureDiagnostics?: import("@/lib/analytics/itinerary-failure-telemetry").ItineraryFailureTelemetry;
 };
 
 export function analyticsOperationEventId(operationId: string, phase: string): string {
