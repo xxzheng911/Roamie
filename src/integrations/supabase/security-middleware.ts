@@ -24,8 +24,8 @@ export const requireSupabasePlus = createMiddleware({ type: "function" })
 export const requireItineraryCredits = createMiddleware({ type: "function" })
   .middleware([requireSupabaseAuth])
   .server(async ({ next, context }) => {
+    const request = getRequest();
     if (isAbuseGuardEnforcementOn()) {
-      const request = getRequest();
       let material: string | undefined;
       try {
         material = await request.clone().text();
