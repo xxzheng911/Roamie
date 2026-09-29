@@ -1,3 +1,5 @@
+import { googleObservation, observeProviderAttempt, type GuardObservation } from "@/lib/abuse-guard-telemetry.server";
+import { billingFamilyFromUrl } from "@/lib/abuse-guard-policy";
 import { isAbuseGuardEnforcementOn } from "@/lib/abuse-guard-enforcement.server";
 import { authorizeGoogleSpec, runtimeGuardEnv } from "@/lib/abuse-guard.server";
 import { googleRestRequest } from "@/lib/google-rest-contract";
@@ -11,6 +13,7 @@ export async function fetchGoogleRestProvider(
   input: unknown,
   env?: CloudflareRuntimeEnv,
   fetcher: typeof fetch = fetch,
+  logicalObservation?: GuardObservation,
 ): Promise<Response> {
   let spec;
   try {
@@ -18,11 +21,12 @@ export async function fetchGoogleRestProvider(
   } catch {
     return Response.json({ error: "invalid_google_request" }, { status: 400 });
   }
+  const observation = logicalObservation ?? googleObservation(billingFamilyFromUrl(spec.url));
   const envForGuard = runtimeGuardEnv(env);
   if (isAbuseGuardEnforcementOn(envForGuard)) {
     const burst = await consumeGoogleBurst(envForGuard, resolveTrustedUserId() ?? "");
     if (burst) return burst;
-    const denied = await authorizeGoogleSpec(spec, envForGuard);
+    const denied = await authorizeGoogleSpec(spec, envForGuard, undefined, observation);
     if (denied) return denied;
   }
   let key;
@@ -37,6 +41,8 @@ export async function fetchGoogleRestProvider(
     url.searchParams.set("key", key);
   else headers["X-Goog-Api-Key"] = key;
   if (spec.fields) headers["X-Goog-FieldMask"] = spec.fields;
+  const finish = observeProviderAttempt(observation);
+  let success = false;
   try {
     const response = await fetcher(url.toString(), {
       method: spec.method,
@@ -69,10 +75,14 @@ export async function fetchGoogleRestProvider(
       .split(key)
       .join("<REDACTED>")
       .replace(/AIza[\w-]{20,}/g, "<REDACTED>");
-    return new Response(safe, {
+    const safeResponse = new Response(safe, {
       headers: { "Content-Type": "application/json", "Cache-Control": "private, no-store" },
     });
+    success = true;
+    return safeResponse;
   } catch {
     return Response.json({ error: "google_upstream_unavailable" }, { status: 502 });
+  } finally {
+    finish(success);
   }
 }

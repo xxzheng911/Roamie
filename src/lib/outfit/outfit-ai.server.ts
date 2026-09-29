@@ -1,3 +1,4 @@
+import { aiObservation, observeProviderAttempt } from "@/lib/abuse-guard-telemetry.server";
 import type { Locale } from "@/lib/i18n/types";
 import { aiLanguageInstruction } from "@/lib/i18n/ai-instructions";
 import { assertAiUse } from "@/lib/abuse-guard.server";
@@ -103,44 +104,52 @@ ${dayBlocks}`;
 export async function callOutfitAI(input: OutfitAIInput): Promise<OutfitAIItem[]> {
   await assertAiUse("outfit");
   const apiKey = getOpenAIKey();
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
-      max_tokens: 1200,
-      temperature: 0.8,
-      messages: [
-        { role: "system", content: buildOutfitSystemPrompt(input.fashionStyle, input.locale) },
-        { role: "user", content: buildOutfitUserMessage(input) },
-      ],
-      response_format: {
-        type: "json_schema",
-        json_schema: {
-          name: "roamie_outfit_advice",
-          strict: true,
-          schema: OUTFIT_SCHEMA,
-        },
+  const finish = observeProviderAttempt(aiObservation("outfit"));
+  let success = false;
+  try {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
       },
-    }),
-  });
+      body: JSON.stringify({
+        model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+        max_tokens: 1200,
+        temperature: 0.8,
+        messages: [
+          { role: "system", content: buildOutfitSystemPrompt(input.fashionStyle, input.locale) },
+          { role: "user", content: buildOutfitUserMessage(input) },
+        ],
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "roamie_outfit_advice",
+            strict: true,
+            schema: OUTFIT_SCHEMA,
+          },
+        },
+      }),
+    });
 
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw mapOpenAIError(response.status, err);
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw mapOpenAIError(response.status, err);
+    }
+
+    const json = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    const raw = json.choices?.[0]?.message?.content;
+    if (!raw) throw new Error("穿搭 AI 沒有回應");
+
+    const parsed = JSON.parse(raw) as { dailyOutfits?: OutfitAIItem[] };
+    const outfits = parsed.dailyOutfits ?? [];
+    success = true;
+    return outfits;
+  } finally {
+    finish(success);
   }
-
-  const json = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-  };
-  const raw = json.choices?.[0]?.message?.content;
-  if (!raw) throw new Error("穿搭 AI 沒有回應");
-
-  const parsed = JSON.parse(raw) as { dailyOutfits?: OutfitAIItem[] };
-  return parsed.dailyOutfits ?? [];
 }
 
 export function buildScheduleSummary(items: RoamieItineraryItem[]): string {

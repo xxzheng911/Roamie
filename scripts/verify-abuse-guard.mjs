@@ -222,7 +222,7 @@ try {
     );
     assert.equal(photo, null);
     assert.equal(guard.counter("global:google", `global:weight:${nowDay}`), 8);
-    assert.equal(logs.slice(before).some((line) => line.includes("global_emergency")), true);
+    assert.equal(logs.slice(before).some((line) => line.includes("global_emergency")), false);
     assert.equal(logs.slice(before).some((line) => line.includes("203.0.113.13")), false);
   }
 

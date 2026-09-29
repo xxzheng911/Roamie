@@ -1,3 +1,4 @@
+import { newGuardObservation, observeGuardRejection } from "@/lib/abuse-guard-telemetry.server";
 import { authorizePlacePhotoSign } from "@/lib/abuse-guard.server";
 import { isAbuseGuardEnforcementOn } from "@/lib/abuse-guard-enforcement.server";
 import { checkGoogleProviderRate } from "@/lib/google-rate-limit.server";
@@ -44,6 +45,7 @@ export const Route = createFileRoute("/api/place-photo/sign")({
             ?.cloudflareEnv;
           const enforced = isAbuseGuardEnforcementOn(runtimeEnv);
           if (enforced && isKillSwitchOn(runtimeEnv, "DISABLE_GOOGLE_PROXY")) {
+            observeGuardRejection(newGuardObservation("google", "place_photos"), "kill_switch");
             return fixedStatusResponse("google_unavailable");
           }
           bindVerifiedUserId(auth.userId);

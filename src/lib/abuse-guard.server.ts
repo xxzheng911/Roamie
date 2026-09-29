@@ -1,3 +1,4 @@
+import { googleObservation, aiObservation, newGuardObservation, observeGuardDecision, observeGuardRejection, type GuardObservation } from "@/lib/abuse-guard-telemetry.server";
 import { guardNow, utcDay } from "@/lib/abuse-guard-clock";
 import type { GuardCommand, GuardResult } from "@/lib/abuse-guard-logic";
 import {
@@ -66,13 +67,10 @@ async function sha256Hex(value: string): Promise<string> {
   return [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function logGuard(family: string, subject: string, reason: string): Promise<void> {
-  const hashed = (await sha256Hex(subject || "anonymous")).slice(0, 12);
+async function logGuard(family: "rollback" | "server_function", reason: string): Promise<void> {
   console.info("[ABUSE_GUARD]", {
     family,
-    subject: hashed,
-    reason: reason === "global_weight" ? "global_emergency" : reason,
-    timestamp: new Date(guardNow()).toISOString(),
+    reason: reason === "guard_unavailable" ? "guard_unavailable" : "limited",
   });
 }
 
@@ -152,17 +150,19 @@ export async function authorizeGoogleBilling(input: {
   chargeIp: boolean;
   userId?: string | null;
   ip?: string | null;
+  observation?: GuardObservation;
 }): Promise<Response | null> {
+  const observation = input.observation ?? newGuardObservation("google", input.family);
   const env = runtimeGuardEnv(input.env);
   if (!isAbuseGuardEnforcementOn(env)) return null;
   const userId = input.userId ?? resolveTrustedUserId();
   const ip = input.ip ?? resolveTrustedIp();
   if (isKillSwitchOn(env, "DISABLE_GOOGLE_PROXY")) {
-    await logGuard(input.family, userId ?? ip ?? "anonymous", "kill_switch");
+    observeGuardRejection(observation, "kill_switch");
     return fixedStatusResponse("google_unavailable");
   }
   if ((input.chargeUser && !userId) || (input.chargeIp && !ip)) {
-    await logGuard(input.family, "missing-principal", "missing_principal");
+    observeGuardRejection(observation, "missing_principal");
     return fixedStatusResponse("google_unavailable");
   }
   const charged: string[] = [];
@@ -170,7 +170,7 @@ export async function authorizeGoogleBilling(input: {
     if (input.chargeUser && userId) {
       const user = await chargeNamed(env, `user:${userId}`, input.operationId, googleUserBuckets(input.family));
       if (!user.ok) {
-        await logGuard(input.family, userId, user.reason);
+        observeGuardRejection(observation, user.reason);
         return fixedStatusResponse("rate_limited", retrySeconds(user.retryAt));
       }
       charged.push(`user:${userId}`);
@@ -179,7 +179,7 @@ export async function authorizeGoogleBilling(input: {
       const ipResult = await chargeNamed(env, `ip:${ip}`, input.operationId, googleIpBuckets(input.family));
       if (!ipResult.ok) {
         await rollback(env, charged, input.operationId);
-        await logGuard(input.family, ip, ipResult.reason);
+        observeGuardRejection(observation, ipResult.reason);
         return fixedStatusResponse("rate_limited", retrySeconds(ipResult.retryAt));
       }
       charged.push(`ip:${ip}`);
@@ -193,14 +193,15 @@ export async function authorizeGoogleBilling(input: {
       );
       if (!global.ok) {
         await rollback(env, charged, input.operationId);
-        await logGuard(input.family, "global", global.reason);
+        observeGuardRejection(observation, global.reason);
         return fixedStatusResponse("rate_limited", retrySeconds(global.retryAt));
       }
     }
+    observeGuardDecision(observation, "allow", "allowed");
     return null;
   } catch {
     await rollback(env, charged, input.operationId);
-    await logGuard(input.family, userId ?? ip ?? "anonymous", "guard_unavailable");
+    observeGuardRejection(observation, "guard_unavailable");
     return fixedStatusResponse("google_unavailable");
   }
 }
@@ -214,7 +215,7 @@ async function rollback(
     try {
       await releaseNamed(env, name, operationId);
     } catch {
-      await logGuard("rollback", name, "guard_unavailable");
+      await logGuard("rollback", "guard_unavailable");
     }
   }
 }
@@ -223,12 +224,14 @@ export async function authorizeGoogleSpec(
   spec: { url: string; method: string; body?: unknown },
   env?: CloudflareRuntimeEnv,
   request?: Request,
+  observation?: GuardObservation,
 ): Promise<Response | null> {
   const family = billingFamilyFromUrl(spec.url);
   const operationId = await googleOperationId(spec, request);
   return authorizeGoogleBilling({
     env,
     family,
+    observation: observation ?? googleObservation(family),
     operationId,
     chargeUser: true,
     chargeIp: true,
@@ -259,6 +262,7 @@ export async function authorizePlacePhotoSign(
 export async function authorizePlacePhotoFetch(
   env: CloudflareRuntimeEnv | undefined,
   request: Request,
+  observation?: GuardObservation,
 ): Promise<Response | null> {
   const signature = new URL(request.url).searchParams.get("signature") ?? "";
   const digest = (await sha256Hex(signature || request.url)).slice(0, 16);
@@ -267,6 +271,7 @@ export async function authorizePlacePhotoFetch(
   return authorizeGoogleBilling({
     env,
     family: "place_photos",
+    observation,
     operationId: `photo-fetch:${utcDay()}:${digest}:${crypto.randomUUID()}`,
     chargeUser: false,
     chargeIp: true,
@@ -296,15 +301,16 @@ async function decideAi(
   request?: Request,
   material?: string,
 ): Promise<Denial | null> {
+  const observation = aiObservation(surface);
   const env = runtimeGuardEnv();
   if (!isAbuseGuardEnforcementOn(env)) return null;
   if (isKillSwitchOn(env, "DISABLE_AI")) {
-    await logGuard(surface, resolveTrustedUserId() ?? "anonymous", "kill_switch");
+    observeGuardRejection(observation, "kill_switch");
     return unavailable("ai_unavailable");
   }
   const userId = resolveTrustedUserId();
   if (!userId) {
-    await logGuard(surface, "missing-principal", "missing_principal");
+    observeGuardRejection(observation, "missing_principal");
     return unavailable("ai_unavailable");
   }
   try {
@@ -315,12 +321,13 @@ async function decideAi(
       aiBuckets(surface),
     );
     if (!result.ok) {
-      await logGuard(surface, userId, result.reason);
+      observeGuardRejection(observation, result.reason);
       return denialFrom(result, "rate_limited");
     }
+    observeGuardDecision(observation, "allow", "allowed");
     return null;
   } catch {
-    await logGuard(surface, userId, "guard_unavailable");
+    observeGuardRejection(observation, "guard_unavailable");
     return unavailable("ai_unavailable");
   }
 }
@@ -355,12 +362,12 @@ export async function consumeServerFunctionSlot(userId: string): Promise<"ok" | 
       serverFunctionBuckets(),
     );
     if (!result.ok) {
-      await logGuard("server_function", userId, result.reason);
+      await logGuard("server_function", result.reason);
       return "limited";
     }
     return "ok";
   } catch {
-    await logGuard("server_function", userId, "guard_unavailable");
+    await logGuard("server_function", "guard_unavailable");
     return "unavailable";
   }
 }

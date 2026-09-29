@@ -1,3 +1,5 @@
+import { newGuardObservation } from "@/lib/abuse-guard-telemetry.server";
+import { billingFamilyFromUrl } from "@/lib/abuse-guard-policy";
 import { readGoogleRequestJson } from "@/lib/google-request-body.server";
 import { createClient } from "@supabase/supabase-js";
 import { isAbuseGuardEnforcementOn } from "@/lib/abuse-guard-enforcement.server";
@@ -126,11 +128,12 @@ export async function handleGoogleProxy(
       }
       const burst = await consumeGoogleBurst(env, userId, request);
       if (burst) return burst;
+      const observation = newGuardObservation("google", billingFamilyFromUrl(spec.url));
       const operationId = await googleOperationId(spec, request);
       return withGoogleOperation(operationId, async () => {
-        const denied = await authorizeGoogleSpec(spec, env, request);
+        const denied = await authorizeGoogleSpec(spec, env, request, observation);
         if (denied) return denied;
-        return deps.provider(input, env);
+        return deps.provider(input, env, undefined, observation);
       });
     });
   } catch {

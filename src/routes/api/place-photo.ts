@@ -1,3 +1,4 @@
+import { newGuardObservation, observeProviderAttempt, observeGuardRejection } from "@/lib/abuse-guard-telemetry.server";
 import { authorizePlacePhotoFetch } from "@/lib/abuse-guard.server";
 import { isAbuseGuardEnforcementOn } from "@/lib/abuse-guard-enforcement.server";
 import { checkGoogleProviderRate } from "@/lib/google-rate-limit.server";
@@ -274,8 +275,12 @@ export async function handlePlacePhotoRequest(
   if (!(await verifyPlacePhotoSignature(runtimeEnv, photo!, maxW, expires, signature))) {
     return new Response("Unauthorized", { status: 401 });
   }
+  const observation = newGuardObservation("google", "place_photos");
   if (enforced) {
-    if (isKillSwitchOn(runtimeEnv, "DISABLE_GOOGLE_PROXY")) return fixedStatusResponse("google_unavailable");
+    if (isKillSwitchOn(runtimeEnv, "DISABLE_GOOGLE_PROXY")) {
+      observeGuardRejection(observation, "kill_switch");
+      return fixedStatusResponse("google_unavailable");
+    }
     const ip = resolveTrustedIp(request) ?? "";
     try {
       if (!ip || !(await checkGoogleProviderRate(runtimeEnv, `google:photo:${ip}`))) {
@@ -284,7 +289,7 @@ export async function handlePlacePhotoRequest(
     } catch {
       return fixedStatusResponse("google_unavailable");
     }
-    const photoGuard = await authorizePlacePhotoFetch(runtimeEnv, request);
+    const photoGuard = await authorizePlacePhotoFetch(runtimeEnv, request, observation);
     if (photoGuard) return photoGuard;
   } else {
     const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
@@ -309,6 +314,8 @@ export async function handlePlacePhotoRequest(
     return photoFailureResponse(500, "key_resolution", keySource, { error });
   }
 
+  let finish: ((success: boolean) => void) | undefined;
+  let providerSuccess = false;
   let upstreamPath: string;
   try {
     upstreamPath = buildPlacePhotoUpstreamPath(validPhoto);
@@ -347,6 +354,7 @@ export async function handlePlacePhotoRequest(
     let res: Response;
     try {
       try {
+        finish = observeProviderAttempt(observation);
         res = await fetchUpstream(mediaUrl, { redirect: "follow", signal: controller.signal });
       } catch (error) {
         const stage: PhotoFailureStage =
@@ -408,7 +416,7 @@ export async function handlePlacePhotoRequest(
         upstreamStatus: res.status,
       });
     }
-    return new Response(body, {
+    const response = new Response(body, {
       status: 200,
       headers: {
         "content-type": contentType.includes("png") ? contentType : "image/jpeg",
@@ -416,9 +424,13 @@ export async function handlePlacePhotoRequest(
         "cache-control": "public, max-age=300, s-maxage=540",
       },
     });
+    providerSuccess = true;
+    return response;
   } catch (error) {
     console.error("[place-photo] error", safeErrorName(error));
     return photoFailureResponse(500, "unexpected", keySource, { error });
+  } finally {
+    finish?.(providerSuccess);
   }
 }
 

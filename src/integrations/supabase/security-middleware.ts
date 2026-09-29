@@ -1,3 +1,4 @@
+import { aiObservation, observeCredit, observeCreditReserveAttempt } from "@/lib/abuse-guard-telemetry.server";
 import { createMiddleware } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
@@ -41,7 +42,10 @@ export const requireItineraryCredits = createMiddleware({ type: "function" })
       "resolve_user_plus_entitlement",
       { p_user_id: context.userId },
     );
-    if (!entitlementError && parsePlusEntitlementSnapshot(entitlement).hasPlus) {
+    const hasPlusAccess = !entitlementError && parsePlusEntitlementSnapshot(entitlement).hasPlus;
+    const observation = aiObservation("itinerary");
+    if (hasPlusAccess) {
+      observeCredit(observation, "plus_credit_skipped");
       return next({
         context: {
           ...context,
@@ -56,6 +60,7 @@ export const requireItineraryCredits = createMiddleware({ type: "function" })
 
     const requestId = request.headers.get("x-roamie-request-id")?.trim() || crypto.randomUUID();
     const idempotencyKey = `server:${context.userId}:ITINERARY_GENERATION:${requestId}`;
+    observeCreditReserveAttempt(observation, hasPlusAccess);
     const { data: reservationData, error: reservationError } = await context.supabase.rpc(
       "credits_reserve",
       {
@@ -81,6 +86,7 @@ export const requireItineraryCredits = createMiddleware({ type: "function" })
       throw new Error("Conflict: request already processed");
     }
 
+    observeCredit(observation, "free_credit_reserve_succeeded");
     try {
       const result = await next({
         context: {

@@ -1,3 +1,4 @@
+import { aiObservation, observeProviderAttempt, observeGuardRejection } from "@/lib/abuse-guard-telemetry.server";
 import { z } from "zod";
 import { getOpenAIKey } from "@/lib/env.server";
 import type { RoamieRequestContext } from "./context";
@@ -185,6 +186,7 @@ async function withPlacesFirstPrep(ctx: RoamieRequestContext) {
 async function enforceModelCall(mode: RoamieRequestContext["mode"]): Promise<void> {
   if (!isAbuseGuardEnforcementOn(getWorkerScope()?.env)) return;
   if (isKillSwitchOn(getWorkerScope()?.env, "DISABLE_AI")) {
+    observeGuardRejection(aiObservation(aiSurfaceForMode(mode)), "kill_switch");
     throw new Error("ai_unavailable");
   }
   await assertAiUse(aiSurfaceForMode(mode));
@@ -208,53 +210,61 @@ export async function callRoamieAI(ctx: RoamieRequestContext): Promise<RoamieRes
     /深夜散步|夜晚探索|深夜|想放空/.test(ctx.mood ?? ctx.selectedMood ?? "");
   const maxTokens = ctx.mode === "itinerary" ? 2800 : lateNightRecommend ? 1400 : 900;
 
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
-      max_tokens: maxTokens,
-      temperature: 0.85,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: user },
-      ],
-      response_format: {
-        type: "json_schema",
-        json_schema: {
-          name: "roamie_response",
-          strict: true,
-          schema: ROAMIE_JSON_SCHEMA,
-        },
+  const finish = observeProviderAttempt(aiObservation(aiSurfaceForMode(ctx.mode)));
+  let success = false;
+  try {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
       },
-    }),
-  });
+      body: JSON.stringify({
+        model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+        max_tokens: maxTokens,
+        temperature: 0.85,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "roamie_response",
+            strict: true,
+            schema: ROAMIE_JSON_SCHEMA,
+          },
+        },
+      }),
+    });
 
-  if (!response.ok) {
-    throw toError(await mapOpenAIError(response));
+    if (!response.ok) {
+      throw toError(await mapOpenAIError(response));
+    }
+
+    const result = await response.json();
+    const content = result.choices?.[0]?.message?.content;
+    if (!content) throw new Error("AI 回應格式錯誤，請再試一次。");
+
+    let parsed = normalizeAiGeneratedResponse(JSON.parse(content) as Record<string, unknown>);
+
+    if (prep.candidates.length) {
+      parsed = mergeAiWithVerifiedCandidates(parsed, prep.candidates, mergeOptionsForContext(ctx));
+    } else if (shouldUsePlacesFirst(ctx)) {
+      parsed = {
+        ...parsed,
+        recommendations: [],
+        summary:
+          parsed.summary?.trim() || buildRuleBasedRecommendSummary(ctx, prep.candidates.length === 0),
+      };
+    }
+
+    const enriched = await enrichRoamieResponse(parsed, ctx);
+    success = true;
+    return enriched;
+  } finally {
+    finish(success);
   }
-
-  const result = await response.json();
-  const content = result.choices?.[0]?.message?.content;
-  if (!content) throw new Error("AI 回應格式錯誤，請再試一次。");
-
-  let parsed = normalizeAiGeneratedResponse(JSON.parse(content) as Record<string, unknown>);
-
-  if (prep.candidates.length) {
-    parsed = mergeAiWithVerifiedCandidates(parsed, prep.candidates, mergeOptionsForContext(ctx));
-  } else if (shouldUsePlacesFirst(ctx)) {
-    parsed = {
-      ...parsed,
-      recommendations: [],
-      summary:
-        parsed.summary?.trim() || buildRuleBasedRecommendSummary(ctx, prep.candidates.length === 0),
-    };
-  }
-
-  return enrichRoamieResponse(parsed, ctx);
 }
 
 /** Stream raw JSON text chunks (OpenAI SSE). */
@@ -289,11 +299,14 @@ export function streamRoamieAI(
       const requestId = options?.requestId ?? crypto.randomUUID();
       const startedAt = Date.now();
       let completionCalled = false;
+      let finishProvider: ((success: boolean) => void) | undefined;
+      let providerParseFailed = false;
       const complete = async (
         result: { assembled: string; success: boolean; failureReason: string },
       ) => {
         if (completionCalled) return;
         completionCalled = true;
+        finishProvider?.(result.success && !providerParseFailed);
         try {
           await options?.onComplete?.(result);
         } catch (error) {
@@ -347,6 +360,9 @@ export function streamRoamieAI(
         const maxTokens = ctx.mode === "itinerary" ? 2800 : lateNightRecommend ? 1400 : 900;
 
         console.info("[CHAT_API_OPENAI]", { requestId, started: true, firstByteReceived: false, completed: false, aborted: false, durationMs: 0, providerStatus: 0 });
+        finishProvider = observeProviderAttempt(aiObservation(aiSurfaceForMode(initialCtx.mode)));
+        // Cancellation can settle the stream while preparation is still pending.
+        if (completionCalled) finishProvider(false);
         const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
           method: "POST",
           headers: {
@@ -419,6 +435,7 @@ export function streamRoamieAI(
                 enqueue(`event: delta\ndata: ${JSON.stringify({ delta })}\n\n`);
               }
             } catch {
+              providerParseFailed = true;
               /* partial line */
             }
           }
@@ -449,6 +466,7 @@ export function streamRoamieAI(
             finalPayload = JSON.stringify(enriched);
             enqueue(`event: final\ndata: ${JSON.stringify(enriched)}\n\n`);
           } catch (e) {
+            providerParseFailed = true;
             console.warn("[Roamie AI] enrich after stream failed", e);
           }
         }

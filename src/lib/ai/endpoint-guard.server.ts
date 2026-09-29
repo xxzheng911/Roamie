@@ -1,3 +1,4 @@
+import { aiObservation, observeCredit, observeCreditReserveAttempt } from "@/lib/abuse-guard-telemetry.server";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { authorizeAiUse } from "@/lib/abuse-guard.server";
 import { isAbuseGuardEnforcementOn } from "@/lib/abuse-guard-enforcement.server";
@@ -57,23 +58,28 @@ export async function beginAiRequest(
     const denied = await authorizeAiUse(surface, request, material);
     if (denied) return { reservation: null, response: denied };
   }
-  return reserveServerCredits(auth, featureType, request);
+  return reserveServerCredits(auth, featureType, request, surface);
 }
 
 export async function reserveServerCredits(
   auth: AuthenticatedAiRequest,
   featureType: CreditsFeatureType,
   request: Request,
+  surface: AiSurface = featureType === "ITINERARY_GENERATION" ? "itinerary" : "recommendations",
 ): Promise<{ reservation: ServerCreditReservation | null; response: Response | null }> {
-  if (auth.hasPlusAccess)
+  const observation = aiObservation(surface);
+  if (auth.hasPlusAccess) {
+    observeCredit(observation, "plus_credit_skipped");
     return {
       reservation: { ledgerId: null, idempotencyKey: "plus", skipped: true },
       response: null,
     };
+  }
   const supplied = request.headers.get("x-roamie-request-id")?.trim();
   const requestId = supplied || crypto.randomUUID();
   const idempotencyKey = `server:${auth.userId}:${featureType}:${requestId}`;
   const amount = CREDITS_COSTS[featureType];
+  observeCreditReserveAttempt(observation, auth.hasPlusAccess);
   const { data, error } = await auth.client.rpc("credits_reserve", {
     p_feature_type: featureType,
     p_request_id: requestId,
@@ -111,6 +117,7 @@ export async function reserveServerCredits(
       ),
     };
   }
+  observeCredit(observation, "free_credit_reserve_succeeded");
   return {
     reservation: { ledgerId: result.ledger_id ?? null, idempotencyKey, skipped: false },
     response: null,
