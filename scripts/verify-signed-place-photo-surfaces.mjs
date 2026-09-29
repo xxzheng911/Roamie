@@ -69,8 +69,8 @@ assert.match(coverHook, /useState<string \| null>\(null\)/);
 assert.match(coverHook, /const onLoad[\s\S]*setLoading\(false\)/);
 assert.match(fadeIn, /!src[\s\S]*loading\s*\? null/);
 assert.match(fadeIn, /!loading && fallbackSrc/);
-assert.match(safeImage, /setResolvingSignature\(true\)/);
-assert.match(safeImage, /signed[\s\S]*setResolvingSignature\(false\)/);
+assert.match(safeImage, /setDisplaySrc\(signed\);\s*setImageReady\(false\);\s*setVisual\("loading"\)/);
+assert.match(safeImage, /onLoad=\{[\s\S]*setImageReady\(true\)/);
 assert.match(favorite, /resolveSavedPlacePhotoResource/);
 assert.match(favorite, /<PlaceImage/);
 // The editable itinerary card keeps its established compact layout. It must

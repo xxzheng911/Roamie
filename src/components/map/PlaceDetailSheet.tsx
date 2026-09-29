@@ -1,6 +1,6 @@
 import { PlaceRecommendationReason } from "@/components/PlaceRecommendationReason";
 import { useI18n } from "@/hooks/use-i18n";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import {
   Car,
   CarTaxiFront,
@@ -16,7 +16,11 @@ import {
   Star,
   TrainFront,
 } from "lucide-react";
-import { SafeImage } from "@/components/media/SafeImage";
+import { SafeImage, type SafeImageVisualState } from "@/components/media/SafeImage";
+import {
+  resolvePlaceDetailHeroMode,
+  type PlaceDetailPhotoResolution,
+} from "@/lib/place-detail-hero-state";
 import { getRoamieDefaultImage } from "@/services/placeImageService";
 import { MotorcycleIcon } from "@/components/map/MotorcycleIcon";
 import { resolvePlaceDetailOpeningLine } from "@/lib/normalized-opening-status";
@@ -57,6 +61,11 @@ export type PlaceDetailData = PlaceResult & {
 type Props = {
   place: PlaceDetailData;
   imageUrls: string[];
+  /**
+   * pending: details may still supply a photo — keep the skeleton.
+   * settled: empty imageUrls means there is no provider photo.
+   */
+  photoResolution?: PlaceDetailPhotoResolution;
   fallbackCategoryId?: string;
   distanceLabel: string | null;
   isSaved: boolean;
@@ -81,6 +90,7 @@ type Props = {
 export function PlaceDetailSheet({
   place,
   imageUrls,
+  photoResolution = "pending",
   fallbackCategoryId,
   distanceLabel,
   isSaved,
@@ -104,19 +114,30 @@ export function PlaceDetailSheet({
   const { t, locale } = useI18n();
   const [photoIdx, setPhotoIdx] = useState(0);
   const touchStartX = useRef<number | null>(null);
-  const photos = imageUrls.length > 0 ? imageUrls : [];
+  const fallbackImage = getRoamieDefaultImage(fallbackCategoryId);
+  const photos = imageUrls.filter(
+    (url) => url !== fallbackImage && !/roamie-default-cover|scene-cafe/.test(url),
+  );
   const hasMultiplePhotos = photos.length > 1;
   const photosKey = photos.join("\0");
-
-  useEffect(() => {
+  const selectionKey = `${place.id}\0${photosKey}`;
+  const [previousSelectionKey, setPreviousSelectionKey] = useState(selectionKey);
+  if (previousSelectionKey !== selectionKey) {
+    setPreviousSelectionKey(selectionKey);
     setPhotoIdx(0);
-  }, [photosKey]);
-
-  useEffect(() => {
-    if (photoIdx >= photos.length) {
-      setPhotoIdx(Math.max(0, photos.length - 1));
-    }
-  }, [photoIdx, photos.length]);
+  }
+  const providerKey = photos.length > 0 ? `${place.id}\0${photos[photoIdx] ?? ""}` : "";
+  const [providerVisual, setProviderVisual] = useState<SafeImageVisualState>("loading");
+  const [providerVisualKey, setProviderVisualKey] = useState(providerKey);
+  if (providerVisualKey !== providerKey) {
+    setProviderVisualKey(providerKey);
+    setProviderVisual("loading");
+  }
+  const heroMode = resolvePlaceDetailHeroMode({
+    hasProviderPhoto: photos.length > 0,
+    photoResolution,
+    visual: providerVisualKey === providerKey ? providerVisual : "loading",
+  });
 
   const goPrevPhoto = () => {
     if (!hasMultiplePhotos) return;
@@ -137,19 +158,27 @@ export function PlaceDetailSheet({
   return (
     <div className="flex flex-col" data-no-sheet-drag>
       <div
-        data-place-detail-hero={photos.length > 0 ? "provider-photo" : "fallback-visual"}
+        data-place-detail-hero={heroMode}
         className="relative mx-5 mt-1 aspect-[16/10] overflow-hidden rounded-3xl bg-secondary shadow-soft"
       >
+        {heroMode === "loading" ? (
+          <div
+            className="absolute inset-0 animate-pulse bg-muted motion-reduce:animate-none"
+            data-place-detail-hero-skeleton=""
+            aria-hidden
+          />
+        ) : null}
         {photos.length > 0 ? (
           <>
             <SafeImage
-              key={photos[photoIdx]}
+              key={providerKey}
               src={photos[photoIdx]}
-              fallbackSrc={undefined}
+              fallbackSrc={fallbackImage}
               loading={photoIdx === 0 ? "eager" : "lazy"}
               fetchPriority={photoIdx === 0 ? "high" : "auto"}
               alt={place.name}
-              className="h-full w-full object-cover touch-pan-y"
+              onVisualStateChange={setProviderVisual}
+              className="relative z-[1] h-full w-full object-cover touch-pan-y"
               draggable={false}
               onTouchStart={(e) => {
                 touchStartX.current = e.touches[0]?.clientX ?? null;
@@ -198,16 +227,16 @@ export function PlaceDetailSheet({
               </>
             )}
           </>
-        ) : (
+        ) : photoResolution === "settled" ? (
           <SafeImage
-            src={getRoamieDefaultImage(fallbackCategoryId)}
+            src={fallbackImage}
             alt={place.name}
             loading="eager"
             fetchPriority="high"
-            className="h-full w-full object-cover"
+            className="relative z-[1] h-full w-full object-cover"
             draggable={false}
           />
-        )}
+        ) : null}
         <button
           type="button"
           onClick={onToggleSave}

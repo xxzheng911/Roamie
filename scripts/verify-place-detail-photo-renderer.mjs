@@ -21,13 +21,13 @@ for (const fixture of cases) {
   const imageUrls = buildPlaceImageUrls(place);
   for (const category of ["sight", "park"]) {
     const html = renderToStaticMarkup(createElement(I18nProvider, null,
-      createElement(PlaceDetailSheet, { place, imageUrls, fallbackCategoryId: category,
+      createElement(PlaceDetailSheet, { place, imageUrls, photoResolution: "settled", fallbackCategoryId: category,
         distanceLabel: null, isSaved: false, isBusy: false, transportModes: [],
         transportLoading: false, transportTip: "", selectedTransportMode: null,
         onSelectTransportMode: noop, onNavigate: noop, onToggleSave: noop,
         onAddToTrip: noop, onOpenChat: noop })));
     const hasPhotos = fixture.photoNames.length > 0;
-    const branch = hasPhotos ? "provider-photo" : "fallback-visual";
+    const branch = hasPhotos ? "loading" : "fallback-visual";
     assert.match(html, new RegExp(`data-place-detail-hero="${branch}"`));
     assert.doesNotMatch(html, /尚無照片|No photos yet|写真はまだありません|아직 사진이 없어요|uiCoverage\.noPhotos/);
     if (hasPhotos) {
@@ -38,7 +38,7 @@ for (const fixture of cases) {
     } else {
       assert.deepEqual(imageUrls, []);
       assert.ok(html.includes(`src="${getRoamieDefaultImage(category)}"`));
-      assert.doesNotMatch(html, /opacity-0/);
+      assert.doesNotMatch(html, /data-place-detail-hero-skeleton/);
     }
     console.info(JSON.stringify({ name: place.name, id: place.id, metadataLength: fixture.photoNames.length,
       imageUrls, category, fallbackResolver: getRoamieDefaultImage(category), branch,

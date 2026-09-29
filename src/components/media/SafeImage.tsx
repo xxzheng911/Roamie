@@ -1,21 +1,33 @@
-import { useEffect, useState, type ImgHTMLAttributes } from "react";
+import { useEffect, useRef, useState, type ImgHTMLAttributes } from "react";
 import { isImageLoadFailed, markImageLoadFailed } from "@/lib/image-url-failure-cache";
+import { acceptImageError, acceptImageLoad } from "@/lib/safe-image-load";
 import { getLocalPlaceImageFallback, resolvePlaceImageUrl } from "@/lib/safe-image-url";
 import { cn } from "@/lib/utils";
 import { extractGooglePlacePhotoName } from "@/lib/safe-image-url";
 import { getSignedPlacePhotoUrl } from "@/services/signed-place-photo";
 
+export type SafeImageVisualState = "loading" | "ready" | "fallback";
+
 type Props = ImgHTMLAttributes<HTMLImageElement> & {
   fallbackSrc?: string | null;
   maxWidth?: number;
+  /** Parent may paint its own skeleton. SafeImage stays generic. */
+  onVisualStateChange?: (state: SafeImageVisualState) => void;
 };
 
-/** Google / 遠端 URL 直載；僅 onError 時 fallback，不 preemptive 攔截 Google photo */
-export function SafeImage({
+/** Google photo stays hidden until the signed URL's img fires onLoad. */
+export function SafeImage(props: Props) {
+  // Reset before paint, including when a caller reuses SafeImage for another source.
+  const sourceKey = JSON.stringify([props.src, props.fallbackSrc, props.maxWidth]);
+  return <SafeImageSource key={sourceKey} {...props} />;
+}
+
+function SafeImageSource({
   src,
   fallbackSrc,
   onError,
   onLoad,
+  onVisualStateChange,
   className,
   maxWidth,
   loading = "lazy",
@@ -28,74 +40,172 @@ export function SafeImage({
   const requiresSignature = Boolean(rawSrc && extractGooglePlacePhotoName(rawSrc));
   const primary = requiresSignature ? null : resolvePlaceImageUrl(rawSrc, { maxWidth });
 
-  const initialSrc =
-    primary && !isImageLoadFailed(primary) ? primary : requiresSignature ? null : fallback;
+  const initialVisual: SafeImageVisualState = requiresSignature
+    ? "loading"
+    : primary && !isImageLoadFailed(primary)
+      ? "loading"
+      : "fallback";
+  const initialSrc = requiresSignature
+    ? null
+    : primary && !isImageLoadFailed(primary)
+      ? primary
+      : fallback;
 
   const [displaySrc, setDisplaySrc] = useState<string | null>(initialSrc);
-  const [usedFallback, setUsedFallback] = useState(!requiresSignature && !primary);
-  const [resolvingSignature, setResolvingSignature] = useState(requiresSignature);
+  const [imageReady, setImageReady] = useState(initialVisual !== "loading");
+  const [visual, setVisual] = useState<SafeImageVisualState>(initialVisual);
+  const [loadToken, setLoadToken] = useState(0);
+  const generationRef = useRef(0);
+  const displaySrcRef = useRef<string | null>(initialSrc);
+  const loadTokenRef = useRef(0);
+  const usedFallbackRef = useRef(initialVisual === "fallback");
+  const activeRef = useRef(true);
+  const onVisualStateChangeRef = useRef(onVisualStateChange);
+  onVisualStateChangeRef.current = onVisualStateChange;
 
   useEffect(() => {
-    const safePrimary = resolvePlaceImageUrl(typeof src === "string" ? src : null, { maxWidth });
+    activeRef.current = true;
+    return () => {
+      activeRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    onVisualStateChangeRef.current?.(visual);
+  }, [visual]);
+
+  useEffect(() => {
+    const generation = ++generationRef.current;
     const photoName = typeof src === "string" ? extractGooglePlacePhotoName(src) : null;
     if (photoName) {
-      let cancelled = false;
+      displaySrcRef.current = null;
+      usedFallbackRef.current = false;
       setDisplaySrc(null);
-      setUsedFallback(false);
-      setResolvingSignature(true);
+      setImageReady(false);
+      setVisual("loading");
+      let cancelled = false;
       void getSignedPlacePhotoUrl(photoName, maxWidth ?? 600).then((signed) => {
-        if (cancelled) return;
+        if (cancelled || generationRef.current !== generation) return;
         if (signed && !isImageLoadFailed(signed)) {
+          displaySrcRef.current = signed;
+          loadTokenRef.current = generation;
+          usedFallbackRef.current = false;
+          setLoadToken(generation);
           setDisplaySrc(signed);
-          setUsedFallback(false);
-        } else {
-          setDisplaySrc(fallback);
-          setUsedFallback(true);
+          setImageReady(false);
+          setVisual("loading");
+          return;
         }
-        setResolvingSignature(false);
+        displaySrcRef.current = fallback;
+        loadTokenRef.current = generation;
+        usedFallbackRef.current = true;
+        setLoadToken(generation);
+        setDisplaySrc(fallback);
+        setImageReady(true);
+        setVisual("fallback");
       });
       return () => {
         cancelled = true;
       };
     }
+
+    const safePrimary = resolvePlaceImageUrl(typeof src === "string" ? src : null, { maxWidth });
     if (safePrimary && !isImageLoadFailed(safePrimary)) {
+      displaySrcRef.current = safePrimary;
+      loadTokenRef.current = generation;
+      usedFallbackRef.current = false;
+      setLoadToken(generation);
       setDisplaySrc(safePrimary);
-      setUsedFallback(false);
-      setResolvingSignature(false);
+      // Initial state already waits for onLoad; do not undo an early cached load.
       return;
     }
+
+    displaySrcRef.current = fallback;
+    loadTokenRef.current = generation;
+    usedFallbackRef.current = true;
+    setLoadToken(generation);
     setDisplaySrc(fallback);
-    setUsedFallback(true);
-    setResolvingSignature(false);
+    setImageReady(true);
+    setVisual("fallback");
   }, [src, fallback, maxWidth]);
 
   return (
     <img
       {...rest}
+      key={displaySrc ?? "pending"}
       src={displaySrc ?? undefined}
+      data-load-token={loadToken}
+      data-safe-image-state={visual}
       loading={loading}
       decoding="async"
-      className={cn(resolvingSignature && "opacity-0", className)}
+      className={cn(
+        className,
+        "transition-opacity duration-300 ease-out",
+        imageReady ? "opacity-100" : "opacity-0",
+      )}
       onLoad={(event) => {
-        if (requiresSignature) console.info("[PLACE_PHOTO_IMAGE]", {
-          placeId: extractGooglePlacePhotoName(rawSrc ?? "")?.split("/")[1] ?? null,
-          surface: "safe-image", imageLoadSucceeded: !usedFallback,
-          imageLoadFailed: false, fallbackLoaded: usedFallback,
-        });
+        if (!activeRef.current || !event.currentTarget.isConnected) return;
+        const elementToken = Number(event.currentTarget.dataset.loadToken);
+        if (
+          !acceptImageLoad({
+            eventToken: elementToken,
+            activeToken: loadTokenRef.current,
+            eventSrc: event.currentTarget.currentSrc || event.currentTarget.src,
+            expectedSrc: displaySrcRef.current,
+          })
+        ) {
+          return;
+        }
+        if (requiresSignature) {
+          console.info("[PLACE_PHOTO_IMAGE]", {
+            placeId: extractGooglePlacePhotoName(rawSrc ?? "")?.split("/")[1] ?? null,
+            surface: "safe-image",
+            imageLoadSucceeded: !usedFallbackRef.current,
+            imageLoadFailed: false,
+            fallbackLoaded: usedFallbackRef.current,
+          });
+        }
+        setImageReady(true);
+        setVisual(usedFallbackRef.current ? "fallback" : "ready");
         onLoad?.(event);
       }}
       onError={(event) => {
-        if (requiresSignature) console.info("[PLACE_PHOTO_IMAGE]", {
-          placeId: extractGooglePlacePhotoName(rawSrc ?? "")?.split("/")[1] ?? null,
-          surface: "safe-image", imageLoadSucceeded: false,
-          imageLoadFailed: true, fallbackReason: "image_element_error",
-        });
-        markImageLoadFailed(displaySrc);
-        if (!usedFallback && displaySrc !== fallback && !isImageLoadFailed(fallback)) {
-          setUsedFallback(true);
-          setDisplaySrc(fallback);
+        if (
+          !activeRef.current ||
+          !event.currentTarget.isConnected ||
+          event.currentTarget.getAttribute("src") !== displaySrcRef.current
+        )
+          return;
+        const elementToken = Number(event.currentTarget.dataset.loadToken);
+        if (!acceptImageError({ eventToken: elementToken, activeToken: loadTokenRef.current })) {
           return;
         }
+        if (requiresSignature) {
+          console.info("[PLACE_PHOTO_IMAGE]", {
+            placeId: extractGooglePlacePhotoName(rawSrc ?? "")?.split("/")[1] ?? null,
+            surface: "safe-image",
+            imageLoadSucceeded: false,
+            imageLoadFailed: true,
+            fallbackReason: "image_element_error",
+          });
+        }
+        markImageLoadFailed(displaySrcRef.current);
+        if (
+          !usedFallbackRef.current &&
+          displaySrcRef.current !== fallback &&
+          !isImageLoadFailed(fallback)
+        ) {
+          displaySrcRef.current = fallback;
+          loadTokenRef.current = generationRef.current;
+          usedFallbackRef.current = true;
+          setLoadToken(generationRef.current);
+          setDisplaySrc(fallback);
+          setImageReady(true);
+          setVisual("fallback");
+          return;
+        }
+        setImageReady(true);
+        setVisual("fallback");
         onError?.(event);
       }}
     />

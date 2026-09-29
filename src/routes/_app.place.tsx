@@ -96,6 +96,15 @@ export const Route = createFileRoute("/_app/place")({
 });
 
 function PlaceDetailPage() {
+  const search = Route.useSearch();
+  return (
+    <PlaceDetailPageContent
+      key={JSON.stringify([search.placeId, search.lat, search.lng, search.returnTo])}
+    />
+  );
+}
+
+function PlaceDetailPageContent() {
   const { t: uiT } = useI18n();
 
   useIosInteractiveRoute("place-detail");
@@ -144,6 +153,7 @@ function PlaceDetailPage() {
     return !hasSnapshot;
   });
   const [refreshing, setRefreshing] = useState(false);
+  const [photoResolution, setPhotoResolution] = useState<"pending" | "settled">("pending");
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [usedFallback, setUsedFallback] = useState(false);
   const [navigationOrigin, setNavigationOrigin] = useState(() => {
@@ -194,6 +204,7 @@ function PlaceDetailPage() {
     // Snapshot-first: show immediately; remote refresh runs in background.
     setLoading(!hasSnapshot);
     setRefreshing(hasSnapshot);
+    setPhotoResolution("pending");
     setFetchError(null);
     setUsedFallback(false);
 
@@ -218,6 +229,7 @@ function PlaceDetailPage() {
     const applyFetched = (fetched: PlaceDetailsScreenResult, resolvedPlaceId: string) => {
       logPlaceDetailFetchSuccess(resolvedPlaceId);
       setPlace(mergeFetchedPlace(base, fetched, locale, hasCanonicalReasonRef.current));
+      setPhotoResolution("settled");
       setFetchError(null);
       setUsedFallback(false);
     };
@@ -233,6 +245,9 @@ function PlaceDetailPage() {
 
       if (!canFetchGooglePlaceDetails(placeId)) {
         logPlaceDetailFallbackUsed("no_google_place_id");
+        // There is no provider identity left to hydrate. A fetch failure, in
+        // contrast, must not confirm that an initially empty photo list is final.
+        setPhotoResolution("settled");
         setUsedFallback(true);
         if (!hasSnapshot) {
           console.info(
@@ -647,6 +662,7 @@ function PlaceDetailPage() {
           <PlaceDetailSheet
             place={placeForSheet ?? place}
             imageUrls={imageUrls}
+            photoResolution={photoResolution}
             distanceLabel={distanceLabel}
             isSaved={savedNames.has(place.name)}
             isBusy={busy}
