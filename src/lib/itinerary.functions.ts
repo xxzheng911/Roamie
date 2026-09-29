@@ -1938,8 +1938,13 @@ export const generateItinerary = createServerFn({ method: "POST" })
         pass: finalGeographicValidation.ok,
         splitClusterCount: finalGeographicValidation.splitClusterCount,
       });
+      const finalValidatedPlans = composedPlansFromItineraryItems(
+        finalStops,
+        data.days,
+        startDate,
+      );
       validation = validateItineraryPlan({
-        plans: composedPlansFromItineraryItems(finalStops, data.days, startDate),
+        plans: finalValidatedPlans,
         ...validatorInputBase,
         validationStage: "final",
       });
@@ -2047,6 +2052,10 @@ export const generateItinerary = createServerFn({ method: "POST" })
                     "operational_ineligible",
                     "other",
                   ]),
+            timelineDayTimes: finalValidatedPlans.map((plan) => ({
+              day: plan.day,
+              times: plan.entries.map((entry) => entry.time),
+            })),
           });
         } catch {
           failureDiagnostics = undefined;

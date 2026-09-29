@@ -31,6 +31,12 @@ const ALLOWED_RULES = new Set<string>(ITINERARY_FAILURE_RULE_CODES);
 const MAX_RULES = 8;
 const MAX_COUNT = 10_000;
 
+export type TimelineConflictDiagnostic = {
+  day: number;
+  time: string;
+  count: number;
+};
+
 export type ItineraryFailureTelemetry = {
   rules: ItineraryFailureRuleCode[];
   selected_input_count?: number;
@@ -42,6 +48,7 @@ export type ItineraryFailureTelemetry = {
   geographic_rejection_count?: number;
   dedupe_rejection_count?: number;
   eligibility_rejection_count?: number;
+  timeline_conflicts?: TimelineConflictDiagnostic[];
 };
 
 const COUNT_KEYS = [
@@ -68,7 +75,91 @@ export type ItineraryFailureTelemetryInput = {
   geographicRejectionCount?: number | null;
   dedupeRejectionCount?: number | null;
   eligibilityRejectionCount?: number | null;
+  /** Clock strings already on the validated plan. No place identity. */
+  timelineDayTimes?: readonly { day?: unknown; times?: readonly unknown[] }[] | null;
 };
+
+const MAX_TIMELINE_CONFLICTS = 4;
+const HHMM = /^(\d{1,2}):(\d{2})$/;
+
+/** Legal HH:mm only. Unparseable clocks are omitted instead of mapped to a default. */
+export function canonicalTimelineClock(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const match = value.trim().match(HHMM);
+  if (!match) return undefined;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23) return undefined;
+  if (!Number.isInteger(minute) || minute < 0 || minute > 59) return undefined;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+/** Same-day duplicate legal clocks. Cross-day matches are separate groups and are not conflicts. */
+export function collectTimelineConflictDiagnostics(
+  days: ItineraryFailureTelemetryInput["timelineDayTimes"],
+): TimelineConflictDiagnostic[] {
+  const byDay = new Map<number, Map<string, number>>();
+  for (const day of days ?? []) {
+    if (!day || typeof day !== "object") continue;
+    const dayNumber = day.day;
+    if (
+      typeof dayNumber !== "number" ||
+      !Number.isInteger(dayNumber) ||
+      dayNumber < 1 ||
+      dayNumber > MAX_ITINERARY_DAYS
+    ) {
+      continue;
+    }
+    const counts = byDay.get(dayNumber) ?? new Map<string, number>();
+    for (const time of day.times ?? []) {
+      const clock = canonicalTimelineClock(time);
+      if (!clock) continue;
+      counts.set(clock, (counts.get(clock) ?? 0) + 1);
+    }
+    byDay.set(dayNumber, counts);
+  }
+  const conflicts: TimelineConflictDiagnostic[] = [];
+  for (const day of [...byDay.keys()].sort((a, b) => a - b)) {
+    const counts = byDay.get(day);
+    if (!counts) continue;
+    for (const time of [...counts.keys()].sort()) {
+      const count = counts.get(time);
+      if (count == null || count < 2 || count > MAX_COUNT) continue;
+      conflicts.push({ day, time, count });
+      if (conflicts.length >= MAX_TIMELINE_CONFLICTS) return conflicts;
+    }
+  }
+  return conflicts;
+}
+
+function timelineConflictsOrOmit(value: unknown): TimelineConflictDiagnostic[] | undefined {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_TIMELINE_CONFLICTS) {
+    return undefined;
+  }
+  const conflicts: TimelineConflictDiagnostic[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") return undefined;
+    const record = item as Record<string, unknown>;
+    const day = record.day;
+    const time = canonicalTimelineClock(record.time);
+    const count = record.count;
+    if (
+      typeof day !== "number" ||
+      !Number.isInteger(day) ||
+      day < 1 ||
+      day > MAX_ITINERARY_DAYS ||
+      !time ||
+      typeof count !== "number" ||
+      !Number.isInteger(count) ||
+      count < 2 ||
+      count > MAX_COUNT
+    ) {
+      return undefined;
+    }
+    conflicts.push({ day, time, count });
+  }
+  return conflicts;
+}
 
 function countOrOmit(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > MAX_COUNT) {
@@ -131,6 +222,10 @@ export function buildItineraryValidatorFailureTelemetry(
   }
   const perDay = dayCountsOrOmit(input.perDayPlaceCounts);
   if (perDay) telemetry.per_day_place_counts = perDay;
+  if (telemetry.rules.includes("timeline_conflict")) {
+    const conflicts = collectTimelineConflictDiagnostics(input.timelineDayTimes);
+    if (conflicts.length > 0) telemetry.timeline_conflicts = conflicts;
+  }
   return telemetry;
 }
 
@@ -152,5 +247,10 @@ export function sanitizeItineraryFailureTelemetry(value: unknown): ItineraryFail
     dedupeRejectionCount: source.dedupe_rejection_count as number | null,
     eligibilityRejectionCount: source.eligibility_rejection_count as number | null,
   };
-  return buildItineraryValidatorFailureTelemetry(input);
+  const telemetry = buildItineraryValidatorFailureTelemetry(input);
+  if (telemetry.rules.includes("timeline_conflict")) {
+    const conflicts = timelineConflictsOrOmit(source.timeline_conflicts);
+    if (conflicts) telemetry.timeline_conflicts = conflicts;
+  }
+  return telemetry;
 }

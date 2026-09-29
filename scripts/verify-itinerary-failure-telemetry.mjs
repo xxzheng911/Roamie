@@ -103,6 +103,7 @@ const telemetry = buildItineraryValidatorFailureTelemetry({
   eligibilityRejectionCount: 1,
 });
 assert.ok(telemetry.rules.includes("timeline_conflict"));
+assert.equal(telemetry.timeline_conflicts, undefined);
 assert.ok(telemetry.rules.includes("persistence_mismatch"));
 assert.ok(telemetry.rules.includes("required_anchor_coverage_mismatch"));
 assert.ok(telemetry.rules.length <= 8);
@@ -138,6 +139,7 @@ assert.deepEqual(sanitized.rules, ["timeline_conflict", "place_duplicate"]);
 assert.equal(sanitized.selected_input_count, undefined);
 assert.equal(sanitized.usable_candidate_count, 20);
 assert.equal(sanitized.per_day_place_counts, undefined);
+assert.equal(sanitized.timeline_conflicts, undefined);
 assert.equal(JSON.stringify(sanitized).includes("釜山"), false);
 assert.equal(JSON.stringify(sanitized).includes("ChIJ"), false);
 assert.equal(JSON.stringify(sanitized).includes("user-1"), false);
@@ -152,11 +154,14 @@ const allowedKeys = new Set([
   "geographic_rejection_count",
   "dedupe_rejection_count",
   "eligibility_rejection_count",
+  "timeline_conflicts",
 ]);
 for (const key of Object.keys(sanitized)) assert.ok(allowedKeys.has(key), key);
 for (const [key, value] of Object.entries(sanitized)) {
   if (key === "rules") continue;
-  if (key === "per_day_place_counts") {
+  if (key === "timeline_conflicts") {
+    assert.equal(Array.isArray(value), true);
+  } else if (key === "per_day_place_counts") {
     assert.ok(value.every((item) => Number.isInteger(item)));
   } else {
     assert.equal(Number.isInteger(value), true, key);
