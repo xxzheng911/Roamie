@@ -1,3 +1,4 @@
+import { sanitizeNormalizationFailures, type TimelineNormalizationFailure } from "./timeline-normalization-failures";
 import { sanitizeIntegrityFailureTelemetry, type IntegrityFailureTelemetry } from "./itinerary-integrity-failure-telemetry";
 import { MAX_ITINERARY_DAYS } from "@/lib/ai/itinerary-days";
 
@@ -60,6 +61,7 @@ export type ItineraryFailureTelemetry = Partial<Omit<IntegrityFailureTelemetry, 
   eligibility_rejection_count?: number;
   timeline_conflicts?: TimelineConflictDiagnostic[];
   timeline_normalization?: TimelineNormalizationTelemetry;
+  timeline_normalization_failures?: TimelineNormalizationFailure[];
 };
 
 const COUNT_KEYS = [
@@ -92,6 +94,7 @@ export type ItineraryFailureTelemetryInput = {
   timelineNormalization?: {
     status?: unknown;
     affectedDays?: readonly unknown[] | null;
+    failures?: unknown;
   } | null;
   requestedDayCount?: number | null;
 };
@@ -247,6 +250,12 @@ export function buildItineraryValidatorFailureTelemetry(
       normalizationDayLimit(input.requestedDayCount, input.perDayPlaceCounts),
     );
     if (normalization) telemetry.timeline_normalization = normalization;
+    if (normalization?.status === "no_safe_slot") {
+      const failures = sanitizeNormalizationFailures(input.timelineNormalization?.failures,
+        normalizationDayLimit(input.requestedDayCount, input.perDayPlaceCounts))
+        .filter((failure) => normalization.affected_days?.includes(failure.day));
+      if (failures.length) telemetry.timeline_normalization_failures = failures;
+    }
   }
   return telemetry;
 }
@@ -322,6 +331,12 @@ export function sanitizeItineraryFailureTelemetry(value: unknown): ItineraryFail
       normalizationDayLimit(source.requested_day_count, source.per_day_place_counts),
     );
     if (normalization) telemetry.timeline_normalization = normalization;
+    if (normalization?.status === "no_safe_slot") {
+      const failures = sanitizeNormalizationFailures(source.timeline_normalization_failures,
+        normalizationDayLimit(source.requested_day_count, source.per_day_place_counts))
+        .filter((failure) => normalization.affected_days?.includes(failure.day));
+      if (failures.length) telemetry.timeline_normalization_failures = failures;
+    }
   }
   return telemetry;
 }
