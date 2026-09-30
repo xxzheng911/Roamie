@@ -10,7 +10,7 @@
     "dev:stop": "node scripts/dev-port.mjs stop",
     "dev:restart": "node scripts/dev-port.mjs stop && node scripts/sync-dev-vars.mjs --local-dev && vite dev",
     "build": "node scripts/sync-app-bundle-meta.mjs && node scripts/production-build.mjs",
-    "postbuild": "node scripts/capacitor-prepare.mjs && node scripts/verify-release-artifacts.mjs",
+    "postbuild": "node scripts/capacitor-prepare.mjs && node scripts/verify-release-artifacts.mjs && node scripts/verify-google-client-bundle.mjs --artifact dist/client",
     "release:worker:prepare": "npm run build && node scripts/release-worker-upload.mjs --verify-only",
     "release:worker:upload": "node scripts/release-worker-upload.mjs",
     "verify:release-contract": "node scripts/verify-release-contract.mjs",

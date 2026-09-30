@@ -25,7 +25,8 @@ await build({
   format: "iife",
   loader: { ".png": "dataurl", ".jpg": "dataurl" },
   define: {
-    "import.meta.env": JSON.stringify({ VITE_GOOGLE_MAPS_API_KEY: "AIza" + "x".repeat(35) }),
+    "import.meta.env.VITE_GOOGLE_MAPS_CLIENT_API_KEY": JSON.stringify("AIza" + "x".repeat(35)),
+    "import.meta.env": JSON.stringify({ VITE_GOOGLE_MAPS_CLIENT_API_KEY: "AIza" + "x".repeat(35) }),
     "process.env.NODE_ENV": '"production"',
   },
   plugins: [

@@ -20,7 +20,9 @@ import { RECEIPT, verifyReleaseArtifacts, writeReleaseReceipt } from "./verify-r
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // Re-prepare (iOS sync) accepts only an already verified release artifact.
-const canonicalPostbuild = process.env.npm_lifecycle_event === "postbuild";
+const canonicalPostbuild =
+  process.env.npm_lifecycle_event === "postbuild" ||
+  process.env.ROAMIE_CANONICAL_CLIENT_PREPARE === "1";
 let verifiedPreviousRelease = false;
 if (!canonicalPostbuild && existsSync(resolve(root, RECEIPT))) {
   verifyReleaseArtifacts(root);

@@ -27,6 +27,20 @@ test("complete native public config passes validation", () => {
   );
 });
 
+test("maps client release injects one authority and does not publish legacy names", () => {
+  assert.equal(PUBLIC_CLIENT_ENV_KEYS.includes("VITE_GOOGLE_MAPS_WEB_API_KEY"), true);
+  assert.equal(PUBLIC_CLIENT_ENV_KEYS.includes("VITE_GOOGLE_MAPS_IOS_API_KEY"), true);
+  assert.equal(PUBLIC_CLIENT_ENV_KEYS.includes("VITE_GOOGLE_MAPS_API_KEY"), false);
+  assert.equal(PUBLIC_CLIENT_ENV_KEYS.includes("VITE_GOOGLE_MAPS_CLIENT_API_KEY"), false);
+  assert.equal(SERVER_ONLY_ENV_KEYS.includes("GOOGLE_MAPS_API_KEY"), true);
+  const build = readFileSync(new URL("./production-build.mjs", import.meta.url), "utf8");
+  assert.match(build, /resolveMapsClientInjection/);
+  assert.match(build, /applyMapsClientBuildEnv/);
+  const ios = readFileSync(new URL("./ios-release-build.mjs", import.meta.url), "utf8");
+  assert.match(ios, /--maps-client=ios/);
+  assert.doesNotMatch(ios, /npm", \["run", "build"\]/);
+});
+
 test("unsplash access key is server-only", () => {
   assert.equal(PUBLIC_CLIENT_ENV_KEYS.includes("VITE_UNSPLASH_ACCESS_KEY"), false);
   assert.equal(SERVER_ONLY_ENV_KEYS.includes("UNSPLASH_ACCESS_KEY"), true);

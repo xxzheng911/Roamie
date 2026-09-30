@@ -41,6 +41,9 @@ try {
     "GOOGLE_MAPS_API_KEY",
     "VITE_GOOGLE_MAPS_API_KEY",
     "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY",
+    "VITE_GOOGLE_MAPS_WEB_API_KEY",
+    "VITE_GOOGLE_MAPS_IOS_API_KEY",
+    "VITE_GOOGLE_MAPS_CLIENT_API_KEY",
   ]) {
     assert.throws(
       () => requireGoogleServerKey("places", { [n]: "AIzaFAKE-public" }),

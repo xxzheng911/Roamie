@@ -3,6 +3,7 @@ import {
   getGoogleMapsBrowserKey,
   getGoogleMapsBrowserKeyError,
 } from "@/lib/google-maps-client";
+import { mapsScriptQuerySuffix } from "@/generated/maps-client-script-query";
 import { logMapsOnce } from "@/lib/google-maps-init-log";
 
 const LOG = "[Roamie Maps]";
@@ -58,6 +59,11 @@ function waitForImportLibrary(timeoutMs: number): Promise<void> {
   });
 }
 
+/** Maps JS bootstrap only. The build writes the query suffix; bundled iOS keeps it empty. */
+export function googleMapsScriptSrc(key: string, querySuffix = mapsScriptQuerySuffix): string {
+  return `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&loading=async&v=weekly${querySuffix}`;
+}
+
 function injectMapsScript(): Promise<void> {
   if (navigator.onLine === false) {
     return Promise.reject(new GoogleMapsNetworkError());
@@ -67,7 +73,7 @@ function injectMapsScript(): Promise<void> {
     return Promise.reject(new Error(getGoogleMapsBrowserKeyError() ?? "缺少 API 金鑰"));
   }
 
-  const src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&loading=async&v=weekly`;
+  const src = googleMapsScriptSrc(key);
   const existing = document.querySelector<HTMLScriptElement>(
     'script[data-roamie-maps="1"]:not([data-roamie-maps-state="failed"])',
   );

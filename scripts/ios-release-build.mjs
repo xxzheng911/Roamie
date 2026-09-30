@@ -2,7 +2,7 @@
 /**
  * TestFlight / App Store 用 iOS production bundled 建置：
  * - 不使用 localhost / CAPACITOR_DEV_SERVER_URL
- * - npm run build → 產生 dist/client SPA 入口
+ * - production-build --maps-client=ios → 只注入 iOS client key
  * - cap sync ios → 複製到 ios/App/App/public
  */
 import { spawnSync } from "node:child_process";
@@ -28,10 +28,18 @@ function run(label, cmd, args) {
 
 console.info("[ios:release] Production bundled build (no dev server)\n");
 
-run("production web build", "npm", ["run", "build"]);
+run("app bundle meta", "node", ["scripts/sync-app-bundle-meta.mjs"]);
+run("iOS client build", "node", ["scripts/production-build.mjs", "--maps-client=ios"]);
+env.ROAMIE_CANONICAL_CLIENT_PREPARE = "1";
+run("capacitor prepare", "node", ["scripts/capacitor-prepare.mjs"]);
 run("cap sync ios (bundled)", "node", [
   "scripts/cap-sync-ios.mjs",
   "bundled",
+]);
+run("iOS client key verifier", "node", [
+  "scripts/verify-google-client-bundle.mjs",
+  "--artifact",
+  "ios/App/App/public",
 ]);
 run("verify bundled config", "node", ["scripts/ensure-ios-bundled-config.mjs"]);
 run("verify ios prereqs", "node", ["scripts/verify-ios-prereqs.mjs"]);

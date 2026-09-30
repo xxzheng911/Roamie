@@ -250,6 +250,7 @@ try {
   const lifecycle = JSON.parse(readFileSync(resolve(repo, "package.json"), "utf8")).scripts;
   assert.match(lifecycle.build, /sync-app-bundle-meta.*production-build/);
   assert.match(lifecycle.postbuild, /capacitor-prepare.*verify-release-artifacts/);
+  assert.match(lifecycle.postbuild, /verify-google-client-bundle\.mjs --artifact dist\/client/);
   const calls = [];
   const ios = readFileSync(resolve(repo, "scripts/ios-release-build.mjs"), "utf8")
     .replace(/^import .*;$/gm, "")
@@ -271,13 +272,20 @@ try {
     },
   });
   assert.deepEqual(JSON.parse(JSON.stringify(calls.map((x) => [x.cmd, ...x.args]))), [
-    ["npm", "run", "build"],
+    ["node", "scripts/sync-app-bundle-meta.mjs"],
+    ["node", "scripts/production-build.mjs", "--maps-client=ios"],
+    ["node", "scripts/capacitor-prepare.mjs"],
     ["node", "scripts/cap-sync-ios.mjs", "bundled"],
+    ["node", "scripts/verify-google-client-bundle.mjs", "--artifact", "ios/App/App/public"],
     ["node", "scripts/ensure-ios-bundled-config.mjs"],
     ["node", "scripts/verify-ios-prereqs.mjs"],
   ]);
   assert.equal(calls[0].options.env.VITE_FEATURE_CREDITS_ENABLED, "0");
-  pass("iOS release orchestration still npm build then bundled cap sync; native commands mocked");
+  assert.equal(
+    calls.some((call) => call.args.includes("--maps-client=web") || (call.cmd === "npm" && call.args.includes("build"))),
+    false,
+  );
+  pass("iOS release builds with the iOS client key, then bundled cap sync; native commands mocked");
   const hashes = hashArtifacts(root);
   assert.deepEqual(Object.keys(hashes), Object.keys(hashes).sort());
   assert.ok(!(RECEIPT in hashes));
