@@ -1,3 +1,4 @@
+import { integrityRuleCodes, sanitizeIntegrityFailureTelemetry } from "@/lib/analytics/itinerary-integrity-failure-telemetry";
 import { PlaceReviewEvidenceSchema } from "@/lib/place-review-evidence";
 import { z } from "zod";
 import { createServerFn } from "@tanstack/react-start";
@@ -1473,7 +1474,30 @@ export const generateItinerary = createServerFn({ method: "POST" })
           emptyDayCount: plans.filter((plan) => plan.entries.length === 0).length,
           insufficientCapacity: capacityFailure,
         });
-        await recordGenerationOutcome(false, "itinerary_integrity_failed");
+        // Observe this already-decided failure only. No candidate revalidation or selection changes.
+        try {
+          const failureDiagnostics = sanitizeIntegrityFailureTelemetry({
+            integrity_reason: failureReason,
+            integrity_rule_codes: integrityRuleCodes(critical),
+            selected_input_count: inputPlaces.length,
+            planner_input_count: selectedPlaces.length,
+            required_capacity: capacityTarget.hardMinimum,
+            delivered_place_count: finalStops.length,
+            per_day_place_counts: plans.map((plan) => plan.entries.length),
+            coverage_required_count: integrity.coverage?.required,
+            coverage_scheduled_count: integrity.coverage?.scheduled,
+            coverage_unresolved_count: integrity.coverage?.unresolved,
+            coverage_merged_count: integrity.coverage?.mergedAsDuplicate,
+            coverage_invalid_count: integrity.coverage?.invalid,
+            coverage_fallback_count: integrity.coverage?.fallbackAdded,
+            required_anchor_count: recommendationIntegrity.requiredAnchorPlaces.length,
+            covered_anchor_count: recommendationIntegrity.coveredPlaces.length,
+            missing_anchor_count: recommendationIntegrity.missingPlaces.length,
+          });
+          await recordGenerationOutcome(false, "itinerary_integrity_failed", failureDiagnostics);
+        } catch {
+          // Analytics failure must not replace the integrity response or its credit settlement.
+        }
         return finish({
           success: false,
           errorCode: "itinerary_integrity_failed",

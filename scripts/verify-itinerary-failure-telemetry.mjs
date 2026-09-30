@@ -3,6 +3,7 @@
  * It must not change itinerary, validator, or selected_only results.
  */
 import assert from "node:assert/strict";
+import ts from "typescript";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -202,7 +203,15 @@ assert.equal(
   read("src/lib/ai/itinerary-validator/types.ts").includes(ITINERARY_VALIDATOR_BLOCKED_USER_MESSAGE),
   true,
 );
-assert.doesNotMatch(functionsSource, /selected_input_count|normalized_count|usable_candidate_count/);
+// Counts are allowed in server analytics metadata, never in returned client payloads.
+const sourceFile = ts.createSourceFile("itinerary.functions.ts", functionsSource, ts.ScriptTarget.Latest, true);
+function checkReturnPayloads(node) {
+  if (ts.isReturnStatement(node) && node.expression) {
+    assert.doesNotMatch(node.expression.getText(sourceFile), /selected_input_count|normalized_count|usable_candidate_count/);
+  }
+  ts.forEachChild(node, checkReturnPayloads);
+}
+checkReturnPayloads(sourceFile);
 assert.doesNotMatch(functionsSource, /message: failureDiagnostics|diagnostics: failureDiagnostics/);
 assert.match(recordSource, /sanitizeItineraryFailureTelemetry/);
 assert.doesNotMatch(telemetrySource, /googlePlaceId|placeName|userId|conversation/);

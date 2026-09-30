@@ -1,3 +1,4 @@
+import { sanitizeIntegrityFailureTelemetry, type IntegrityFailureTelemetry } from "./itinerary-integrity-failure-telemetry";
 import { MAX_ITINERARY_DAYS } from "@/lib/ai/itinerary-days";
 
 /**
@@ -46,7 +47,7 @@ export type TimelineNormalizationTelemetry = {
   affected_days?: number[];
 };
 
-export type ItineraryFailureTelemetry = {
+export type ItineraryFailureTelemetry = Partial<Omit<IntegrityFailureTelemetry, "rules">> & {
   rules: ItineraryFailureRuleCode[];
   selected_input_count?: number;
   normalized_count?: number;
@@ -294,6 +295,9 @@ export function timelineNormalizationOrOmit(
 /** Last gate before analytics JSON. Drops every key that is not an allowlisted count or rule code. */
 export function sanitizeItineraryFailureTelemetry(value: unknown): ItineraryFailureTelemetry {
   const source = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  if (Object.prototype.hasOwnProperty.call(source, "integrity_reason")) {
+    return sanitizeIntegrityFailureTelemetry(source);
+  }
   const failedRules = Array.isArray(source.rules)
     ? source.rules.map((rule) => ({ code: rule }))
     : [];
