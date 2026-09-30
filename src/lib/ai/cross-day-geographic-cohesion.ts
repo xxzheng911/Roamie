@@ -187,6 +187,118 @@ export type SameDayClockNormalization = {
   safe: boolean;
 };
 
+type ClockAssignment = {
+  safe: boolean;
+  entries: DayPlanEntry[];
+  failure?: SlotRejectionCounts & { failedTime?: string };
+};
+
+/**
+ * Assign clocks in the given visit order.
+ * Slot legality stays with nextSafeClock: legal slots, meal/nightlife windows,
+ * opening hours, and strictly later unique clocks.
+ */
+function assignClocks(
+  entries: readonly DayPlanEntry[],
+  order: readonly number[],
+  plannedDate: string | undefined,
+): ClockAssignment {
+  const used = new Set<number>();
+  const assigned = new Map<number, number>();
+  let previous = -1;
+
+  for (const index of order) {
+    const entry = entries[index]!;
+    const current = clockMinutes(entry.time);
+    const window = replacementWindow(entry);
+    const canKeep =
+      current != null &&
+      current > previous &&
+      !used.has(current) &&
+      fitsWindow(current, window) &&
+      slotIsOpen(entry, plannedDate, entry.time);
+    if (canKeep) {
+      used.add(current);
+      previous = current;
+      continue;
+    }
+    const counts: SlotRejectionCounts = {
+      evaluated: 0, order: 0, used: 0,
+      closed: 0, window: 0,
+    };
+    const choice = nextSafeClock(entry, previous, used, plannedDate, counts);
+    if (!choice) {
+      return {
+        safe: false,
+        entries: [...entries],
+        failure: { failedTime: entry.time, ...counts },
+      };
+    }
+    assigned.set(index, choice.minutes);
+    used.add(choice.minutes);
+    previous = choice.minutes;
+  }
+
+  return {
+    safe: true,
+    entries: entries.map((entry, index) => {
+      const minutes = assigned.get(index);
+      if (minutes == null) return entry;
+      return { ...entry, time: formatClock(minutes) };
+    }),
+  };
+}
+
+/** Stable chronological order. Equal clocks keep their current array position. */
+function clockAwareOrder(entries: readonly DayPlanEntry[]): number[] {
+  return entries
+    .map((_, index) => index)
+    .sort((left, right) => {
+      const leftMinutes = clockMinutes(entries[left]!.time);
+      const rightMinutes = clockMinutes(entries[right]!.time);
+      const leftKey = leftMinutes ?? Number.POSITIVE_INFINITY;
+      const rightKey = rightMinutes ?? Number.POSITIVE_INFINITY;
+      if (leftKey !== rightKey) return leftKey - rightKey;
+      return left - right;
+    });
+}
+
+/**
+ * Feasibility for one tentative day.
+ * Array order is tried first so an already-legal day keeps today's clocks.
+ * A clock-sorted pass runs only after that fails, so a later meal sitting
+ * earlier in the array is not mistaken for an impossible window.
+ * This does not log or record telemetry; callers publish only committed results.
+ */
+function resolveRecipientDayTimeline(
+  entries: readonly DayPlanEntry[],
+  plannedDate: string | undefined,
+): SameDayClockNormalization {
+  const identity = entries.map((_, index) => index);
+  const arrayOrder = assignClocks(entries, identity, plannedDate);
+  if (arrayOrder.safe) return { safe: true, entries: arrayOrder.entries };
+  const ordered = clockAwareOrder(entries);
+  const alreadyChronological = ordered.every((index, position) => index === position);
+  if (!alreadyChronological) {
+    const clockAware = assignClocks(entries, ordered, plannedDate);
+    if (clockAware.safe) return { safe: true, entries: clockAware.entries };
+  }
+  return { safe: false, entries: [...entries] };
+}
+
+function timelinesFit(
+  source: readonly DayPlanEntry[],
+  sourceDay: number,
+  target: readonly DayPlanEntry[],
+  targetDay: number,
+  context: CrossDayCohesionContext,
+): boolean {
+  return (
+    resolveRecipientDayTimeline(source, dateForDay(context.plannedDate, sourceDay)).safe &&
+    resolveRecipientDayTimeline(target, dateForDay(context.plannedDate, targetDay)).safe
+  );
+}
+
 function nextSafeClock(
   entry: DayPlanEntry,
   previous: number,
@@ -220,58 +332,27 @@ export function normalizeSameDayClockConflicts(
   day?: number,
   onFailure?: (failure: NormalizationFailure) => void,
 ): SameDayClockNormalization {
-  const used = new Set<number>();
-  const assigned = new Map<number, number>();
-  let previous = -1;
-
-  for (let index = 0; index < entries.length; index += 1) {
-    const entry = entries[index]!;
-    const current = clockMinutes(entry.time);
-    const window = replacementWindow(entry);
-    const canKeep =
-      current != null &&
-      current > previous &&
-      !used.has(current) &&
-      fitsWindow(current, window) &&
-      slotIsOpen(entry, plannedDate, entry.time);
-    if (canKeep) {
-      used.add(current);
-      previous = current;
-      continue;
+  const assigned = assignClocks(
+    entries,
+    entries.map((_, index) => index),
+    plannedDate,
+  );
+  if (!assigned.safe) {
+    logAiPipeline(
+      "[ITINERARY_TIMELINE_NORMALIZE]",
+      "safe=false",
+      "reason=no_safe_slot",
+      `day=${day ?? ""}`,
+      `stops=${entries.length}`,
+    );
+    try {
+      if (day !== undefined && assigned.failure) onFailure?.({ day, ...assigned.failure });
+    } catch {
+      // Observation must never change the no-safe-slot result.
     }
-    const counts: SlotRejectionCounts = {
-      evaluated: 0, order: 0, used: 0,
-      closed: 0, window: 0,
-    };
-    const choice = nextSafeClock(entry, previous, used, plannedDate, counts);
-    if (!choice) {
-      logAiPipeline(
-        "[ITINERARY_TIMELINE_NORMALIZE]",
-        "safe=false",
-        "reason=no_safe_slot",
-        `day=${day ?? ""}`,
-        `stops=${entries.length}`,
-      );
-      try {
-        if (day !== undefined) onFailure?.({ day, failedTime: entry.time, ...counts });
-      } catch {
-        // Observation must never change the no-safe-slot result.
-      }
-      return { entries: [...entries], safe: false };
-    }
-    assigned.set(index, choice.minutes);
-    used.add(choice.minutes);
-    previous = choice.minutes;
+    return { entries: [...entries], safe: false };
   }
-
-  return {
-    safe: true,
-    entries: entries.map((entry, index) => {
-      const minutes = assigned.get(index);
-      if (minutes == null) return entry;
-      return { ...entry, time: formatClock(minutes) };
-    }),
-  };
+  return { safe: true, entries: assigned.entries };
 }
 
 function membershipChanged(
@@ -326,7 +407,10 @@ function bucketDistance(value: number): string {
 /**
  * Final deterministic cross-day authority.
  * Move and swap change day membership only. Intraday order stays put.
- * Days whose membership changed then get unique, increasing clocks.
+ * A membership change is committed only when both touched days have a
+ * timeline assignment under the existing slot policy. Otherwise that
+ * move or swap is left unapplied.
+ * Committed days then receive those clocks. Array order is unchanged.
  */
 export function repairCrossDayGeographicCohesion(
   input: readonly ComposedDayPlan[],
@@ -368,10 +452,12 @@ export function repairCrossDayGeographicCohesion(
           const after = dayCost(nextSource) + dayCost(nextTarget);
           const diversityAfter = diversityOverflow(nextSource) + diversityOverflow(nextTarget);
           if (after + 1 < before && diversityAfter <= diversityBefore) {
-            source.plan.entries = nextSource;
-            target.plan.entries = nextTarget;
-            repairApplied = true;
-            continue;
+            if (timelinesFit(nextSource, source.plan.day, nextTarget, target.plan.day, context)) {
+              source.plan.entries = nextSource;
+              target.plan.entries = nextTarget;
+              repairApplied = true;
+              continue;
+            }
           }
         }
         let bestSwap: { entry: DayPlanEntry; after: number } | null = null;
@@ -384,10 +470,14 @@ export function repairCrossDayGeographicCohesion(
           if (after + 1 < before && diversityAfter <= diversityBefore && (!bestSwap || after < bestSwap.after)) bestSwap = { entry: swap, after };
         }
         if (bestSwap) {
-          source.plan.entries[sourceIndex] = bestSwap.entry;
-          const swapIndex = target.plan.entries.indexOf(bestSwap.entry);
-          target.plan.entries[swapIndex] = entry;
-          repairApplied = true;
+          const swapEntry = bestSwap.entry;
+          const nextSource = source.plan.entries.map((candidate) => candidate === entry ? swapEntry : candidate);
+          const nextTarget = target.plan.entries.map((candidate) => candidate === swapEntry ? entry : candidate);
+          if (timelinesFit(nextSource, source.plan.day, nextTarget, target.plan.day, context)) {
+            source.plan.entries = nextSource;
+            target.plan.entries = nextTarget;
+            repairApplied = true;
+          }
         }
       }
     }
@@ -396,9 +486,16 @@ export function repairCrossDayGeographicCohesion(
   for (const plan of plans) {
     const before = entriesBeforeRepair.get(plan.day) ?? [];
     if (!membershipChanged(before, plan.entries)) continue;
+    const plannedDate = dateForDay(context.plannedDate, plan.day);
+    const resolved = resolveRecipientDayTimeline(plan.entries, plannedDate);
+    if (resolved.safe) {
+      plan.entries = resolved.entries;
+      invoked.push({ day: plan.day, safe: true });
+      continue;
+    }
     const normalized = normalizeSameDayClockConflicts(
       plan.entries,
-      dateForDay(context.plannedDate, plan.day),
+      plannedDate,
       plan.day,
       (failure) => { if (failures.length < MAX_NORMALIZATION_FAILURES) failures.push(failure); },
     );

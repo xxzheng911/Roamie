@@ -196,16 +196,18 @@ const unsafePlans = [
     ),
   },
 ];
+const unsafeBefore = unsafePlans.map((plan) => plan.entries.map((entry) => entry.place.id));
 const unsafe = run(unsafePlans);
-assert.equal(unsafe.outcome.status, "no_safe_slot");
-assert.deepEqual(unsafe.outcome.affectedDays, [1, 2]);
+assert.equal(unsafe.outcome.status, "not_called");
+assert.equal(unsafe.outcome.affectedDays, undefined);
+assert.equal(unsafe.outcome.failures, undefined);
 assert.equal(
   unsafe.plans.every((plan) => plan.entries.every((entry) => entry.time === "19:00")),
   true,
 );
 assert.deepEqual(
-  unsafe.plans[0].entries.map((entry) => entry.place.id),
-  ["NG", "NB", "NC", "ND", "NE"],
+  unsafe.plans.map((plan) => plan.entries.map((entry) => entry.place.id)),
+  unsafeBefore,
 );
 
 const duplicateClocks = [{ day: 1, time: "12:30", count: 2 }];

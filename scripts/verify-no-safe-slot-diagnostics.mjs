@@ -85,10 +85,13 @@ const plans=[1,2].map(day=>({day,entries:Array.from({length:5},(_,i)=>{
  const p=day===1?(i===0?Y:X):(i===1?X:Y);
  return entry("19:00","夜間",{id:`fixture-${day}-${i}`,googlePlaceId:`fixture-${day}-${i}`,lat:p.lat+i*.0012,lng:p.lng+i*.0011,primaryType:"night_market",types:["night_market"],userRatingCount:90});
 })}));
+const beforeIds=plans.map(plan=>plan.entries.map(item=>item.place.id));
 const outcome={status:"not_called"};const repaired=repairCrossDayGeographicCohesion(plans,{stage:"final_pre_persistence",plannedDate:"2026-10-01",logDiagnostics:false,normalizationOutcome:outcome});
-assert.equal(outcome.status,"no_safe_slot");assert.deepEqual(outcome.affectedDays,[1,2]);assert.equal(outcome.failures.length,2);
-const sink=buildItineraryValidatorFailureTelemetry({failedRules:[{code:"timeline_conflict"}],requestedDayCount:2,perDayPlaceCounts:[5,5],timelineNormalization:outcome});assert.equal(sanitizeItineraryFailureTelemetry(sink).timeline_normalization_failures.length,2);
+assert.equal(outcome.status,"not_called","infeasible cohesion must not publish no_safe_slot");
+assert.equal(outcome.affectedDays,undefined);assert.equal(outcome.failures,undefined);
+assert.deepEqual(repaired.map(plan=>plan.entries.map(item=>item.place.id)),beforeIds,"infeasible cohesion rolls membership back");
+const sink=buildItineraryValidatorFailureTelemetry({failedRules:[{code:"timeline_conflict"}],requestedDayCount:2,perDayPlaceCounts:[5,5],timelineNormalization:{status:"no_safe_slot",affectedDays:[1,2],failures:[internal({...lunch,day:1}),internal({...dinner,day:2})]}});assert.equal(sanitizeItineraryFailureTelemetry(sink).timeline_normalization_failures.length,2);
 const brokenSink={status:"not_called"};Object.defineProperty(brokenSink,"failures",{configurable:false,set(){throw new Error("PRIVATE");}});
 assert.deepEqual(repairCrossDayGeographicCohesion(plans,{stage:"final_pre_persistence",plannedDate:"2026-10-01",logDiagnostics:false,normalizationOutcome:brokenSink}),repaired);
 setItineraryValidatorEnabledOverride(null);
-console.log("PASS no-safe-slot diagnostics: baseline result + validator parity, real repair propagation, no network");
+console.log("PASS no-safe-slot diagnostics: baseline result + validator parity, infeasible cohesion rollback, no network");

@@ -425,6 +425,384 @@ assert.equal(eightUnsafe.safe, false);
 assert.equal(eightUnsafe.entries.every((entry) => entry.time === "19:00"), true);
 assert.equal(eightUnsafe.entries.some((entry) => minutes(entry.time) < 17 * 60 + 30), false);
 
+const HOME = { lat: 22.1987, lng: 113.5439 };
+const AWAY = { lat: 22.4, lng: 113.7 };
+const SEOUL = { lat: 37.5665, lng: 126.978 };
+const SEOUL_AWAY = { lat: 37.48, lng: 127.05 };
+
+function at(id, origin, index, time, label = "景點", extra = {}) {
+  return stop(place(id, origin, index, extra), time, label);
+}
+
+function restaurant(id, origin, index, time, label) {
+  return at(id, origin, index, time, label, {
+    primaryType: "restaurant",
+    types: ["restaurant"],
+  });
+}
+
+function idsOf(plans) {
+  return plans.flatMap((plan) => plan.entries.map((entry) => entry.place.id)).sort();
+}
+
+function assertSamePlaces(before, after, label) {
+  assert.deepEqual(idsOf(after), idsOf(before), `${label} place multiset`);
+  assert.equal(new Set(idsOf(after)).size, idsOf(after).length, `${label} duplicate place`);
+}
+
+function assertPolicyClocks(plan, label) {
+  const clocks = plan.entries.map((entry) => entry.time);
+  assert.equal(new Set(clocks).size, clocks.length, `${label} duplicate clock ${clocks.join(",")}`);
+  const sorted = [...plan.entries].sort((left, right) => minutes(left.time) - minutes(right.time));
+  const again = normalizeSameDayClockConflicts(sorted, "2026-10-01");
+  assert.equal(again.safe, true, `${label} existing policy rejected ${clocks.join(",")}`);
+  assert.deepEqual(
+    again.entries.map((entry) => entry.time),
+    sorted.map((entry) => entry.time),
+    `${label} clocks moved by existing policy`,
+  );
+}
+
+function observe(plans, pace = "medium") {
+  const outcome = { status: "not_called" };
+  const first = repairCrossDayGeographicCohesion(plans, {
+    generationId: "timeline-cohesion",
+    stage: "final_pre_persistence",
+    plannedDate: "2026-10-01",
+    pace,
+    logDiagnostics: false,
+    normalizationOutcome: outcome,
+  });
+  const second = run(plans, pace);
+  const third = run(plans, pace);
+  assert.deepEqual(
+    first.map((plan) => plan.entries.map((entry) => [entry.place.id, entry.time])),
+    second.map((plan) => plan.entries.map((entry) => [entry.place.id, entry.time])),
+  );
+  assert.deepEqual(
+    second.map((plan) => plan.entries.map((entry) => [entry.place.id, entry.time])),
+    third.map((plan) => plan.entries.map((entry) => [entry.place.id, entry.time])),
+  );
+  return { plans: first, outcome };
+}
+
+function clusterDay(dayNumber, home, away, slots) {
+  return {
+    day: dayNumber,
+    entries: slots.map((slot, index) => {
+      if (slot.meal) return restaurant(slot.id, slot.origin, slot.index, slot.time, slot.meal);
+      return at(slot.id, slot.origin, slot.index, slot.time, slot.label ?? "景點", slot.extra ?? {});
+    }),
+  };
+}
+
+function macauPlans() {
+  return [
+    clusterDay(1, HOME, AWAY, [
+      { id: "PeninsulaMorning", origin: HOME, index: 0, time: "09:30" },
+      { id: "HarbourLunch", origin: HOME, index: 1, time: "12:00", meal: "午餐" },
+      { id: "FortressDinner", origin: HOME, index: 2, time: "18:30", meal: "晚餐" },
+      { id: "Umpton", origin: AWAY, index: 0, time: "16:00" },
+      { id: "NightDinner", origin: HOME, index: 3, time: "18:30", meal: "晚餐" },
+    ]),
+    clusterDay(2, HOME, AWAY, [
+      { id: "Paxley", origin: AWAY, index: 1, time: "09:30" },
+      { id: "Crowe", origin: AWAY, index: 2, time: "11:00" },
+      { id: "MovedLunch", origin: HOME, index: 5, time: "12:00", meal: "午餐" },
+      { id: "Vesper", origin: AWAY, index: 3, time: "14:00" },
+      { id: "Dobson", origin: AWAY, index: 4, time: "17:00" },
+    ]),
+    clusterDay(3, HOME, AWAY, [
+      { id: "Quinzel", origin: AWAY, index: 5, time: "09:30" },
+      { id: "Harlow", origin: AWAY, index: 6, time: "11:00" },
+      { id: "Fenton", origin: AWAY, index: 7, time: "14:00" },
+      { id: "Marlow", origin: AWAY, index: 8, time: "16:00" },
+      { id: "Nestor", origin: AWAY, index: 9, time: "19:00" },
+    ]),
+  ];
+}
+
+const macauInput = macauPlans();
+const macauSwapped = [
+  macauInput[0].entries[0],
+  macauInput[0].entries[1],
+  macauInput[0].entries[2],
+  macauInput[1].entries[2],
+  macauInput[0].entries[4],
+];
+const macauBaselineFailures = [];
+const macauBaseline = normalizeSameDayClockConflicts(
+  macauSwapped,
+  "2026-10-01",
+  1,
+  (failure) => macauBaselineFailures.push(failure),
+);
+assert.equal(macauBaseline.safe, false, "array-order baseline must be unsafe");
+assert.equal(macauBaselineFailures.length, 1);
+assert.equal(macauBaselineFailures[0].failedTime, "12:00");
+assert.equal(macauBaselineFailures[0].evaluated, 14);
+assert.equal(macauBaselineFailures[0].order, 11);
+assert.equal(macauBaselineFailures[0].used, 0);
+assert.equal(macauBaselineFailures[0].closed, 0);
+assert.equal(macauBaselineFailures[0].window, 3);
+const macauBaselineVerdict = validationOf([
+  { day: 1, entries: macauSwapped },
+  macauInput[1],
+  macauInput[2],
+]);
+assert.equal(macauBaselineVerdict.fails.includes("timeline_conflict"), true, macauBaselineVerdict.fails.join(","));
+assert.equal(macauBaselineVerdict.result.pass, false);
+
+const macau = observe(macauInput);
+assert.equal(macau.outcome.status, "safe");
+assert.equal(macau.outcome.failures, undefined);
+assert.deepEqual(macau.outcome.affectedDays, [1, 2]);
+assert.deepEqual(ids(macau.plans, 1), [
+  "PeninsulaMorning",
+  "HarbourLunch",
+  "FortressDinner",
+  "MovedLunch",
+  "NightDinner",
+]);
+assert.deepEqual(ids(macau.plans, 2), [
+  "Paxley",
+  "Crowe",
+  "Umpton",
+  "Vesper",
+  "Dobson",
+]);
+assert.deepEqual(ids(macau.plans, 3), [
+  "Quinzel",
+  "Harlow",
+  "Fenton",
+  "Marlow",
+  "Nestor",
+]);
+assert.deepEqual(macau.plans.map((plan) => plan.entries.length), [5, 5, 5]);
+assertSamePlaces(macauInput, macau.plans, "macau");
+for (const plan of macau.plans) assertPolicyClocks(plan, `macau day ${plan.day}`);
+const macauVerdict = validationOf(macau.plans);
+assert.equal(macauVerdict.fails.includes("timeline_conflict"), false, macauVerdict.fails.join(","));
+assert.equal(macauVerdict.result.pass, true, macauVerdict.fails.join(","));
+assert.equal(macauVerdict.blocked, false);
+
+function seoulShape(homeSlots, incoming) {
+  const awayFill = [
+    { id: "SeoulAwayA", origin: SEOUL_AWAY, index: 1, time: "09:30" },
+    { id: "SeoulAwayB", origin: SEOUL_AWAY, index: 2, time: "11:00" },
+    incoming,
+    { id: "SeoulAwayC", origin: SEOUL_AWAY, index: 3, time: "14:00" },
+    { id: "SeoulAwayD", origin: SEOUL_AWAY, index: 4, time: "17:00" },
+  ];
+  return [
+    clusterDay(1, SEOUL, SEOUL_AWAY, homeSlots),
+    clusterDay(2, SEOUL, SEOUL_AWAY, awayFill),
+    clusterDay(3, SEOUL, SEOUL_AWAY, [
+      { id: "SeoulAwayE", origin: SEOUL_AWAY, index: 5, time: "09:30" },
+      { id: "SeoulAwayF", origin: SEOUL_AWAY, index: 6, time: "11:00" },
+      { id: "SeoulAwayG", origin: SEOUL_AWAY, index: 7, time: "14:00" },
+      { id: "SeoulAwayH", origin: SEOUL_AWAY, index: 8, time: "16:00" },
+      { id: "SeoulAwayI", origin: SEOUL_AWAY, index: 9, time: "19:00" },
+    ]),
+  ];
+}
+
+function assertSeoulCommitted(name, plans, movedId) {
+  const observed = observe(plans);
+  assert.equal(observed.outcome.status, "safe", name);
+  assert.equal(observed.outcome.failures, undefined, name);
+  assert.equal(ids(observed.plans, 1).includes(movedId), true, `${name} did not commit the feasible move`);
+  assertSamePlaces(plans, observed.plans, name);
+  assert.deepEqual(observed.plans.map((plan) => plan.entries.length), [5, 5, 5], name);
+  for (const plan of observed.plans) assertPolicyClocks(plan, `${name} day ${plan.day}`);
+  const verdict = validationOf(observed.plans);
+  assert.equal(verdict.fails.includes("timeline_conflict"), false, `${name} ${verdict.fails.join(",")}`);
+  assert.equal(verdict.result.pass, true, `${name} ${verdict.fails.join(",")}`);
+}
+
+assertSeoulCommitted("seoul lunch duplicate", seoulShape([
+  { id: "SeoulMorning", origin: SEOUL, index: 0, time: "09:30" },
+  { id: "SeoulLunch", origin: SEOUL, index: 1, time: "12:00", meal: "午餐" },
+  { id: "SeoulAfternoon", origin: SEOUL, index: 2, time: "15:30" },
+  { id: "SeoulDinner", origin: SEOUL, index: 3, time: "18:30", meal: "晚餐" },
+  { id: "SeoulOutLunch", origin: SEOUL_AWAY, index: 0, time: "16:00" },
+], { id: "SeoulMovedLunch", origin: SEOUL, index: 5, time: "12:00", meal: "午餐" }), "SeoulMovedLunch");
+
+assertSeoulCommitted("seoul dinner duplicate", seoulShape([
+  { id: "SeoulMorningD", origin: SEOUL, index: 0, time: "09:30" },
+  { id: "SeoulLunchD", origin: SEOUL, index: 1, time: "12:00", meal: "午餐" },
+  { id: "SeoulDinnerD", origin: SEOUL, index: 2, time: "18:30", meal: "晚餐" },
+  { id: "SeoulLateD", origin: SEOUL, index: 3, time: "20:30" },
+  { id: "SeoulOutDinner", origin: SEOUL_AWAY, index: 0, time: "16:00" },
+], { id: "SeoulMovedDinner", origin: SEOUL, index: 5, time: "18:30", meal: "晚餐" }), "SeoulMovedDinner");
+
+assertSeoulCommitted("seoul lunch and dinner duplicate", seoulShape([
+  { id: "SeoulMorningB", origin: SEOUL, index: 0, time: "09:30" },
+  { id: "SeoulLunchB", origin: SEOUL, index: 1, time: "12:00", meal: "午餐" },
+  { id: "SeoulDinnerB", origin: SEOUL, index: 2, time: "18:30", meal: "晚餐" },
+  { id: "SeoulOutBoth", origin: SEOUL_AWAY, index: 0, time: "16:00" },
+  { id: "IvySupper", origin: SEOUL, index: 3, time: "18:30", meal: "晚餐" },
+], { id: "SeoulMovedBoth", origin: SEOUL, index: 5, time: "12:00", meal: "午餐" }), "SeoulMovedBoth");
+
+assertSeoulCommitted("seoul meal after later meal", seoulShape([
+  { id: "SeoulEarly", origin: SEOUL, index: 0, time: "09:30" },
+  { id: "SeoulLateDinner", origin: SEOUL, index: 1, time: "18:30", meal: "晚餐" },
+  { id: "SeoulOutAfter", origin: SEOUL_AWAY, index: 0, time: "16:00" },
+  { id: "SeoulMid", origin: SEOUL, index: 2, time: "15:30" },
+  { id: "SeoulNight", origin: SEOUL, index: 3, time: "19:00" },
+], { id: "SeoulMovedAfter", origin: SEOUL, index: 5, time: "12:00", meal: "午餐" }), "SeoulMovedAfter");
+
+function assertRolledBack(name, plans) {
+  const before = plans.map((plan) => plan.entries.map((entry) => ({
+    id: entry.place.id,
+    time: entry.time,
+  })));
+  const observed = observe(plans);
+  assert.equal(observed.outcome.status, "not_called", name);
+  assert.equal(observed.outcome.failures, undefined, name);
+  assert.deepEqual(observed.plans.map((plan) => plan.entries.map((entry) => ({
+    id: entry.place.id,
+    time: entry.time,
+  }))), before, name);
+  assertSamePlaces(plans, observed.plans, name);
+}
+
+assertRolledBack("impossible third lunch", [
+  clusterDay(1, HOME, AWAY, [
+    { id: "RollMorning", origin: HOME, index: 0, time: "09:30" },
+    { id: "RollLunchA", origin: HOME, index: 1, time: "12:00", meal: "午餐" },
+    { id: "RollLunchB", origin: HOME, index: 2, time: "12:30", meal: "午餐" },
+    { id: "RollAway", origin: AWAY, index: 0, time: "16:00" },
+    { id: "RollDinner", origin: HOME, index: 3, time: "18:30", meal: "晚餐" },
+  ]),
+  clusterDay(2, HOME, AWAY, [
+    { id: "RollAwayA", origin: AWAY, index: 1, time: "09:30" },
+    { id: "RollAwayB", origin: AWAY, index: 2, time: "11:00" },
+    { id: "RollThirdLunch", origin: HOME, index: 5, time: "12:00", meal: "午餐" },
+    { id: "RollAwayC", origin: AWAY, index: 3, time: "14:00" },
+    { id: "RollAwayD", origin: AWAY, index: 4, time: "17:00" },
+  ]),
+  clusterDay(3, HOME, AWAY, [
+    { id: "RollAwayE", origin: AWAY, index: 5, time: "09:30" },
+    { id: "RollAwayF", origin: AWAY, index: 6, time: "11:00" },
+    { id: "RollAwayG", origin: AWAY, index: 7, time: "14:00" },
+    { id: "RollAwayH", origin: AWAY, index: 8, time: "16:00" },
+    { id: "RollAwayI", origin: AWAY, index: 9, time: "19:00" },
+  ]),
+]);
+
+assertRolledBack("impossible fifth night market", [
+  clusterDay(1, HOME, AWAY, [
+    { id: "NightA", origin: HOME, index: 0, time: "18:00", label: "夜間", extra: { primaryType: "night_market", types: ["night_market"] } },
+    { id: "NightB", origin: HOME, index: 1, time: "19:00", label: "夜間", extra: { primaryType: "night_market", types: ["night_market"] } },
+    { id: "NightC", origin: HOME, index: 2, time: "20:00", label: "夜間", extra: { primaryType: "night_market", types: ["night_market"] } },
+    { id: "NightD", origin: HOME, index: 3, time: "20:30", label: "夜間", extra: { primaryType: "night_market", types: ["night_market"] } },
+    { id: "NightAway", origin: AWAY, index: 0, time: "10:00" },
+  ]),
+  clusterDay(2, HOME, AWAY, [
+    { id: "NightAwayA", origin: AWAY, index: 1, time: "09:30" },
+    { id: "NightAwayB", origin: AWAY, index: 2, time: "11:00" },
+    { id: "NightFifth", origin: HOME, index: 5, time: "19:00", label: "夜間", extra: { primaryType: "night_market", types: ["night_market"] } },
+    { id: "NightAwayC", origin: AWAY, index: 3, time: "14:00" },
+    { id: "NightAwayD", origin: AWAY, index: 4, time: "17:00" },
+  ]),
+  clusterDay(3, HOME, AWAY, [
+    { id: "NightAwayE", origin: AWAY, index: 5, time: "09:30" },
+    { id: "NightAwayF", origin: AWAY, index: 6, time: "11:00" },
+    { id: "NightAwayG", origin: AWAY, index: 7, time: "14:00" },
+    { id: "NightAwayH", origin: AWAY, index: 8, time: "16:00" },
+    { id: "NightAwayI", origin: AWAY, index: 9, time: "19:00" },
+  ]),
+]);
+
+const orderingPressure = observe([
+  clusterDay(1, HOME, AWAY, [
+    { id: "OrderAway", origin: AWAY, index: 0, time: "11:00" },
+    { id: "OrderB", origin: HOME, index: 1, time: "12:00" },
+    { id: "OrderC", origin: HOME, index: 2, time: "14:00" },
+    { id: "OrderD", origin: HOME, index: 3, time: "16:00" },
+    { id: "OrderE", origin: HOME, index: 4, time: "18:00" },
+  ]),
+  clusterDay(2, HOME, AWAY, [
+    { id: "OrderAwayA", origin: AWAY, index: 1, time: "09:30" },
+    { id: "OrderAwayB", origin: AWAY, index: 2, time: "11:00" },
+    { id: "OrderIncoming", origin: HOME, index: 6, time: "17:00" },
+    { id: "OrderAwayC", origin: AWAY, index: 3, time: "15:30" },
+    { id: "OrderAwayD", origin: AWAY, index: 4, time: "19:00" },
+  ]),
+  clusterDay(3, HOME, AWAY, [
+    { id: "OrderAwayE", origin: AWAY, index: 5, time: "09:30" },
+    { id: "OrderAwayF", origin: AWAY, index: 6, time: "11:00" },
+    { id: "OrderAwayG", origin: AWAY, index: 7, time: "14:00" },
+    { id: "OrderAwayH", origin: AWAY, index: 8, time: "16:00" },
+    { id: "OrderAwayI", origin: AWAY, index: 9, time: "20:00" },
+  ]),
+]);
+assert.equal(orderingPressure.outcome.status, "safe");
+assert.equal(ids(orderingPressure.plans, 1).includes("OrderIncoming"), true);
+assertUniqueIncreasing(day(orderingPressure.plans, 1), "ordering pressure");
+assertPolicyClocks(day(orderingPressure.plans, 1), "ordering pressure");
+
+const closedMuseumPlace = {
+  primaryType: "museum",
+  types: ["museum"],
+  name: "ClosedSlotMuseum",
+  todayHoursLabel: "10:00-18:00",
+};
+const closedPressure = observe([
+  clusterDay(1, HOME, AWAY, [
+    { id: "MuseumAway", origin: AWAY, index: 0, time: "11:00" },
+    { id: "MuseumB", origin: HOME, index: 1, time: "09:30" },
+    { id: "MuseumC", origin: HOME, index: 2, time: "11:00" },
+    { id: "MuseumD", origin: HOME, index: 3, time: "14:00" },
+    { id: "MuseumE", origin: HOME, index: 4, time: "16:00" },
+  ]),
+  clusterDay(2, HOME, AWAY, [
+    { id: "MuseumAwayA", origin: AWAY, index: 1, time: "09:30" },
+    { id: "MuseumAwayB", origin: AWAY, index: 2, time: "12:00" },
+    { id: "ClosedSlotMuseum", origin: HOME, index: 6, time: "18:00", extra: closedMuseumPlace },
+    { id: "MuseumAwayC", origin: AWAY, index: 3, time: "15:30" },
+    { id: "MuseumAwayD", origin: AWAY, index: 4, time: "17:00" },
+  ]),
+  clusterDay(3, HOME, AWAY, [
+    { id: "MuseumAwayE", origin: AWAY, index: 5, time: "09:30" },
+    { id: "MuseumAwayF", origin: AWAY, index: 6, time: "11:00" },
+    { id: "MuseumAwayG", origin: AWAY, index: 7, time: "14:00" },
+    { id: "MuseumAwayH", origin: AWAY, index: 8, time: "16:00" },
+    { id: "MuseumAwayI", origin: AWAY, index: 9, time: "18:00" },
+  ]),
+]);
+assert.equal(ids(closedPressure.plans, 1).includes("ClosedSlotMuseum"), true);
+const museumTime = day(closedPressure.plans, 1).entries.find((entry) => entry.place.id === "ClosedSlotMuseum").time;
+assert.ok(minutes(museumTime) < 19 * 60, museumTime);
+assertPolicyClocks(day(closedPressure.plans, 1), "closed slot pressure");
+
+const anchored = place("AnchoredReservation", HOME, 8);
+const anchorPlans = macauPlans();
+anchorPlans[1].entries[2] = stop(anchored, "12:00", "午餐 reservation");
+const anchorBefore = ids(anchorPlans, 2);
+const anchorRepaired = run(anchorPlans);
+assert.deepEqual(ids(anchorRepaired, 2), anchorBefore, "fixed-day meal stays on its day");
+
+const dedicated = place("DedicatedNearby", HOME, 9, { destinationScope: "nearby_extension" });
+const dedicatedPlans = macauPlans();
+dedicatedPlans[1].entries[2] = stop(dedicated, "12:00", "午餐");
+const dedicatedBefore = ids(dedicatedPlans, 2);
+assert.deepEqual(ids(run(dedicatedPlans), 2), dedicatedBefore, "nearby dedicated stop stays on its day");
+
+const duplicateTimeline = validationOf([{
+  day: 1,
+  entries: macauSwapped,
+}]);
+assert.equal(duplicateTimeline.result.pass, false);
+assert.equal(duplicateTimeline.fails.includes("timeline_conflict"), true);
+assert.equal(duplicateTimeline.blocked, true);
+
+const cohesionSource = read("src/lib/ai/cross-day-geographic-cohesion.ts");
+assert.doesNotMatch(cohesionSource, /dedupeEntryTimes|fetch\(|openai|googleapis|unsplash|revenuecat/i);
+assert.match(cohesionSource, /resolveRecipientDayTimeline/);
+assert.match(cohesionSource, /outcome\.status = "no_safe_slot"/);
+
 const validatorSource = read("src/lib/ai/itinerary-validator/validate.ts");
 assert.match(validatorSource, /pushFail\(\s*failedRules,\s*"timeline_conflict"/);
 assert.doesNotMatch(validatorSource, /timeline_conflict[\s\S]{0,80}severity:\s*"warning"/);
@@ -445,4 +823,7 @@ console.log("cross-day timeline: PASS", {
   eightStopUnique: true,
   partialDayPreserved: true,
   validatorRuleUnchanged: true,
+  macauClockAwareCommitted: true,
+  seoulShapesCommitted: true,
+  impossibleMoveRolledBack: true,
 });
