@@ -290,8 +290,9 @@ function resolveCuratedOrCachedDestinationAreaScope(input: string): DestinationA
     for (const area of profile.districts) {
       const normalizedArea = normalizeDestinationLabel(area).replace(/\s+/g, "");
       if (!normalizedArea || !compact.includes(normalizedArea)) continue;
+      const explicitArea = compact.includes(`${parentCity}${normalizedArea}區`) ? `${normalizedArea}區` : normalizedArea;
       matches.push({
-        displayLabel: `${parentCity}${normalizedArea}`,
+        displayLabel: `${parentCity}${explicitArea}`,
         parentCity,
         area: normalizedArea,
         searchScope: "area",
@@ -335,8 +336,10 @@ export type ProvisionalDestinationAreaCandidate = {
   validationStatus: "pending_provider";
 };
 
+// Geographic spans end before predicates, questions, weather topics or temporal context.
+// Keep a preceding district; never promote the conversational remainder as an area.
 const AREA_QUERY_STOP =
-  /(?:有什麼|有甚麼|有什么|有沒有|有没有|推薦|推荐|咖啡廳|咖啡店|咖啡|餐廳|餐厅|景點|景点|地點|地点|哪裡|哪里|可以|適合|适合|嗎|吗|呢|吧|？|\?|$)/;
+  /(?:天氣|天气|氣溫|气温|溫度|温度|會?下雨|会下雨|冷不冷|熱不熱|热不热|怎[麼么]|如何|好玩|值得|想(?:去|吃|找|看)|今天|今日|明天|最近|\d{1,2}\s*月|有什麼|有甚麼|有什么|有沒有|有没有|推薦|推荐|咖啡廳|咖啡店|咖啡|餐廳|餐厅|景點|景点|地點|地点|哪裡|哪里|可以|適合|适合|嗎|吗|呢|吧|？|\?|$)/;
 const PLACE_CATEGORY_TOKEN =
   /(?:咖啡廳|咖啡店|咖啡館|咖啡馆|咖啡|餐廳|餐馆|餐館|美食|景點|景点|地點|地点|購物|逛街|酒吧|夜市|室內|室内|拉麵店|拉麵|拉面)/g;
 const INVALID_AREA_FRAGMENT = /^(?:附近|周邊|周边|市區|市区|當地|当地|這裡|这里|那裡|那里)$/;
@@ -412,15 +415,13 @@ function matchKnownParentPrefix(compact: string): string | null {
   return splitKnownParentAreaLabel(compact)?.parentCity ?? null;
 }
 
-function areaTailAfterParent(afterCity: string, alreadyCompact: boolean): string {
+function areaTailAfterParent(afterCity: string): string {
   const strippedPrefix = afterCity
     .replace(/^[市縣县都府]/, "")
     .replace(/^(?:的|之)/, "");
   // 「高雄有安靜咖啡廳」is a city-wide query, not parentCity + area.
   if (/^有/.test(strippedPrefix)) return "";
-  const rawFragment = alreadyCompact
-    ? strippedPrefix
-    : strippedPrefix.split(AREA_QUERY_STOP)[0]?.trim() ?? "";
+  const rawFragment = strippedPrefix.split(AREA_QUERY_STOP)[0]?.trim() ?? "";
   return rawFragment
     .replace(/[\s,，、/／-]+/g, "")
     .replace(/(?:有|想找|找|想看)$/g, "");
@@ -445,7 +446,6 @@ function extractCityTailAreaCandidate(input: string): DestinationAreaCandidate |
   if (cityIndex < 0) return null;
   const area = areaTailAfterParent(
     haystack.slice(cityIndex + parentCity.length),
-    haystack === compactGeo,
   );
   if (
     area.length < 1 ||
