@@ -188,7 +188,7 @@ test("authorized search uses the server secret once and keeps result order", asy
   assert.equal(calls[0].url.searchParams.get("content_filter"), "high");
   assert.equal(calls[0].url.searchParams.get("client_id"), null);
   assert.equal(calls[0].init.method, "GET");
-  assert.equal(calls[0].init.redirect, "error");
+  assert.equal(calls[0].init.redirect, "manual");
   assert.equal(calls[0].init.headers.Authorization, "Client-ID fixture-server-key");
   assert.equal(calls[0].init.headers.Authorization.includes("session-token"), false);
   const body = await response.json();
@@ -204,6 +204,149 @@ test("authorized search uses the server secret once and keeps result order", asy
       throw new Error("kill switch must not fetch");
     },
   })).status, 503);
+});
+
+test("workers manual redirect does not follow, forward, or refetch", async () => {
+  const deps = {
+    authenticate: async () => "user-1",
+    resolveAccessKey: () => "fixture-server-key",
+  };
+  for (const status of [301, 302, 307, 308, 401, 403, 429, 500, 503]) {
+    const calls = [];
+    const response = await handleUnsplashProxy(proxyRequest(validBody), { UNSPLASH_ACCESS_KEY: "fixture-server-key" }, {
+      ...deps,
+      fetchImpl: async (url, init) => {
+        calls.push({ url: new URL(url), init });
+        return new Response("redirect-body", {
+          status,
+          headers: { Location: "https://evil.example/collect" },
+        });
+      },
+    });
+    assert.equal(calls.length, 1, `status ${status} fetch count`);
+    assert.equal(calls[0].url.origin + calls[0].url.pathname, "https://api.unsplash.com/search/photos");
+    assert.equal(calls[0].init.redirect, "manual");
+    assert.equal(calls[0].init.headers.Authorization, "Client-ID fixture-server-key");
+    assert.equal(response.status, 502);
+    const text = await response.text();
+    assert.equal(text, JSON.stringify({ error: "unsplash_unavailable" }));
+    assert.equal(text.includes("evil.example"), false);
+    assert.equal(text.includes("fixture-server-key"), false);
+    assert.equal(text.includes("Location"), false);
+  }
+
+  let thrownFetches = 0;
+  const thrown = await handleUnsplashProxy(proxyRequest(validBody), { UNSPLASH_ACCESS_KEY: "fixture-server-key" }, {
+    ...deps,
+    fetchImpl: async () => {
+      thrownFetches += 1;
+      throw new TypeError("network");
+    },
+  });
+  assert.equal(thrown.status, 502);
+  assert.equal(thrownFetches, 1);
+});
+
+test("workerd accepts redirect manual without a live upstream", async () => {
+  const { Miniflare } = await import("miniflare");
+  const dispatches = [];
+  const mf = new Miniflare({
+    logRequests: false,
+    telemetry: { enabled: false },
+    workers: [
+      {
+        config: {
+          name: "unsplash-redirect-probe",
+          type: "worker",
+          compatibilityDate: "2025-09-24",
+          compatibilityFlags: ["nodejs_compat"],
+          manifest: {
+            mainModule: "worker.js",
+            modules: {
+              "worker.js": {
+                type: "esm",
+                contents: `
+                  export default {
+                    async fetch(request) {
+                      const mode = new URL(request.url).searchParams.get("mode");
+                      const url = new URL("https://api.unsplash.com/search/photos");
+                      url.searchParams.set("query", "placeholder");
+                      url.searchParams.set("per_page", "5");
+                      url.searchParams.set("orientation", "landscape");
+                      url.searchParams.set("content_filter", "high");
+                      if (mode === "canary") {
+                        const response = await fetch("https://intercept.invalid/canary");
+                        return Response.json({ status: response.status });
+                      }
+                      if (mode === "error") {
+                        try {
+                          new Request(url, { method: "GET", redirect: "error" });
+                          return Response.json({ result: "ACCEPTED" });
+                        } catch (error) {
+                          return Response.json({ result: "REJECTED", error_name: error.name });
+                        }
+                      }
+                      const created = new Request(url, {
+                        method: "GET",
+                        redirect: "manual",
+                        signal: AbortSignal.timeout(8000),
+                        headers: { Accept: "application/json", Authorization: "Client-ID synthetic-access-key" },
+                      });
+                      const response = await fetch(created);
+                      return Response.json({
+                        redirect: created.redirect,
+                        status: response.status,
+                        origin: new URL(created.url).origin,
+                        pathname: new URL(created.url).pathname,
+                      });
+                    },
+                  };
+                `,
+              },
+            },
+          },
+        },
+        dev: {
+          outboundService: {
+            type: "fetcher",
+            handler(request) {
+              const url = new URL(request.url);
+              dispatches.push({
+                origin: url.origin,
+                pathname: url.pathname,
+                authorization: request.headers.has("authorization"),
+              });
+              return new Response(null, { status: 204 });
+            },
+          },
+        },
+      },
+    ],
+  });
+  try {
+    const canary = await mf.dispatchFetch("http://probe.test/?mode=canary");
+    assert.equal((await canary.json()).status, 204);
+    assert.equal(dispatches.length, 1);
+    assert.equal(dispatches[0].origin, "https://intercept.invalid");
+    const rejected = await mf.dispatchFetch("http://probe.test/?mode=error");
+    const rejectedBody = await rejected.json();
+    assert.equal(rejectedBody.result, "REJECTED");
+    assert.equal(rejectedBody.error_name, "TypeError");
+    assert.equal(dispatches.length, 1);
+    const manual = await mf.dispatchFetch("http://probe.test/?mode=manual");
+    const body = await manual.json();
+    assert.equal(body.redirect, "manual");
+    assert.equal(body.status, 204);
+    assert.equal(body.origin, "https://api.unsplash.com");
+    assert.equal(body.pathname, "/search/photos");
+    assert.equal(dispatches.length, 2);
+    assert.equal(dispatches[1].origin, "https://api.unsplash.com");
+    assert.equal(dispatches[1].pathname, "/search/photos");
+    assert.equal(dispatches[1].authorization, true);
+    assert.equal(JSON.stringify(body).includes("synthetic-access-key"), false);
+  } finally {
+    await mf.dispose();
+  }
 });
 
 test("client search keeps cache, dedupe, fallback, and one proxy request", async () => {
@@ -292,6 +435,8 @@ test("source and release scanner separate image hosts from the api credential", 
   assert.doesNotMatch(client, /api\.unsplash\.com|VITE_UNSPLASH_ACCESS_KEY|UNSPLASH_ACCESS_KEY|Client-ID/);
   assert.match(client, /\/api\/unsplash/);
   assert.match(server, /api\.unsplash\.com\/search\/photos/);
+  assert.match(server, /redirect:\s*"manual"/);
+  assert.doesNotMatch(server, /redirect:\s*"error"/);
   assert.match(server, /Client-ID/);
   assert.doesNotMatch(server + key, /VITE_UNSPLASH_ACCESS_KEY/);
   assert.doesNotMatch(server, /abuse-guard\.server/);

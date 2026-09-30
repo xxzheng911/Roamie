@@ -149,9 +149,10 @@ export async function handleUnsplashProxy(
     const upstreamUrl = buildSearchUrl(body);
     let upstream: Response;
     try {
+      // Workers have no pre-dispatch redirect rejection mode. manual returns 3xx here.
       upstream = await deps.fetchImpl(upstreamUrl, {
         method: "GET",
-        redirect: "error",
+        redirect: "manual",
         signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
         headers: {
           Accept: "application/json",
@@ -161,7 +162,8 @@ export async function handleUnsplashProxy(
     } catch {
       return json({ error: "unsplash_unavailable" }, 502);
     }
-    if (!upstream.ok) {
+    // Never follow Location or resend Authorization. 3xx and other non-2xx share one failure.
+    if ((upstream.status >= 300 && upstream.status <= 399) || !upstream.ok) {
       await upstream.body?.cancel();
       return json({ error: "unsplash_unavailable" }, 502);
     }
