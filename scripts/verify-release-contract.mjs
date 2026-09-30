@@ -65,6 +65,11 @@ function corruption(name, file, change, expected, rehash = true) {
 try {
   verifyReleaseArtifacts(root);
   pass("A canonical npm-build artifact");
+  const diagnosticMarkers=["timeline_normalization_failures","failed_entry_time","candidate_slots_evaluated","rejected_order","rejected_used","rejected_closed","rejected_window","sanitizeNormalizationFailures","serializeNormalizationFailures"];
+  for (const marker of diagnosticMarkers) {
+    corruption("server diagnostic client boundary: " + marker,"dist/client/assets/leak.js",()=>`console.log("${marker}")`,/Secret\/leakage/);
+  }
+
   corruption("B missing index", "dist/client/index.html", null, /missing artifact/);
   corruption(
     "C missing bootstrap",

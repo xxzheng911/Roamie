@@ -19,6 +19,7 @@ const clientSecretNamePatterns = [
   /\bREVENUECAT_PROJECT_ID\s*=/g,
   /\bAPPLE_PRIVATE_KEY\b/g,
   /-----BEGIN PRIVATE KEY-----/g,
+  /\b(?:timeline_normalization_failures|failed_entry_time|candidate_slots_evaluated|rejected_order|rejected_used|rejected_closed|rejected_window|sanitizeNormalizationFailures|serializeNormalizationFailures)\b/g,
   /\b(?:ABUSE_GUARD_ANALYTICS|WORKER_VERSION_METADATA|writeDataPoint|provider_attempt_without_guard)\b/g,
 ];
 export const RECEIPT = "dist/release-receipt.json";

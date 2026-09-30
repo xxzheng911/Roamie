@@ -44,3 +44,21 @@ export function sanitizeNormalizationFailures(value: unknown, maxDay = MAX_ITINE
   }
   return result;
 }
+
+/** Convert planner observations at the server boundary; sanitize using the single metadata authority. */
+export function serializeNormalizationFailures(value: unknown, maxDay = MAX_ITINERARY_DAYS): TimelineNormalizationFailure[] {
+  if (!Array.isArray(value)) return [];
+  return sanitizeNormalizationFailures(value.map(item => {
+    if (!item || typeof item !== "object") return null;
+    const source = item as Record<string, unknown>;
+    return {
+      day: source.day,
+      failed_entry_time: source.failedTime,
+      candidate_slots_evaluated: source.evaluated,
+      rejected_order: source.order,
+      rejected_used: source.used,
+      rejected_closed: source.closed,
+      rejected_window: source.window,
+    };
+  }), maxDay);
+}

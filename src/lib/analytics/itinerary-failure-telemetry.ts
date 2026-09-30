@@ -1,4 +1,4 @@
-import { sanitizeNormalizationFailures, type TimelineNormalizationFailure } from "./timeline-normalization-failures";
+import { serializeNormalizationFailures, sanitizeNormalizationFailures, type TimelineNormalizationFailure } from "./timeline-normalization-failures.server";
 import { sanitizeIntegrityFailureTelemetry, type IntegrityFailureTelemetry } from "./itinerary-integrity-failure-telemetry";
 import { MAX_ITINERARY_DAYS } from "@/lib/ai/itinerary-days";
 
@@ -251,7 +251,7 @@ export function buildItineraryValidatorFailureTelemetry(
     );
     if (normalization) telemetry.timeline_normalization = normalization;
     if (normalization?.status === "no_safe_slot") {
-      const failures = sanitizeNormalizationFailures(input.timelineNormalization?.failures,
+      const failures = serializeNormalizationFailures(input.timelineNormalization?.failures,
         normalizationDayLimit(input.requestedDayCount, input.perDayPlaceCounts))
         .filter((failure) => normalization.affected_days?.includes(failure.day));
       if (failures.length) telemetry.timeline_normalization_failures = failures;

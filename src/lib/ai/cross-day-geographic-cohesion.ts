@@ -1,4 +1,7 @@
-import { MAX_NORMALIZATION_FAILURES, sanitizeNormalizationFailures, type SlotRejectionCounts, type TimelineNormalizationFailure } from "@/lib/analytics/timeline-normalization-failures";
+// Internal planner observation only. Analytics serialization belongs to the server adapter.
+const MAX_NORMALIZATION_FAILURES = 4;
+type SlotRejectionCounts = { evaluated: number; order: number; used: number; closed: number; window: number };
+export type NormalizationFailure = SlotRejectionCounts & { day: number; failedTime?: string };
 import type { ComposedDayPlan, DayPlanEntry } from "@/lib/ai/ai-day-plan-source";
 import { minItemsPerDayForTrip } from "@/lib/ai/ai-day-plan-source";
 import { maxEffectivePlacesPerDay, type PlannerPaceHint } from "@/lib/ai/planner-day-route-assembly";
@@ -26,7 +29,7 @@ export type TimelineNormalizationStatus = (typeof TIMELINE_NORMALIZATION_STATUSE
 export type TimelineNormalizationObservation = {
   status: TimelineNormalizationStatus;
   affectedDays?: number[];
-  failures?: TimelineNormalizationFailure[];
+  failures?: NormalizationFailure[];
 };
 
 export type CrossDayCohesionContext = {
@@ -194,11 +197,11 @@ function nextSafeClock(
   const window = replacementWindow(entry);
   // Same short-circuit predicates, same order, same first legal slot. Attribute one rejection per evaluated slot.
   return LEGAL_DAY_MINUTES.find(({ minutes, slot }) => {
-    counts.candidate_slots_evaluated++;
-    if (!(minutes > previous)) { counts.rejected_order++; return false; }
-    if (used.has(minutes)) { counts.rejected_used++; return false; }
-    if (!slotIsOpen(entry, plannedDate, slot)) { counts.rejected_closed++; return false; }
-    if (!fitsWindow(minutes, window)) { counts.rejected_window++; return false; }
+    counts.evaluated++;
+    if (!(minutes > previous)) { counts.order++; return false; }
+    if (used.has(minutes)) { counts.used++; return false; }
+    if (!slotIsOpen(entry, plannedDate, slot)) { counts.closed++; return false; }
+    if (!fitsWindow(minutes, window)) { counts.window++; return false; }
     return true;
   });
 }
@@ -215,7 +218,7 @@ export function normalizeSameDayClockConflicts(
   entries: readonly DayPlanEntry[],
   plannedDate?: string,
   day?: number,
-  onFailure?: (failure: TimelineNormalizationFailure) => void,
+  onFailure?: (failure: NormalizationFailure) => void,
 ): SameDayClockNormalization {
   const used = new Set<number>();
   const assigned = new Map<number, number>();
@@ -237,8 +240,8 @@ export function normalizeSameDayClockConflicts(
       continue;
     }
     const counts: SlotRejectionCounts = {
-      candidate_slots_evaluated: 0, rejected_order: 0, rejected_used: 0,
-      rejected_closed: 0, rejected_window: 0,
+      evaluated: 0, order: 0, used: 0,
+      closed: 0, window: 0,
     };
     const choice = nextSafeClock(entry, previous, used, plannedDate, counts);
     if (!choice) {
@@ -250,8 +253,7 @@ export function normalizeSameDayClockConflicts(
         `stops=${entries.length}`,
       );
       try {
-        const failure = sanitizeNormalizationFailures([{ day, failed_entry_time: entry.time, ...counts }])[0];
-        if (failure) onFailure?.(failure);
+        if (day !== undefined) onFailure?.({ day, failedTime: entry.time, ...counts });
       } catch {
         // Observation must never change the no-safe-slot result.
       }
@@ -288,14 +290,13 @@ function uniqueDays(days: readonly number[]): number[] {
 function publishNormalizationOutcome(
   context: CrossDayCohesionContext,
   invoked: readonly { day: number; safe: boolean }[],
-  failures: readonly TimelineNormalizationFailure[] = [],
+  failures: readonly NormalizationFailure[] = [],
 ): void {
   const outcome = context.normalizationOutcome;
   if (!outcome) return;
   try {
     delete outcome.failures;
-    const safeFailures = sanitizeNormalizationFailures(failures);
-    if (safeFailures.length) outcome.failures = safeFailures;
+    if (failures.length) outcome.failures = [...failures];
   } catch {
     // Diagnostic sink failure has no effect on repair output.
   }
@@ -335,7 +336,7 @@ export function repairCrossDayGeographicCohesion(
   const entriesBeforeRepair = new Map(plans.map((plan) => [plan.day, [...plan.entries]]));
   const located = plans.flatMap((plan) => plan.entries.map((entry) => ({ entry, day: plan.day }))).filter((item) => coords(item.entry));
   const invoked: { day: number; safe: boolean }[] = [];
-  const failures: TimelineNormalizationFailure[] = [];
+  const failures: NormalizationFailure[] = [];
   if (located.length < 2 || plans.length < 2) {
     publishNormalizationOutcome(context, invoked);
     return plans;
