@@ -25,10 +25,7 @@ export function fixedStatusResponse(
   return Response.json({ error: code }, { status: code === "rate_limited" ? 429 : 503, headers });
 }
 
-/**
- * Server authority for a future Unsplash proxy.
- * Published clients still call api.unsplash.com directly; this does not stop them.
- */
+/** Server kill switch for /api/unsplash. Clients do not hold an Unsplash credential. */
 export function unsplashProxyDisabledResponse(
   env: Readonly<Record<string, unknown>> | undefined,
 ): Response | null {

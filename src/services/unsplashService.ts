@@ -1,7 +1,9 @@
-import { cacheKey, getCachedImage, setCachedImage } from "@/services/image-cache";
+import { supabase } from "@/integrations/supabase/client";
+import { resolveApiUrl } from "@/lib/api-url";
 import { preferJpegPngImageUrl } from "@/lib/safe-image-url";
+import { cacheKey, getCachedImage, setCachedImage } from "@/services/image-cache";
 
-const UNSPLASH_SEARCH = "https://api.unsplash.com/search/photos";
+const UNSPLASH_PROXY_PATH = "/api/unsplash";
 
 /** Unsplash 風格修飾：奶油色系、柔和、低飽和、生活感 */
 const STYLE_SUFFIX = "soft pastel cinematic travel lifestyle aesthetic";
@@ -12,10 +14,26 @@ export type UnsplashSearchResult = {
   photographer?: string;
 };
 
-function accessKey(): string | null {
-  const key = import.meta.env.VITE_UNSPLASH_ACCESS_KEY as string | undefined;
-  return key?.trim() || null;
+export type UnsplashSearchClient = {
+  getAccessToken: () => Promise<string | null>;
+  fetchImpl: typeof fetch;
+  resolveUrl: (path: string) => string;
+};
+
+async function readSessionAccessToken(): Promise<string | null> {
+  try {
+    const { data } = await supabase.auth.getSession();
+    return data.session?.access_token?.trim() || null;
+  } catch {
+    return null;
+  }
 }
+
+export const unsplashSearchClient: UnsplashSearchClient = {
+  getAccessToken: readSessionAccessToken,
+  fetchImpl: (input, init) => fetch(input, init),
+  resolveUrl: (path) => resolveApiUrl(path),
+};
 
 /** 搜尋 Unsplash 圖片（含 memory + localStorage 快取） */
 export async function searchUnsplashImage(query: string): Promise<UnsplashSearchResult | null> {
@@ -26,21 +44,28 @@ export async function searchUnsplashImage(query: string): Promise<UnsplashSearch
   const cached = getCachedImage(key);
   if (cached) return { url: cached, query: trimmed };
 
-  const clientId = accessKey();
-  if (!clientId) return null;
+  const token = await unsplashSearchClient.getAccessToken();
+  if (!token) return null;
 
   const fullQuery = `${trimmed} ${STYLE_SUFFIX}`.trim();
-  const params = new URLSearchParams({
-    query: fullQuery,
-    per_page: "5",
-    orientation: "landscape",
-    content_filter: "high",
-  });
-
   try {
-    const res = await fetch(`${UNSPLASH_SEARCH}?${params}`, {
-      headers: { Authorization: `Client-ID ${clientId}` },
-    });
+    const res = await unsplashSearchClient.fetchImpl(
+      unsplashSearchClient.resolveUrl(UNSPLASH_PROXY_PATH),
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          query: fullQuery,
+          per_page: 5,
+          orientation: "landscape",
+          content_filter: "high",
+        }),
+      },
+    );
     if (!res.ok) return null;
 
     const data = (await res.json()) as {

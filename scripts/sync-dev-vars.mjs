@@ -23,6 +23,7 @@ if (existsSync(distDevVarsPath)) rmSync(distDevVarsPath);
 
 const SERVER_KEYS = [
   "OPENAI_API_KEY",
+  "UNSPLASH_ACCESS_KEY",
   "OPENWEATHER_API_KEY",
   "EXPO_PUBLIC_OPENWEATHER_API_KEY",
   "VITE_OPENWEATHER_API_KEY",

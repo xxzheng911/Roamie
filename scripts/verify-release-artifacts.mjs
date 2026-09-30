@@ -24,6 +24,53 @@ const clientSecretNamePatterns = [
 ];
 export const RECEIPT = "dist/release-receipt.json";
 
+/** SHA-256 of the Unsplash access key that shipped in public client bundles. The key itself is not stored. */
+export const RETIRED_UNSPLASH_ACCESS_KEY_SHA256 = Object.freeze([
+  "b154eedf0629ded229de62e02ab8b50448e110b42728f6c1afba5141fdad7ded",
+]);
+const RETIRED_UNSPLASH_KEY_LENGTH = 43;
+const unsplashClientLeakPatterns = [
+  /\bVITE_UNSPLASH_ACCESS_KEY\b/,
+  /\bUNSPLASH_ACCESS_KEY\b/,
+  /api\.unsplash\.com\/search\/photos/,
+  /api\.unsplash\.com\b/,
+  /Authorization:\s*Client-ID/,
+  /\bClient-ID\b/,
+];
+
+export function isClientReleaseArtifact(path) {
+  return path.includes("/dist/client/") || path.includes("/ios/App/App/public/");
+}
+
+export function textHasRetiredUnsplashAccessKey(text) {
+  const fingerprints = new Set(RETIRED_UNSPLASH_ACCESS_KEY_SHA256);
+  const runs = text.match(/[A-Za-z0-9_-]{43,}/g) ?? [];
+  for (const run of runs) {
+    const last = run.length - RETIRED_UNSPLASH_KEY_LENGTH;
+    const step = run.length <= 120 ? 1 : RETIRED_UNSPLASH_KEY_LENGTH;
+    for (let index = 0; index <= last; index += step) {
+      const digest = createHash("sha256")
+        .update(run.slice(index, index + RETIRED_UNSPLASH_KEY_LENGTH))
+        .digest("hex");
+      if (fingerprints.has(digest)) return true;
+    }
+  }
+  return false;
+}
+
+export function collectUnsplashLeakFailures(path, text) {
+  const failures = [];
+  if (isClientReleaseArtifact(path)) {
+    for (const pattern of unsplashClientLeakPatterns) {
+      if (pattern.test(text)) failures.push(`${path}: matched ${pattern.source}`);
+    }
+  }
+  if (textHasRetiredUnsplashAccessKey(text)) {
+    failures.push(`${path}: unsplash access key fingerprint`);
+  }
+  return failures;
+}
+
 export function verifyReleaseArtifacts(root, { requireReceipt = true } = {}) {
   const failures = [];
 
@@ -59,8 +106,9 @@ export function verifyReleaseArtifacts(root, { requireReceipt = true } = {}) {
       failures.push(`${path}: unreadable artifact`);
       return;
     }
-    const clientArtifact = path.includes("/dist/client/") || path.includes("/ios/App/App/public/");
+    const clientArtifact = isClientReleaseArtifact(path);
     if (clientArtifact) scanJwtRoles(path, text);
+    failures.push(...collectUnsplashLeakFailures(path, text));
     for (const pattern of clientArtifact
       ? [...secretValuePatterns, ...clientSecretNamePatterns]
       : secretValuePatterns) {

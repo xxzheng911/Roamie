@@ -164,6 +164,19 @@ try {
     () => 'const binding="ABUSE_GUARD_ANALYTICS";',
     /Secret\/leakage/,
   );
+  for (const marker of [
+    "VITE_UNSPLASH_ACCESS_KEY",
+    "UNSPLASH_ACCESS_KEY",
+    "https://api.unsplash.com/search/photos",
+    "Authorization: Client-ID",
+  ]) {
+    corruption(
+      "unsplash client leakage: " + marker,
+      "dist/client/assets/leak.js",
+      () => `console.log(${JSON.stringify(marker)})`,
+      /Secret\/leakage/,
+    );
+  }
   corruption(
     "M privileged JWT rejected",
     "dist/client/assets/leak.js",

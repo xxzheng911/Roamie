@@ -16,6 +16,7 @@
     "verify:release-contract": "node scripts/verify-release-contract.mjs",
     "verify:release-artifacts": "node scripts/verify-release-artifacts.mjs",
     "verify:production-client-env": "node --test scripts/verify-production-client-env.mjs",
+    "verify:unsplash-proxy": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-unsplash-proxy.mjs",
     "verify:place-photo-proxy": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-place-photo-proxy.mjs",
     "verify:place-photo-security": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-place-photo-security.mjs",
     "verify:signed-place-photo-surfaces": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-signed-place-photo-surfaces.mjs",

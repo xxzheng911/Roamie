@@ -27,6 +27,24 @@ test("complete native public config passes validation", () => {
   );
 });
 
+test("unsplash access key is server-only", () => {
+  assert.equal(PUBLIC_CLIENT_ENV_KEYS.includes("VITE_UNSPLASH_ACCESS_KEY"), false);
+  assert.equal(SERVER_ONLY_ENV_KEYS.includes("UNSPLASH_ACCESS_KEY"), true);
+  const selected = selectPublicClientEnv(
+    {
+      VITE_UNSPLASH_ACCESS_KEY: "public-unsplash",
+      UNSPLASH_ACCESS_KEY: "server-unsplash",
+      VITE_APP_ORIGIN: "https://roamie.example",
+    },
+    { VITE_UNSPLASH_ACCESS_KEY: "shell-unsplash" },
+  );
+  assert.equal(selected.VITE_UNSPLASH_ACCESS_KEY, undefined);
+  assert.equal(selected.UNSPLASH_ACCESS_KEY, undefined);
+  const build = readFileSync(new URL("./production-build.mjs", import.meta.url), "utf8");
+  assert.match(build, /delete buildEnv\.VITE_UNSPLASH_ACCESS_KEY/);
+  assert.match(build, /delete buildEnv\.UNSPLASH_ACCESS_KEY/);
+});
+
 test("allowlist never preserves server credentials", () => {
   const source = Object.fromEntries([
     ...PUBLIC_CLIENT_ENV_KEYS.map((key) => [key, `public-${key}`]),

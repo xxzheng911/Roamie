@@ -36,6 +36,9 @@ try {
   if (existsSync(emittedDevVars)) rmSync(emittedDevVars);
   const vite = resolve(root, "node_modules/.bin/vite");
   const buildEnv = { ...process.env, ...publicClientEnv };
+  // Unsplash credentials are runtime server secrets. Never compile either name into the client.
+  delete buildEnv.VITE_UNSPLASH_ACCESS_KEY;
+  delete buildEnv.UNSPLASH_ACCESS_KEY;
   const result = spawnSync(vite, ["build"], { cwd: root, stdio: "inherit", env: buildEnv });
   if (result.error) throw result.error;
   process.exitCode = result.status ?? 1;

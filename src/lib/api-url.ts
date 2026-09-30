@@ -10,6 +10,7 @@ const ALLOWED_API_PATHS = new Set([
   "/api/subscription/sync",
   "/api/place-photo/sign",
   "/api/account/delete",
+  "/api/unsplash",
 ]);
 
 export class ApiUrlError extends Error {

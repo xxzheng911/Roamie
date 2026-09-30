@@ -23,6 +23,7 @@ import { Route as AppIndexRouteImport } from './routes/_app.index'
 import { Route as TripInviteTokenRouteImport } from './routes/trip-invite.$token'
 import { Route as LoginLegalRouteImport } from './routes/login/legal'
 import { Route as AuthCallbackRouteImport } from './routes/auth.callback'
+import { Route as ApiUnsplashRouteImport } from './routes/api/unsplash'
 import { Route as ApiRoamieRouteImport } from './routes/api/roamie'
 import { Route as ApiPlacePhotoRouteImport } from './routes/api/place-photo'
 import { Route as ApiGoogleRouteImport } from './routes/api/google'
@@ -114,6 +115,11 @@ const LoginLegalRoute = LoginLegalRouteImport.update({
 const AuthCallbackRoute = AuthCallbackRouteImport.update({
   id: '/auth/callback',
   path: '/auth/callback',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiUnsplashRoute = ApiUnsplashRouteImport.update({
+  id: '/api/unsplash',
+  path: '/api/unsplash',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiRoamieRoute = ApiRoamieRouteImport.update({
@@ -258,6 +264,7 @@ export interface FileRoutesByFullPath {
   '/api/google': typeof ApiGoogleRoute
   '/api/place-photo': typeof ApiPlacePhotoRouteWithChildren
   '/api/roamie': typeof ApiRoamieRoute
+  '/api/unsplash': typeof ApiUnsplashRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/login/legal': typeof LoginLegalRoute
   '/trip-invite/$token': typeof TripInviteTokenRoute
@@ -294,6 +301,7 @@ export interface FileRoutesByTo {
   '/api/google': typeof ApiGoogleRoute
   '/api/place-photo': typeof ApiPlacePhotoRouteWithChildren
   '/api/roamie': typeof ApiRoamieRoute
+  '/api/unsplash': typeof ApiUnsplashRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/login/legal': typeof LoginLegalRoute
   '/trip-invite/$token': typeof TripInviteTokenRoute
@@ -334,6 +342,7 @@ export interface FileRoutesById {
   '/api/google': typeof ApiGoogleRoute
   '/api/place-photo': typeof ApiPlacePhotoRouteWithChildren
   '/api/roamie': typeof ApiRoamieRoute
+  '/api/unsplash': typeof ApiUnsplashRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/login/legal': typeof LoginLegalRoute
   '/trip-invite/$token': typeof TripInviteTokenRoute
@@ -375,6 +384,7 @@ export interface FileRouteTypes {
     | '/api/google'
     | '/api/place-photo'
     | '/api/roamie'
+    | '/api/unsplash'
     | '/auth/callback'
     | '/login/legal'
     | '/trip-invite/$token'
@@ -411,6 +421,7 @@ export interface FileRouteTypes {
     | '/api/google'
     | '/api/place-photo'
     | '/api/roamie'
+    | '/api/unsplash'
     | '/auth/callback'
     | '/login/legal'
     | '/trip-invite/$token'
@@ -450,6 +461,7 @@ export interface FileRouteTypes {
     | '/api/google'
     | '/api/place-photo'
     | '/api/roamie'
+    | '/api/unsplash'
     | '/auth/callback'
     | '/login/legal'
     | '/trip-invite/$token'
@@ -480,6 +492,7 @@ export interface RootRouteChildren {
   ApiGoogleRoute: typeof ApiGoogleRoute
   ApiPlacePhotoRoute: typeof ApiPlacePhotoRouteWithChildren
   ApiRoamieRoute: typeof ApiRoamieRoute
+  ApiUnsplashRoute: typeof ApiUnsplashRoute
   AuthCallbackRoute: typeof AuthCallbackRoute
   TripInviteTokenRoute: typeof TripInviteTokenRoute
   ApiAccountDeleteRoute: typeof ApiAccountDeleteRoute
@@ -587,6 +600,13 @@ declare module '@tanstack/react-router' {
       path: '/auth/callback'
       fullPath: '/auth/callback'
       preLoaderRoute: typeof AuthCallbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/unsplash': {
+      id: '/api/unsplash'
+      path: '/api/unsplash'
+      fullPath: '/api/unsplash'
+      preLoaderRoute: typeof ApiUnsplashRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/roamie': {
@@ -835,6 +855,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiGoogleRoute: ApiGoogleRoute,
   ApiPlacePhotoRoute: ApiPlacePhotoRouteWithChildren,
   ApiRoamieRoute: ApiRoamieRoute,
+  ApiUnsplashRoute: ApiUnsplashRoute,
   AuthCallbackRoute: AuthCallbackRoute,
   TripInviteTokenRoute: TripInviteTokenRoute,
   ApiAccountDeleteRoute: ApiAccountDeleteRoute,
