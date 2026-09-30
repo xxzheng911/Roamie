@@ -19,6 +19,7 @@
     "verify:place-photo-proxy": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-place-photo-proxy.mjs",
     "verify:place-photo-security": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-place-photo-security.mjs",
     "verify:signed-place-photo-surfaces": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-signed-place-photo-surfaces.mjs",
+    "verify:signed-photo-persistence": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-signed-photo-persistence.mjs",
     "verify:revenuecat-webhook": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-revenuecat-webhook.mjs",
     "verify:google-maps-server-key": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-google-maps-server-key.mjs",
     "verify:abuse-guard": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-abuse-guard.mjs",

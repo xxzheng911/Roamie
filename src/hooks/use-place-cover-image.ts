@@ -7,8 +7,9 @@ import {
   cacheKey,
   getCachedImage,
   getRememberedPhotoUrl,
+  isSignedPlacePhotoCapabilityUrl,
+  recoverPersistedSignedPhoto,
   rememberPhotoUrl,
-  setCachedImage,
 } from "@/services/image-cache";
 import { getRoamieDefaultImage } from "@/services/placeImageService";
 import type { PlaceImageInput } from "@/services/placeImageService";
@@ -113,9 +114,13 @@ export function usePlaceCoverImage(options: Options): {
 
     failedRef.current = false;
     setFailed(false);
+    const recovered = persistedImageKey ? recoverPersistedSignedPhoto(persistedImageKey) : null;
     const currentUrl = urlRef.current?.trim() || primaryUrlRef.current || null;
+    const currentIsSigned = isSignedPlacePhotoCapabilityUrl(currentUrl);
     const photoResource =
-      photoName?.trim() || (currentUrl?.includes("/api/place-photo") ? currentUrl : null);
+      photoName?.trim() ||
+      (currentUrl?.includes("/api/place-photo") ? currentUrl : null) ||
+      recovered;
     if (photoResource) {
       let cancelled = false;
       inflightIdentityRef.current = identity;
@@ -129,7 +134,6 @@ export function usePlaceCoverImage(options: Options): {
           resolutionResult: signed ? "signed" : "fallback-after-retry",
         });
         if (signed) {
-          if (persistedImageKey) setCachedImage(persistedImageKey, signed);
           displayedRef.current = { identity, src: signed };
           setSrc(signed);
           logPerfImageLoad("place-cover", 1, "google");
@@ -145,7 +149,7 @@ export function usePlaceCoverImage(options: Options): {
         if (inflightIdentityRef.current === identity) inflightIdentityRef.current = null;
       };
     }
-    if (currentUrl) {
+    if (currentUrl && !currentIsSigned) {
       displayedRef.current = { identity, src: currentUrl };
       setSrc(currentUrl);
       setLoading(true);
