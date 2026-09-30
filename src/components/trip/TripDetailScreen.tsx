@@ -1,3 +1,4 @@
+import { applyTripCover, readTripCoverEvent, SAVED_TRIPS_CHANGED_EVENT } from "@/lib/saved-trip/cover-live-state";
 import { useI18n } from "@/hooks/use-i18n";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
@@ -76,8 +77,9 @@ export function TripDetailScreen({ tripId, navSource, initialDay, onDeleted }: P
           return;
         }
         console.info("[TRIP_DETAIL] StoredItinerary loaded tripId=", row.id);
-        tripDetailMemoryCache.set(tripId, row);
-        setStored(row);
+        const current = applyTripCover(row);
+        tripDetailMemoryCache.set(tripId, current);
+        setStored(current);
         setIsOwner(access.isOwner);
       })
       .catch((e) => {
@@ -92,6 +94,21 @@ export function TripDetailScreen({ tripId, navSource, initialDay, onDeleted }: P
     };
   }, [tripId, navigate]);
 
+  useEffect(() => {
+    const apply = () => setStored((current) => {
+      if (!current || current.id !== tripId) return current;
+      const next = applyTripCover(current);
+      tripDetailMemoryCache.set(tripId, next);
+      return next;
+    });
+    const onChanged = (event: Event) => {
+      if (readTripCoverEvent(event)?.tripId === tripId) apply();
+    };
+    window.addEventListener(SAVED_TRIPS_CHANGED_EVENT, onChanged);
+    apply(); // Replay an update that completed before this listener mounted.
+    return () => window.removeEventListener(SAVED_TRIPS_CHANGED_EVENT, onChanged);
+  }, [tripId]);
+
   const handleStoredChange = (next: StoredItinerary) => {
     ignoreRealtimeUntilRef.current = Date.now() + 2500;
     tripDetailMemoryCache.set(tripId, next);
@@ -102,8 +119,9 @@ export function TripDetailScreen({ tripId, navSource, initialDay, onDeleted }: P
     tripId,
     enabled: Boolean(stored),
     onRemoteUpdate: (remote) => {
-      tripDetailMemoryCache.set(tripId, remote);
-      setStored(remote);
+      const current = applyTripCover(remote);
+      tripDetailMemoryCache.set(tripId, current);
+      setStored(current);
     },
     isLocalWrite: () => Date.now() < ignoreRealtimeUntilRef.current,
   });

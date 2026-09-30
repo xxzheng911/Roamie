@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 
 type Props = TripCoverFields & {
   loading?: boolean;
+  resolutionPending?: boolean;
   className?: string;
   imgClassName?: string;
   alt?: string;
@@ -26,6 +27,7 @@ export function TripCoverImage({
   mood,
   category,
   loading,
+  resolutionPending,
   className,
   imgClassName,
   alt = "",
@@ -45,12 +47,19 @@ export function TripCoverImage({
         })
       : src?.trim() || resolveTripCoverUrl({ mood: mood ?? category }));
 
+  if (resolutionPending && !isCoverCustomized) {
+    return <div className={cn("relative overflow-hidden bg-secondary", className)} aria-busy="true">
+      <div className="absolute inset-0 animate-pulse bg-secondary/80" aria-hidden />
+    </div>;
+  }
+
   return (
     <FadeInImage
       src={resolved}
       alt={alt}
       loading={loading}
       priority
+      waitForDecode
       className={cn("h-full w-full", className)}
       imgClassName={imgClassName}
     />

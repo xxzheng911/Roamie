@@ -1,3 +1,4 @@
+import { isTripCoverEvent } from "@/lib/saved-trip/cover-live-state";
 import { createFileRoute, Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { Plus, Loader2, Trash2, Heart, Route as RouteIcon, Share2 } from "lucide-react";
 import { useAddToTrip } from "@/hooks/use-add-to-trip";
@@ -13,7 +14,7 @@ import { deleteTripDialogLabels } from "@/lib/i18n/delete-trip-dialog";
 import { deleteTrip } from "@/lib/saved-trip/delete-trip";
 import { TripDeleteConfirmDialog } from "@/components/saved/TripDeleteConfirmDialog";
 import { TripSharePanel } from "@/components/trip/TripSharePanel";
-import { listCoreTrips, type CoreTrip, resolveCoreTripTitle } from "@/lib/trip/core-trip";
+import { applyCoreTripCover, listCoreTrips, type CoreTrip, resolveCoreTripTitle } from "@/lib/trip/core-trip";
 import { isMissingTableError } from "@/lib/supabase-errors";
 import {
   deletePlace,
@@ -151,8 +152,8 @@ function Saved() {
         .then(([tripsResult, placesResult]) => {
           if (!requestGuardRef.current.isCurrent(requestToken)) return;
           if (tripsResult.status === "fulfilled") {
-            setTrips(tripsResult.value);
-            writeSavedTripsSnapshot(tripsResult.value, authUserId);
+            setTrips(tripsResult.value.map(applyCoreTripCover));
+            writeSavedTripsSnapshot(tripsResult.value.map(applyCoreTripCover), authUserId);
           } else if (isMissingTableError(tripsResult.reason)) {
             setTrips([]);
             writeSavedTripsSnapshot([], authUserId);
@@ -299,7 +300,7 @@ function Saved() {
     const hydrateThenRefresh = async () => {
       const cached = await hydrateSavedListSnapshot(authUserId);
       if (!active) return;
-      if (cached.trips.length > 0) setTrips(cached.trips);
+      if (cached.trips.length > 0) setTrips(cached.trips.map(applyCoreTripCover));
       if (cached.places.length > 0) setPlaces(cached.places);
       const applied = cached.trips.length > 0 || cached.places.length > 0;
       hasCachedAtMountRef.current = applied;
@@ -317,7 +318,17 @@ function Saved() {
       refresh({ background: applied });
     };
     void hydrateThenRefresh().catch(() => refresh({ background: hasCachedAtMountRef.current }));
-    const onRefresh = () => refresh({ background: true });
+    const onRefresh = (event: Event) => {
+      if (isTripCoverEvent(event)) {
+        setTrips((current) => {
+          const next = current.map(applyCoreTripCover);
+          writeSavedTripsSnapshot(next, authUserId);
+          return next;
+        });
+        return;
+      }
+      refresh({ background: true });
+    };
     window.addEventListener(SAVED_PLACES_CHANGED_EVENT, onRefresh);
     window.addEventListener(SAVED_TRIPS_CHANGED_EVENT, onRefresh);
     return () => {

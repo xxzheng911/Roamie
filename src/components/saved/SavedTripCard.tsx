@@ -1,3 +1,6 @@
+import { coverRevision } from "@/lib/saved-trip/cover-live-state";
+import { useLiveTripCover } from "@/lib/saved-trip/use-live-cover";
+import { applyCoreTripCover } from "@/lib/trip/core-trip";
 import { useI18n } from "@/hooks/use-i18n";
 import { useNavigate } from "@tanstack/react-router";
 import { Calendar } from "lucide-react";
@@ -13,7 +16,9 @@ type Props = {
 };
 
 /** 收藏列表：僅封面、自訂名稱、旅行天數 */
-export function SavedTripCard({ trip, shareSlot, deleteSlot }: Props) {
+export function SavedTripCard({ trip: inputTrip, shareSlot, deleteSlot }: Props) {
+  const liveCover = useLiveTripCover(inputTrip.id);
+  const trip = applyCoreTripCover(inputTrip);
   const { t: uiT } = useI18n();
 
   const navigate = useNavigate();
@@ -39,7 +44,8 @@ export function SavedTripCard({ trip, shareSlot, deleteSlot }: Props) {
               coverImageUrl={null}
               customCoverImageUrl={trip.customCoverImageUrl}
               aiGeneratedCoverImageUrl={trip.aiGeneratedCoverImageUrl}
-              isCoverCustomized={Boolean(trip.customCoverImageUrl)}
+              isCoverCustomized={trip.isCoverCustomized}
+              resolutionPending={liveCover?.resolution === "pending" && coverRevision(trip.updatedAt) <= coverRevision(liveCover.updatedAt) && !trip.isCoverCustomized}
               mood="roamie"
               className="h-full w-full rounded-2xl"
             />

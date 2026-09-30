@@ -1,3 +1,4 @@
+import { isTripCoverEvent } from "@/lib/saved-trip/cover-live-state";
 import { createFileRoute, Link, useNavigate, useRouter } from "@tanstack/react-router";
 import { Sparkles, ChevronRight, Search, Loader2 } from "lucide-react";
 import {
@@ -39,7 +40,7 @@ import {
   recordRecommendationNames,
 } from "@/lib/recommendation-history";
 import { SAVED_TRIPS_CHANGED_EVENT } from "@/lib/itinerary-storage";
-import { getLatestCoreTrip, type CoreTrip } from "@/lib/trip/core-trip";
+import { applyCoreTripCover, getLatestCoreTrip, type CoreTrip } from "@/lib/trip/core-trip";
 import { supabase } from "@/integrations/supabase/client";
 import { recordAnalyticsEvent } from "@/lib/analytics/record";
 import { useI18n } from "@/hooks/use-i18n";
@@ -1037,7 +1038,7 @@ function Home() {
       }
       if (cached) {
         latestTripIdRef.current = cached.id;
-        setLatestTrip(cached);
+        setLatestTrip(applyCoreTripCover(cached));
       }
 
       try {
@@ -1045,7 +1046,7 @@ function Home() {
         if (generation !== latestTripLoadGenerationRef.current) return;
         const nextId = view?.id ?? null;
         latestTripIdRef.current = nextId;
-        setLatestTrip(view);
+        setLatestTrip(view ? applyCoreTripCover(view) : null);
         if (view) {
           const written = await writeHomeTripSummarySnapshot(userId, view);
           if (import.meta.env.DEV) {
@@ -1115,7 +1116,13 @@ function Home() {
 
     setLatestTripHydrated(false);
     refreshLatestTrip(userId);
-    const onRefresh = () => refreshLatestTrip(userId);
+    const onRefresh = (event: Event) => {
+      if (isTripCoverEvent(event)) {
+        setLatestTrip((current) => current ? applyCoreTripCover(current) : null);
+        return;
+      }
+      refreshLatestTrip(userId);
+    };
     window.addEventListener(SAVED_TRIPS_CHANGED_EVENT, onRefresh);
     return () => window.removeEventListener(SAVED_TRIPS_CHANGED_EVENT, onRefresh);
   }, [authLoading, authenticatedUser?.id, refreshLatestTrip]);

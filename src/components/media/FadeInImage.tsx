@@ -36,6 +36,7 @@ type Props = {
   fallbackSrc?: string | null;
   /** Prefer eager decode for above-the-fold covers */
   priority?: boolean;
+  waitForDecode?: boolean;
 };
 
 /** 帶 loading skeleton 與淡入動畫的圖片 */
@@ -47,12 +48,15 @@ export function FadeInImage({
   imgClassName,
   fallbackSrc,
   priority = false,
+  waitForDecode = false,
 }: Props) {
   const stable = src ? stableSrcKey(src) : "";
   const [loaded, setLoaded] = useState(() => Boolean(src && loadedSrcCache.has(stable)));
   const [displaySrc, setDisplaySrc] = useState(src ?? null);
   const [usedFallback, setUsedFallback] = useState(false);
   const prevStable = useRef(stable);
+  const currentSrc = useRef(src);
+  currentSrc.current = src;
 
   useEffect(() => {
     if (!src) {
@@ -115,7 +119,13 @@ export function FadeInImage({
           fetchPriority={priority ? "high" : "auto"}
           decoding="async"
           draggable={false}
-          onLoad={() => {
+          onLoad={async (event) => {
+            const image = event.currentTarget;
+            const sourceAtLoad = src;
+            if (waitForDecode && typeof image.decode === "function") {
+              try { await image.decode(); } catch { /* onLoad remains authoritative on decode rejection */ }
+            }
+            if (waitForDecode && (currentSrc.current !== sourceAtLoad || !image.isConnected)) return;
             if (displaySrc) {
               loadedSrcCache.add(displaySrc);
               loadedSrcCache.add(stableSrcKey(displaySrc));

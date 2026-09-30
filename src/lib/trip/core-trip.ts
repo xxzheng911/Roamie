@@ -8,7 +8,8 @@ import { getItinerary, listItineraries } from "@/lib/itinerary-storage";
 import { listOwnedTripIds } from "@/lib/trip/trip-collab";
 import { isRoamiePayloadV2, type RoamiePayloadV2 } from "@/lib/ai/types";
 import { withCacheBust } from "@/lib/media-display-url";
-import { getRoamieDefaultImage } from "@/services/placeImageService";
+import { coverFieldsFromStored, resolveDisplayCoverImage } from "@/lib/saved-trip/display";
+import { coverRevision, getTripCoverUpdate } from "@/lib/saved-trip/cover-live-state";
 import { buildLegKey } from "@/lib/transit/types";
 
 export type CoreTripPlace = {
@@ -29,6 +30,7 @@ export type CoreTrip = GeneratedLocaleContract & {
   customTitle: string | null;
   isTitleCustomized: boolean;
   coverImageUrl: string | null;
+  mood?: string | null;
   customCoverImageUrl: string | null;
   aiGeneratedCoverImageUrl: string | null;
   isCoverCustomized: boolean;
@@ -56,11 +58,7 @@ export function resolveCoreTripTitle(trip: CoreTrip, locale: Locale = effectiveA
 }
 
 export function resolveCoreTripCoverImage(trip: CoreTrip): string {
-  return (
-    trip.customCoverImageUrl?.trim() ||
-    trip.aiGeneratedCoverImageUrl?.trim() ||
-    getRoamieDefaultImage("roamie")
-  );
+  return resolveDisplayCoverImage(trip);
 }
 
 /** 自訂封面帶 cache-bust，避免 Storage 同路徑 upsert 後瀏覽器仍顯示舊圖 */
@@ -101,10 +99,7 @@ export function toCoreTrip(row: StoredItinerary, opts?: { isOwner?: boolean }): 
       title: row.title,
       customTitle: row.custom_title,
       isTitleCustomized: Boolean(row.is_title_customized),
-      coverImageUrl: row.cover_image_url,
-      customCoverImageUrl: row.custom_cover_image_url,
-      aiGeneratedCoverImageUrl: row.cover_image,
-      isCoverCustomized: Boolean(row.is_cover_customized),
+      ...coverFieldsFromStored(row),
       destinationPlace: payload.destinationLocation
         ? { name: payload.destinationLocation.displayLabel ?? payload.destinationLocation.city, placeId: payload.destinationLocation.placeId }
         : payload.destination
@@ -148,10 +143,7 @@ export function toCoreTrip(row: StoredItinerary, opts?: { isOwner?: boolean }): 
     title: row.title,
     customTitle: row.custom_title,
     isTitleCustomized: Boolean(row.is_title_customized),
-    coverImageUrl: row.cover_image_url,
-    customCoverImageUrl: row.custom_cover_image_url,
-    aiGeneratedCoverImageUrl: row.cover_image,
-    isCoverCustomized: Boolean(row.is_cover_customized),
+    ...coverFieldsFromStored(row),
     destinationPlace: null,
     originPlace: null,
     startDate: "",
@@ -216,4 +208,13 @@ export async function listCoreTrips(): Promise<CoreTrip[]> {
   return rows.map((row) =>
     toCoreTrip(row, { isOwner: ownerMap.has(row.id) ? Boolean(ownerMap.get(row.id)) : true }),
   );
+}
+
+/** Merge only canonical cover fields; preserve every other list field. */
+export function applyCoreTripCover(trip: CoreTrip): CoreTrip {
+  const update = getTripCoverUpdate(trip.id);
+  if (!update || coverRevision(trip.updatedAt) > coverRevision(update.updatedAt)) return trip;
+  return { ...trip,
+    ...coverFieldsFromStored({ ...update.fields, mood: trip.mood ?? null }),
+  };
 }

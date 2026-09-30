@@ -1,3 +1,4 @@
+import { publishTripCover, SAVED_TRIPS_CHANGED_EVENT } from "@/lib/saved-trip/cover-live-state";
 import { supabase } from "@/integrations/supabase/client";
 import { getAuthenticatedUserId } from "@/lib/auth-session";
 import { isMissingTableError } from "@/lib/supabase-errors";
@@ -22,7 +23,7 @@ type SavedTripRowUpdate = Database["public"]["Tables"]["saved_trips"]["Update"];
 
 const GUEST_KEY = "roamie:itineraries";
 
-export const SAVED_TRIPS_CHANGED_EVENT = "roamie:saved-trips-changed";
+export { SAVED_TRIPS_CHANGED_EVENT };
 
 function broadcastTripsChanged() {
   if (typeof window === "undefined") return;
@@ -385,6 +386,12 @@ export async function updateTripMeta(
   }
 
   const stored = normalizeStoredItinerary(data, payload);
+  if (stored && (meta.cover_image !== undefined || meta.custom_cover_image_url !== undefined ||
+      meta.cover_image_url !== undefined || meta.is_cover_customized !== undefined ||
+      meta.cover_source !== undefined || meta.cover_query !== undefined)) {
+    publishTripCover(stored);
+    return stored;
+  }
   return afterTripMutation(stored);
 }
 

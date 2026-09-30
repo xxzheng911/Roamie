@@ -1,3 +1,4 @@
+import { isTripCoverEvent } from "@/lib/saved-trip/cover-live-state";
 import { isRoamiePayloadV2, type RoamiePayloadV2 } from "@/lib/ai/types";
 import { getCapacitorLocalNotifications } from "@/lib/capacitor-local-notifications";
 import { listItineraries, SAVED_TRIPS_CHANGED_EVENT } from "@/lib/itinerary-storage";
@@ -133,7 +134,8 @@ export function ensureTripReminderBootstrap(getLocale: () => Locale): void {
   if (typeof window === "undefined" || bootstrapStarted) return;
   bootstrapStarted = true;
 
-  const sync = () => {
+  const sync = (event?: Event) => {
+    if (event && isTripCoverEvent(event)) return;
     void syncTripReminderNotifications(getLocale()).catch((e) => {
       console.warn("[trip-reminders] bootstrap sync failed", e);
     });

@@ -1,3 +1,5 @@
+import { applyTripCover, coverRevision } from "@/lib/saved-trip/cover-live-state";
+import { useLiveTripCover } from "@/lib/saved-trip/use-live-cover";
 import { LOCALIZED_ACTION_GRID, LOCALIZED_ACTION_BUTTON } from "@/lib/localized-action-layout";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
@@ -294,7 +296,8 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
   const geocodeLocationFn = useServerFn(geocodeTripLocationFromText);
   const resolveTripStopFn = useServerFn(resolveTripStop);
   const initial = stored.payload as RoamiePayloadV2;
-  const initialView = useMemo(() => normalizeStoredTrip(stored), [stored]);
+  const liveCover = useLiveTripCover(stored.id);
+  const initialView = useMemo(() => normalizeStoredTrip(applyTripCover(stored)), [stored, liveCover]);
   const restoredViewRef = useRef(readTripDetailViewState(stored.id));
   const restoredView = restoredViewRef.current;
   const dayResetBlockedLoggedRef = useRef(false);
@@ -560,6 +563,19 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
     lastAppliedRemoteAtRef.current = stored.updated_at;
     console.info("[TRIP_REALTIME] applied remote state", stored.id);
   }, [stored, markSynced, ignoreRealtimeUntilRef]);
+  // Same-client cover mutations bypass only the generic row echo guard.
+  // Keep itinerary/title/settings state untouched, including active local edits.
+  useLayoutEffect(() => {
+    if (!liveCover || coverRevision(stored.updated_at) > coverRevision(liveCover.updatedAt)) return;
+    const view = normalizeStoredTrip(applyTripCover(stored));
+    setCustomCoverImageUrl(view.customCoverImageUrl);
+    setAiCoverImageUrl(view.aiGeneratedCoverImageUrl);
+    setIsCoverCustomized(view.isCoverCustomized);
+    setCoverSource(liveCover.fields.cover_source);
+  }, [liveCover, stored]);
+  const automaticCoverPending = liveCover?.resolution === "pending" &&
+    coverRevision(stored.updated_at) <= coverRevision(liveCover.updatedAt) && !initialView.isCoverCustomized;
+
   const tripView = useMemo(() => {
     const autoTitle = resolveTripTitle(payload);
     const view = normalizeStoredTrip({
@@ -572,6 +588,9 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
       is_cover_customized: isCoverCustomized,
       cover_image_url: customCoverImageUrl,
       cover_source: coverSource as StoredItinerary["cover_source"],
+      // Use the mutation snapshot during this render, before layout effects mirror state.
+      ...(!coverBusy && liveCover && coverRevision(stored.updated_at) <= coverRevision(liveCover.updatedAt)
+        ? liveCover.fields : {}),
       payload,
     });
     if (!isTitleCustomized) {
@@ -586,6 +605,8 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
     aiCoverImageUrl,
     isCoverCustomized,
     coverSource,
+    coverBusy,
+    liveCover,
     payload,
   ]);
 
@@ -1638,9 +1659,8 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
 
   const tripCoverDisplayUrl = useMemo(() => {
     const raw =
-      customCoverImageUrl?.trim() ||
       tripView.customCoverImageUrl?.trim() ||
-      (isCoverCustomized ? tripView.displayCoverImage : null);
+      (tripView.isCoverCustomized ? tripView.displayCoverImage : null);
     if (!raw) return null;
     if (raw.startsWith("blob:")) return raw;
     return withCacheBust(raw, coverDisplayRevision) ?? raw;
@@ -1648,7 +1668,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
     customCoverImageUrl,
     tripView.customCoverImageUrl,
     tripView.displayCoverImage,
-    isCoverCustomized,
+    tripView.isCoverCustomized,
     coverDisplayRevision,
   ]);
 
@@ -1763,12 +1783,13 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
             }
             displayCoverImage={tripCoverDisplayUrl ?? undefined}
             coverImageUrl={tripView.coverImageUrl}
-            customCoverImageUrl={customCoverImageUrl}
-            aiGeneratedCoverImageUrl={aiCoverImageUrl}
-            isCoverCustomized={isCoverCustomized}
-            coverSource={coverSource}
+            customCoverImageUrl={tripView.customCoverImageUrl}
+            aiGeneratedCoverImageUrl={tripView.aiGeneratedCoverImageUrl}
+            isCoverCustomized={tripView.isCoverCustomized}
+            coverSource={tripView.coverSource}
             mood={payload.moodTag}
-            loading={coverBusy}
+            loading={coverBusy || automaticCoverPending}
+            resolutionPending={automaticCoverPending}
             className="pointer-events-none aspect-[3/2] w-full select-none"
             imgClassName="pointer-events-none select-none object-cover"
           />

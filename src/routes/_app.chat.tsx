@@ -1,3 +1,4 @@
+import { publishTripCover } from "@/lib/saved-trip/cover-live-state";
 import { chatLoadingCopy, chatRuntimeCopy, isChatRuntimeCopy, isChatRuntimeCopyPrefix, type ChatLoadingPhase } from "@/lib/chat-runtime-copy";
 import { chatShortcutContract } from "@/lib/chat-shortcut-chips";
 import { chatSessionForLocale } from "@/lib/chat-session";
@@ -10407,6 +10408,7 @@ function Chat() {
     // server-function boundary. Client state must never become billing authority.
     let itinCreditsHandle: CreditsOperationHandle | null = null;
     let itinerarySucceeded = false;
+    let abandonPendingCover: (() => void) | null = null;
     if (isPlanningSelectionMode(activeSession)) {
       console.info("[PLANNING_SELECTION_CREDITS_READY]", {
         sessionId: selectionSessionId,
@@ -11125,6 +11127,8 @@ function Chat() {
           cover_query: cover.query,
         },
       });
+      publishTripCover(saved, "pending");
+      abandonPendingCover = () => publishTripCover(saved, "fallback");
       logSelectionTiming("save_done");
       logPlanningSelectionDateAuthority(
         "render_model",
@@ -11231,7 +11235,7 @@ function Chat() {
               ),
             },
           };
-          await updateTripMeta(
+          const updatedCoverRow = await updateTripMeta(
             saved.id,
             {
               cover_image: enrichedCover.url,
@@ -11240,14 +11244,17 @@ function Chat() {
             },
             enrichedPayload,
           );
+          if (!updatedCoverRow) publishTripCover(saved, "fallback");
         })
         .catch((error) => {
+          publishTripCover(saved, "fallback");
           console.debug("[ITINERARY_BACKGROUND_ENRICHMENT]", {
             success: false,
             reason: error instanceof Error ? error.message : String(error),
           });
         });
     } catch (e) {
+      abandonPendingCover?.();
       const reason = e instanceof Error ? e.message : String(e);
       logSelectionStage(selectionGenerateStage, false, reason);
       console.warn("[ITINERARY_GENERATE]", e);
