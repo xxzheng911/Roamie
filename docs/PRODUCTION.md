@@ -86,3 +86,48 @@ npm run cap:open:ios
 - [ ] Offline itinerary cache
 - [ ] Collaborative trips
 - [ ] Apple Wallet boarding passes
+
+
+## Worker release artifact authority
+
+Use **`npm run build`**, including its `postbuild` lifecycle. Do not disable npm
+lifecycle scripts. `node scripts/production-build.mjs` is an intermediate Vite step;
+it invalidates any previous release receipt and does not produce a releasable artifact.
+`capacitor-prepare.mjs` currently prepares the shared `dist/client` used by both
+Worker static assets and bundled iOS. It does not copy assets into the iOS project.
+
+Production requires bundled preparation, not live-reload, remote-placeholder,
+`ROAMIE_MINIMAL_BOOT`, or `ROAMIE_ULTRA_MINIMAL_HTML` modes. The postbuild verifier
+requires the Worker entry/config, manifest, HTML, bootstrap, transformed root mount,
+boot/error handling, referenced assets, secret/leakage scan, and a matching receipt.
+`dist/release-receipt.json` hashes every dist file except itself, in sorted relative
+path order. It contains no environment values. Do not edit or manually bless a receipt.
+
+Repository entrypoints (commands documented here are not automatic deployment):
+
+- `npm run release:worker:prepare`: canonical build and upload gate only; no upload.
+- `npm run release:worker:upload -- --verify-only`: verify the frozen artifact only.
+- `npm run release:worker:upload -- --tag <tag> --message <message>`: upload a
+  Bootstrap version, with enforcement UNSET in the current generated config.
+- Add `--enforcement` for an Enforcement version; this supplies enforcement=1.
+- Add `--dry-run` to the upload command to request Wrangler's upload dry-run.
+
+The wrapper uses only `wrangler versions upload`, pins the generated config and
+rejects artifact/config/entry overrides. It invokes the same verifier before Wrangler.
+Secrets are inherited by Wrangler; plain vars come from the generated config, with
+`--keep-vars=false`. Before a real upload, independently check that this config
+preserves the intended production plain vars. Never bypass this gate with raw
+Wrangler upload/deploy commands. The repository cannot intercept an independently
+invoked external CLI. Deploying/rolling back **existing remote versions** is a separate,
+explicitly approved control-plane action and does not build/upload local artifacts.
+
+Regression: `npm run verify:release-contract -- --build-paths` builds disposable
+copies, demonstrates intermediate-build rejection and canonical-build acceptance,
+checks repeated prepare, and corrupts isolated artifacts. It never invokes Wrangler,
+cap sync, Archive, or production APIs. Native release orchestration is mocked; the
+actual repeated prepare and copied iOS asset verification run locally.
+
+`npm run ios:release` remains the iOS authority: npm build/postbuild verification,
+then bundled cap sync and existing iOS checks. Repeated prepare requires a valid
+previous receipt and writes fresh hashes after preparation. Do not use this iOS
+wrapper as the Worker build shortcut: it has iOS-specific environment policy.

@@ -7,7 +7,9 @@ import {
   validateRequiredPublicClientEnv,
 } from "./public-client-env.mjs";
 
+// Intermediate Vite step only. Release authority is npm run build including postbuild.
 const root = resolve(import.meta.dirname, "..");
+rmSync(resolve(root, "dist/release-receipt.json"), { force: true });
 const localSecretFiles = [".env", ".dev.vars"].map((name) => ({
   source: resolve(root, name),
   hidden: resolve(root, `${name}.release-hidden`),

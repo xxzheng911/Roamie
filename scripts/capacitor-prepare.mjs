@@ -16,7 +16,17 @@ import { spawnSync } from "node:child_process";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { RECEIPT, verifyReleaseArtifacts, writeReleaseReceipt } from "./verify-release-artifacts.mjs";
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+// Re-prepare (iOS sync) accepts only an already verified release artifact.
+const canonicalPostbuild = process.env.npm_lifecycle_event === "postbuild";
+let verifiedPreviousRelease = false;
+if (!canonicalPostbuild && existsSync(resolve(root, RECEIPT))) {
+  verifyReleaseArtifacts(root);
+  verifiedPreviousRelease = true;
+}
+rmSync(resolve(root, RECEIPT), { force: true });
 const splashCriticalCssPath = resolve(root, "scripts/capacitor-splash-critical.css");
 const clientDir = resolve(root, "dist/client");
 const assetsDir = resolve(clientDir, "assets");
@@ -799,6 +809,13 @@ if (liveUrl) {
   process.exit(0);
 }
 
+if (!canonicalPostbuild && !verifiedPreviousRelease) {
+  throw new Error("Production prepare requires npm run build or a verified release receipt");
+}
+if (envFlag("ROAMIE_MINIMAL_BOOT") || envFlag("ROAMIE_ULTRA_MINIMAL_HTML")) {
+  throw new Error("Diagnostic artifact cannot become production release ready");
+}
+
 const clientEntry = findClientEntryFromManifest();
 if (!clientEntry) {
   console.error(
@@ -849,6 +866,14 @@ console.info(`[capacitor-prepare]   script: ./${clientEntry}`);
 if (stylesheet) console.info(`[capacitor-prepare]   style:  ./${stylesheet}`);
 console.info("[capacitor-prepare] WebView will load bundled assets (no server.url)");
 
-spawnSync(process.execPath, [resolve(root, "scripts/patch-capacitor-geolocation.mjs")], {
+const geolocationPatch = spawnSync(process.execPath, [resolve(root, "scripts/patch-capacitor-geolocation.mjs")], {
   stdio: "inherit",
 });
+
+if (geolocationPatch.error || geolocationPatch.status !== 0) {
+  throw new Error("Native geolocation patch process failed");
+}
+
+// Content checks catch missing/skipped transforms before any receipt can be issued.
+writeReleaseReceipt(root);
+console.info("[capacitor-prepare] Release receipt verified");
