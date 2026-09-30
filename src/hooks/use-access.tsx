@@ -55,6 +55,7 @@ export function AccessProvider({ children }: { children: ReactNode }) {
     status: revenueCatStatus,
     loading: revenueCatLoading,
     canonicalRevision,
+    ownershipBlocked,
   } = useSubscription();
   const email = user?.email ?? null;
   const userId = user?.id ?? null;
@@ -70,8 +71,14 @@ export function AccessProvider({ children }: { children: ReactNode }) {
 
   const snapshot = useMemo(() => {
     const base = buildAccessSnapshotFromCanonical(email, canonical);
-    const revenueCatActive = isRevenueCatPlusActive(revenueCatStatus);
-    const hasPlusAccess = resolveCanonicalPlusAccess(base.hasPlusAccess, revenueCatStatus);
+    const revenueCatActive =
+      !ownershipBlocked &&
+      isRevenueCatPlusActive(revenueCatStatus) &&
+      revenueCatStatus?.originalAppUserId === userId;
+    const hasPlusAccess = resolveCanonicalPlusAccess(base.hasPlusAccess, revenueCatStatus, {
+      userId,
+      ownershipBlocked,
+    });
     const entitlementDisplayStable =
       Boolean(userId) &&
       canonicalUserId === userId &&
@@ -94,7 +101,15 @@ export function AccessProvider({ children }: { children: ReactNode }) {
       subscriptionHydrated: entitlementDisplayStable,
       entitlementDisplayStable,
     };
-  }, [email, canonical, canonicalUserId, revenueCatStatus, revenueCatLoading, userId]);
+  }, [
+    email,
+    canonical,
+    canonicalUserId,
+    revenueCatStatus,
+    revenueCatLoading,
+    ownershipBlocked,
+    userId,
+  ]);
 
   useEffect(() => {
     const status = snapshot.hasPlusAccess ? "plus" : "free";

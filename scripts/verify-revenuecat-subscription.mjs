@@ -13,10 +13,25 @@ const status = (tier, active = tier === "plus") => ({
   source: "revenuecat",
 });
 
+const userA = "123e4567-e89b-42d3-a456-426614174000";
 assert.equal(
-  resolveCanonicalPlusAccess(false, status("plus")),
+  resolveCanonicalPlusAccess(false, { ...status("plus"), originalAppUserId: userA }, { userId: userA }),
   true,
-  "active RevenueCat entitlement grants Plus",
+  "same-user RevenueCat CustomerInfo can show Plus before the server mirror hydrates",
+);
+assert.equal(
+  resolveCanonicalPlusAccess(false, status("plus"), { userId: userA }),
+  false,
+  "CustomerInfo without the original app user id does not show Plus",
+);
+assert.equal(
+  resolveCanonicalPlusAccess(
+    false,
+    { ...status("plus"), originalAppUserId: userA },
+    { userId: userA, ownershipBlocked: true },
+  ),
+  false,
+  "server ownership rejection overrides local RevenueCat premium",
 );
 assert.equal(
   resolveCanonicalPlusAccess(true, status("free", false)),

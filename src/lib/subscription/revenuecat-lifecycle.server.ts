@@ -1,6 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 import { REVENUECAT_ENTITLEMENT_ID } from "@/constants/subscription";
 import type { CloudflareRuntimeEnv } from "@/lib/server-request-context";
+import { isCanonicalSupabaseUserId } from "@/lib/subscription/revenuecat-identity";
+
+export { isCanonicalSupabaseUserId };
 
 export type RevenueCatLifecycleInput = {
   eventId: string;
@@ -36,10 +39,6 @@ function adminClient(env: CloudflareRuntimeEnv) {
   const key = readSubscriptionServerEnv(env, "SUPABASE_SERVICE_ROLE_KEY");
   if (!url || !key) throw new Error("subscription_sync_configuration_missing");
   return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
-}
-
-export function isCanonicalSupabaseUserId(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 export async function persistRevenueCatLifecycle(

@@ -19,6 +19,8 @@ import type {
   UsageCounters,
 } from "@/services/subscription/types";
 import { useAuth } from "@/hooks/use-auth";
+import { subscriptionStatusForDisplay } from "@/lib/subscription/canonical-plus";
+import { isSubscriptionOwnershipErrorCode } from "@/lib/subscription/revenuecat-identity";
 import {
   isCanonicalRestoreConfirmed,
   syncRevenueCatEntitlementAfterRestore,
@@ -51,6 +53,7 @@ type SubscriptionCtx = {
   restoreError: string | null;
   canonicalSyncError: string | null;
   canonicalSyncLoading: boolean;
+  ownershipBlocked: boolean;
   checkFeature: (feature: SubscriptionFeature) => FeatureGateResult;
   recordUsage: (feature: SubscriptionFeature) => void;
   refresh: () => Promise<boolean>;
@@ -87,6 +90,7 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
   const [restoreError, setRestoreError] = useState<string | null>(null);
   const [canonicalSyncLoading, setCanonicalSyncLoading] = useState(false);
   const [canonicalSyncError, setCanonicalSyncError] = useState<string | null>(null);
+  const [ownershipBlocked, setOwnershipBlocked] = useState(false);
   const offeringsRequest = useRef<AbortController | null>(null);
   const currentUserId = useRef(user?.id);
 
@@ -131,6 +135,9 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
     const sync = () => syncRevenueCatEntitlementWithServer(userId);
     const result = restoring ? await syncRevenueCatEntitlementAfterRestore({ sync }) : await sync();
     const confirmed = result.ok && (!active || isCanonicalRestoreConfirmed(active, result));
+    const errorCode = confirmed
+      ? undefined
+      : (result.errorCode ?? "subscription_canonical_sync_failed");
     if (
       mounted.current &&
       currentUserId.current === userId &&
@@ -138,12 +145,16 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
       request === syncRequest.current
     ) {
       setCanonicalSyncLoading(false);
-      setCanonicalSyncError(
-        confirmed ? null : (result.errorCode ?? "subscription_canonical_sync_failed"),
-      );
-      if (confirmed) setCanonicalRevision((revision) => revision + 1);
+      setCanonicalSyncError(errorCode ?? null);
+      if (isSubscriptionOwnershipErrorCode(errorCode)) {
+        setOwnershipBlocked(true);
+        setStatus((current) => subscriptionStatusForDisplay(current, userId, true));
+      } else if (confirmed) {
+        setOwnershipBlocked(false);
+        setCanonicalRevision((revision) => revision + 1);
+      }
     }
-    return confirmed;
+    return { confirmed, errorCode };
   }, []);
 
   const refresh = useCallback(async () => {
@@ -174,14 +185,17 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
         request !== actionRequest.current
       )
         return false;
-      const confirmed = adapter.id !== "revenuecat" || (await syncCanonical(userId, next.isActive));
+      const synced =
+        adapter.id === "revenuecat"
+          ? await syncCanonical(userId, next.isActive)
+          : { confirmed: true, errorCode: undefined };
       return (
         mounted.current &&
         currentUserId.current === userId &&
         generation === generationRef.current &&
         request === actionRequest.current &&
         next.isActive &&
-        confirmed
+        synced.confirmed
       );
     } catch (cause) {
       if (
@@ -211,6 +225,7 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
     setRestoreError(null);
     setCanonicalSyncError(null);
     setCanonicalSyncLoading(false);
+    setOwnershipBlocked(false);
     setInitializationError(null);
     let cancelled = false;
     let removeListener: (() => void) | undefined;
@@ -410,8 +425,10 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
         return { outcome: "cancelled", status: null };
       if (result.outcome !== "success") return result;
       setStatus(result.status);
-      const canonicalSynced =
-        adapter.id !== "revenuecat" || (await syncCanonical(userId, result.status.isActive));
+      const synced =
+        adapter.id === "revenuecat"
+          ? await syncCanonical(userId, result.status.isActive)
+          : { confirmed: true, errorCode: undefined };
       if (
         !mounted.current ||
         currentUserId.current !== userId ||
@@ -427,7 +444,11 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
         request !== actionRequest.current
       )
         return { outcome: "cancelled", status: null };
-      return { ...result, canonicalSynced };
+      return {
+        ...result,
+        canonicalSynced: synced.confirmed,
+        canonicalErrorCode: synced.errorCode,
+      };
     },
     [adapter, user?.id, syncCanonical, refreshUsage],
   );
@@ -461,9 +482,10 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
     )
       return { outcome: "cancelled", status: null };
     if (result.outcome !== "success") return result;
-    setStatus(result.status);
-    const canonicalSynced =
-      adapter.id !== "revenuecat" || (await syncCanonical(userId, result.status.isActive, true));
+    const synced =
+      adapter.id === "revenuecat"
+        ? await syncCanonical(userId, result.status.isActive, true)
+        : { confirmed: true, errorCode: undefined };
     if (
       !mounted.current ||
       currentUserId.current !== userId ||
@@ -471,6 +493,7 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
       request !== actionRequest.current
     )
       return { outcome: "cancelled", status: null };
+    if (!isSubscriptionOwnershipErrorCode(synced.errorCode)) setStatus(result.status);
     await refreshUsage(userId, generation);
     if (
       !mounted.current ||
@@ -479,16 +502,23 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
       request !== actionRequest.current
     )
       return { outcome: "cancelled", status: null };
-    return { ...result, canonicalSynced };
+    return {
+      ...result,
+      canonicalSynced: synced.confirmed,
+      canonicalErrorCode: synced.errorCode,
+    };
   }, [adapter, user?.id, syncCanonical, refreshUsage]);
+  const visibleStatus = matchesUser
+    ? subscriptionStatusForDisplay(status, user?.id, ownershipBlocked)
+    : null;
   const checkFeature = useCallback(
     (feature: SubscriptionFeature): FeatureGateResult =>
       canUseFeature(
-        (matchesUser ? status : null) ?? UNKNOWN_SUBSCRIPTION_STATUS,
+        visibleStatus ?? UNKNOWN_SUBSCRIPTION_STATUS,
         matchesUser ? usage : readLocalUsage(),
         feature,
       ),
-    [matchesUser, status, usage],
+    [matchesUser, usage, visibleStatus],
   );
   const recordUsage = useCallback(
     (feature: SubscriptionFeature) => setUsage((prev) => incrementUsage(feature, prev)),
@@ -496,7 +526,7 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
   );
   const value = useMemo(
     () => ({
-      status: matchesUser ? status : null,
+      status: visibleStatus,
       packages: matchesUser ? packages : [],
       usage: matchesUser ? usage : readLocalUsage(),
       loading: matchesUser ? loading : true,
@@ -509,6 +539,7 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
       restoreError: matchesUser ? restoreError : null,
       canonicalSyncError: matchesUser ? canonicalSyncError : null,
       canonicalSyncLoading: matchesUser && canonicalSyncLoading,
+      ownershipBlocked: matchesUser && ownershipBlocked,
       checkFeature,
       recordUsage,
       refresh,
@@ -519,7 +550,6 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
     }),
     [
       matchesUser,
-      status,
       packages,
       usage,
       loading,
@@ -532,6 +562,8 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
       restoreError,
       canonicalSyncError,
       canonicalSyncLoading,
+      ownershipBlocked,
+      visibleStatus,
       checkFeature,
       recordUsage,
       refresh,

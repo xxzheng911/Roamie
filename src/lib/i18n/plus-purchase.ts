@@ -29,6 +29,9 @@ const zhTW = {
   restored: "已恢復 Roamie Plus",
   nothingToRestore: "找不到可恢復的 Plus 訂閱",
   restoreFailed: "恢復購買失敗，請稍後再試",
+  ownershipMismatch: "這筆訂閱已綁定其他 Roamie 帳號。請登入原本購買此訂閱的帳號後再試一次。",
+  ownershipUnconfirmed:
+    "無法確認這筆訂閱屬於目前的 Roamie 帳號。請登入原本購買此訂閱的帳號後再試一次。",
   syncPending: "訂閱同步尚未完成，請稍後重新同步。",
   syncing: "正在同步訂閱…",
   syncRetry: "重新同步",
@@ -117,6 +120,10 @@ const en: Messages = {
   restored: "Roamie Plus restored",
   nothingToRestore: "No active Plus subscription was found.",
   restoreFailed: "We couldn't restore your purchases. Please try again later.",
+  ownershipMismatch:
+    "This subscription is linked to another Roamie account. Sign in with the account that originally purchased it, then try again.",
+  ownershipUnconfirmed:
+    "We couldn't confirm that this subscription belongs to the current Roamie account. Sign in with the account that originally purchased it, then try again.",
   syncPending: "Subscription sync isn't complete yet. Please sync again shortly.",
   syncing: "Syncing subscription…",
   syncRetry: "Sync Again",
@@ -213,6 +220,10 @@ const ja: Messages = {
   restored: "Roamie Plus を復元しました",
   nothingToRestore: "復元できる有効な Plus のサブスクリプションが見つかりませんでした。",
   restoreFailed: "購入を復元できませんでした。しばらくしてからお試しください。",
+  ownershipMismatch:
+    "このサブスクリプションは別の Roamie アカウントに紐づいています。購入したアカウントでログインしてから、もう一度お試しください。",
+  ownershipUnconfirmed:
+    "このサブスクリプションが現在の Roamie アカウントのものか確認できません。購入したアカウントでログインしてから、もう一度お試しください。",
   syncPending:
     "サブスクリプションの同期がまだ完了していません。しばらくしてから再同期してください。",
   syncing: "サブスクリプションを同期しています…",
@@ -310,6 +321,10 @@ const ko: Messages = {
   restored: "Roamie Plus가 복원되었습니다",
   nothingToRestore: "복원할 수 있는 활성 Plus 구독을 찾지 못했습니다.",
   restoreFailed: "구매를 복원할 수 없습니다. 잠시 후 다시 시도해 주세요.",
+  ownershipMismatch:
+    "이 구독은 다른 Roamie 계정에 연결되어 있습니다. 구독을 구매한 계정으로 로그인한 뒤 다시 시도해 주세요.",
+  ownershipUnconfirmed:
+    "이 구독이 현재 Roamie 계정의 것인지 확인할 수 없습니다. 구독을 구매한 계정으로 로그인한 뒤 다시 시도해 주세요.",
   syncPending: "구독 동기화가 아직 완료되지 않았습니다. 잠시 후 다시 동기화해 주세요.",
   syncing: "구독을 동기화하는 중…",
   syncRetry: "다시 동기화",

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { CloudflareRuntimeEnv } from "@/lib/server-request-context";
+import { resolveRevenueCatEventOwner } from "@/lib/subscription/revenuecat-identity";
 import {
-  isCanonicalSupabaseUserId,
   persistRevenueCatLifecycle,
   readSubscriptionServerEnv,
   type RevenueCatLifecycleInput,
@@ -65,25 +65,6 @@ export function revenueCatStatusFor(
   return "active";
 }
 
-function identityCandidates(event: z.infer<typeof Event>): string[] {
-  if (
-    event.type !== "TRANSFER" &&
-    event.app_user_id &&
-    isCanonicalSupabaseUserId(event.app_user_id)
-  ) {
-    return [event.app_user_id];
-  }
-  const source =
-    event.type === "TRANSFER"
-      ? (event.transferred_to ?? [])
-      : [event.original_app_user_id, ...(event.aliases ?? [])];
-  return [
-    ...new Set(
-      source.filter((value): value is string => Boolean(value && isCanonicalSupabaseUserId(value))),
-    ),
-  ];
-}
-
 type RevenueCatWebhookDependencies = {
   persist: typeof persistRevenueCatLifecycle;
   sync: typeof syncRevenueCatSubscription;
@@ -135,46 +116,38 @@ export async function handleRevenueCatWebhook(
   if (event.type !== "TRANSFER" && !entitlementIds.includes("premium")) {
     return Response.json({ received: true, ignored: "unrelated_entitlement" });
   }
-  const users = identityCandidates(event);
-  if (users.length !== 1) {
-    return Response.json(
-      { error: users.length ? "webhook_identity_ambiguous" : "webhook_identity_invalid" },
-      { status: 422 },
-    );
-  }
   if (event.type === "TRANSFER") {
-    const sourceUsers = [
-      ...new Set((event.transferred_from ?? []).filter(isCanonicalSupabaseUserId)),
-    ];
-    for (const sourceUserId of sourceUsers) {
-      await dependencies.persist(env, {
-        eventId: event.id,
-        userId: sourceUserId,
-        eventType: event.type,
-        eventAt: new Date(event.event_timestamp_ms),
-        customerId: sourceUserId,
-        entitlementId: "premium",
-        status: "revoked",
-        expirationAt: new Date(event.event_timestamp_ms),
-        store: event.store,
-        environment: event.environment,
-      });
-    }
-    await dependencies.sync(users[0]!, env);
+    // Keep with original App User ID. Never grant transferred_to, and never
+    // revoke transferred_from: a transfer is not allowed to move Plus between
+    // Roamie accounts or to take it from the original purchaser.
     return Response.json({
       received: true,
-      processed: true,
-      applied: true,
-      reason: "transfer_synced",
+      processed: false,
+      applied: false,
+      ignored: "transfer_ownership_rejected",
     });
+  }
+  const owner = resolveRevenueCatEventOwner({
+    appUserId: event.app_user_id,
+    originalAppUserId: event.original_app_user_id,
+    aliases: event.aliases,
+  });
+  if (owner.outcome !== "owned" || !owner.ownerId) {
+    return Response.json(
+      {
+        error:
+          owner.outcome === "anonymous" ? "webhook_identity_invalid" : "webhook_identity_ambiguous",
+      },
+      { status: 422 },
+    );
   }
   const expirationAt = ms(event.grace_period_expiration_at_ms ?? event.expiration_at_ms);
   const result = await dependencies.persist(env, {
     eventId: event.id,
-    userId: users[0]!,
+    userId: owner.ownerId,
     eventType: event.type,
     eventAt: new Date(event.event_timestamp_ms),
-    customerId: event.original_app_user_id ?? event.app_user_id ?? users[0]!,
+    customerId: event.original_app_user_id ?? event.app_user_id ?? owner.ownerId,
     entitlementId: "premium",
     productId: event.new_product_id ?? event.product_id,
     status: revenueCatStatusFor(

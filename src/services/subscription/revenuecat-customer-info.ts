@@ -30,6 +30,8 @@ const supportedProducts = new Set<string>(Object.values(SUBSCRIPTION_PRODUCT_IDS
  */
 export function statusFromRevenueCatCustomerInfo(info: unknown): SubscriptionStatus {
   const customer = record(info);
+  const originalAppUserId =
+    nonEmptyString(customer.originalAppUserId) ?? nonEmptyString(customer.original_app_user_id);
   const entitlements = record(customer.entitlements);
   const premium = record(record(entitlements.active).premium);
   if (!Object.keys(premium).length) {
@@ -40,6 +42,7 @@ export function statusFromRevenueCatCustomerInfo(info: unknown): SubscriptionSta
       productId: null,
       willRenew: false,
       source: "revenuecat",
+      originalAppUserId,
     };
   }
 
@@ -99,5 +102,6 @@ export function statusFromRevenueCatCustomerInfo(info: unknown): SubscriptionSta
           ? subscription.willRenew
           : false,
     source: "revenuecat",
+    originalAppUserId,
   };
 }

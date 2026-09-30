@@ -1,6 +1,7 @@
 import { withSubscriptionTimeout } from "./async-timeout";
 import { supabase } from "@/lib/supabase";
 import { isApiUrlError, resolveApiUrl } from "@/lib/api-url";
+import { isSubscriptionOwnershipErrorCode } from "@/lib/subscription/revenuecat-identity";
 
 type SubscriptionSyncFailureDiagnostic = {
   event: "server_sync_failed";
@@ -19,6 +20,7 @@ export function isCanonicalRestoreConfirmed(
   customerInfoActive: boolean,
   syncResult: SubscriptionServerSyncResult,
 ): boolean {
+  if (isSubscriptionOwnershipErrorCode(syncResult.errorCode)) return false;
   return customerInfoActive && syncResult.ok && syncResult.active === true;
 }
 
@@ -151,9 +153,10 @@ export async function syncRevenueCatEntitlementAfterRestore(options?: {
       if (result.ok && result.active === true) return result;
       if (
         !result.ok &&
-        /configuration_missing|session_missing|unauthorized|timeout|network_failed/i.test(
-          result.errorCode ?? "",
-        )
+        (isSubscriptionOwnershipErrorCode(result.errorCode) ||
+          /configuration_missing|session_missing|unauthorized|timeout|network_failed/i.test(
+            result.errorCode ?? "",
+          ))
       )
         return result;
     }

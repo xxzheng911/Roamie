@@ -19,6 +19,8 @@ export type SubscriptionStatus = {
   productId: string | null;
   willRenew: boolean;
   source: "local" | "revenuecat" | "stripe";
+  /** RevenueCat original app user id, when CustomerInfo provided one. */
+  originalAppUserId?: string | null;
 };
 
 export type SubscriptionPackage = {
@@ -31,7 +33,12 @@ export type SubscriptionPackage = {
 };
 
 export type SubscriptionActionResult =
-  | { outcome: "success"; status: SubscriptionStatus; canonicalSynced?: boolean }
+  | {
+      outcome: "success";
+      status: SubscriptionStatus;
+      canonicalSynced?: boolean;
+      canonicalErrorCode?: string;
+    }
   | { outcome: "cancelled"; status: null }
   | { outcome: "pending"; status: null };
 

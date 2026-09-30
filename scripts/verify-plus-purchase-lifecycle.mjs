@@ -4,6 +4,8 @@ import ts from "typescript";
 import { createSubscriptionConfigurationAuthority } from "../src/services/subscription/configuration-authority.ts";
 import { classifyPurchaseError } from "../src/services/subscription/purchase-outcome.ts";
 import { withSubscriptionTimeout } from "../src/lib/subscription/async-timeout.ts";
+import { subscriptionStatusForDisplay } from "../src/lib/subscription/canonical-plus.ts";
+import { isSubscriptionOwnershipErrorCode } from "../src/lib/subscription/revenuecat-identity.ts";
 import { statusFromRevenueCatCustomerInfo } from "../src/services/subscription/revenuecat-customer-info.ts";
 
 // Load the real adapter with only its native/network boundaries replaced. No StoreKit call or network.
@@ -323,6 +325,8 @@ const { SubscriptionProvider } = isolatedModule("src/providers/SubscriptionProvi
     withSubscriptionTimeout,
     SUBSCRIPTION_HYDRATION_TIMEOUT_MS: 25,
   },
+  "@/lib/subscription/canonical-plus": { subscriptionStatusForDisplay },
+  "@/lib/subscription/revenuecat-identity": { isSubscriptionOwnershipErrorCode },
 });
 // JSX classic transform uses React, while source imports named hooks only.
 globalThis.React = React;
@@ -511,6 +515,7 @@ globalThis.fetch = (...args) => {
 const syncModule = isolatedModule("src/lib/subscription/revenuecat-sync.ts", {
   "@/lib/supabase": { supabase: { auth: { getSession: () => session } } },
   "@/lib/api-url": { resolveApiUrl: () => "https://test.invalid/sync", isApiUrlError: () => false },
+  "@/lib/subscription/revenuecat-identity": { isSubscriptionOwnershipErrorCode },
   "./async-timeout": {
     withSubscriptionTimeout: (operation, _timeout, code) =>
       withSubscriptionTimeout(operation, 15, code),

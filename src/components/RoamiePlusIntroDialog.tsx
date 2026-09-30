@@ -1,5 +1,8 @@
 import { useSubscriptionOperation } from "@/hooks/use-subscription-operation";
-import { resolveRestoreOutcome } from "@/services/subscription/purchase-outcome";
+import {
+  resolveRestoreOutcome,
+  subscriptionOwnershipMessageKey,
+} from "@/services/subscription/purchase-outcome";
 import { Link } from "@tanstack/react-router";
 import { Sparkles, X } from "lucide-react";
 import { toast } from "sonner";
@@ -86,6 +89,11 @@ export function RoamiePlusIntroDialog({ open, onOpenChange, onUpgraded }: Props)
         toast.message(t("plusPurchase.pending"));
         return;
       }
+      const ownershipMessage = subscriptionOwnershipMessageKey(result.canonicalErrorCode);
+      if (ownershipMessage) {
+        toast.error(t(`plusPurchase.${ownershipMessage}`));
+        return;
+      }
       if (!result.status.isActive || !result.canonicalSynced) {
         const message = result.status.isActive ? "purchaseSyncPending" : "entitlementPending";
         setRecovery(message);
@@ -115,6 +123,10 @@ export function RoamiePlusIntroDialog({ open, onOpenChange, onUpgraded }: Props)
       if (!isCurrent()) return;
       const outcome = resolveRestoreOutcome(result);
       if (outcome === "ignored") return;
+      if (outcome === "ownershipMismatch" || outcome === "ownershipUnconfirmed") {
+        toast.error(t(`plusPurchase.${outcome}`));
+        return;
+      }
       if (outcome === "restoreSyncPending") {
         setRecovery("restoreSyncPending");
         toast.message(t("plusPurchase.restoreSyncPending"));

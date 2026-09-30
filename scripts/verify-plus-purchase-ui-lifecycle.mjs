@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import ts from "typescript";
-import { resolveRestoreOutcome } from "../src/services/subscription/purchase-outcome.ts";
+import {
+  resolveRestoreOutcome,
+  subscriptionOwnershipMessageKey,
+} from "../src/services/subscription/purchase-outcome.ts";
 const deferred = () => {
   let resolve, reject;
   const promise = new Promise((a, b) => {
@@ -10,10 +13,11 @@ const deferred = () => {
   });
   return { promise, resolve, reject };
 };
-const result = (active, synced) => ({
+const result = (active, synced, canonicalErrorCode) => ({
   outcome: "success",
   status: { isActive: active },
   canonicalSynced: synced,
+  canonicalErrorCode,
 });
 function harness(continuation = false) {
   let userId = "A",
@@ -108,7 +112,10 @@ function harness(continuation = false) {
     "@/lib/access/subscription-dev-mode": { canBypassSubscriptionBilling: () => false },
     "@/providers/SubscriptionProvider": { useSubscription: () => subscription },
     "@/lib/open-subscription-settings": { openSubscriptionManagement: () => {} },
-    "@/services/subscription/purchase-outcome": { resolveRestoreOutcome },
+    "@/services/subscription/purchase-outcome": {
+      resolveRestoreOutcome,
+      subscriptionOwnershipMessageKey,
+    },
     "@/lib/subscription/purchase-continuation": {
       consumePlusPurchaseContinuation: () => {
         const value = intent;
@@ -210,6 +217,15 @@ for (const [active, synced, expected] of [
     assert.equal(h.toasts.at(-1)[1], `plusPurchase.${expected}`);
     h.unmount();
   }
+}
+for (const continuation of [false, true]) {
+  const h = harness(continuation);
+  if (!continuation) h.start("restore");
+  h.work.resolve(result(true, false, "subscription_ownership_mismatch"));
+  await settle();
+  assert.equal(h.toasts.at(-1)[0], "error");
+  assert.equal(h.toasts.at(-1)[1], "plusPurchase.ownershipMismatch");
+  h.unmount();
 }
 for (const continuation of [false, true]) {
   const h = harness(continuation);

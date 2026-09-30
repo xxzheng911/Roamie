@@ -45,6 +45,8 @@ const validEvent = (overrides = {}) => ({
     event_timestamp_ms: 2_000,
     app_id: "app-test",
     app_user_id: userId,
+    original_app_user_id: userId,
+    aliases: [userId],
     entitlement_ids: ["premium"],
     product_id: "roamie_premium_monthly",
     purchased_at_ms: 1_000,
@@ -132,7 +134,11 @@ await invoke({
 assert.equal(persisted.at(-1).status, "revoked");
 await invoke({ id: "event-billing", type: "BILLING_ISSUE" });
 assert.equal(persisted.at(-1).status, "billing_issue");
-const invalidIdentity = await invoke({ app_user_id: "not-a-supabase-user" });
+const invalidIdentity = await invoke({
+  app_user_id: "not-a-supabase-user",
+  original_app_user_id: "not-a-supabase-user",
+  aliases: [],
+});
 assert.equal(invalidIdentity.status, 422);
 
 const unknownUser = await handleRevenueCatWebhook(

@@ -109,6 +109,10 @@ export function PlusPurchaseProvider({ children }: { children: ReactNode }) {
           if (!isCurrent()) return;
           const outcome = resolveRestoreOutcome(result);
           if (outcome === "ignored") return;
+          if (outcome === "ownershipMismatch" || outcome === "ownershipUnconfirmed") {
+            toast.error(t(`plusPurchase.${outcome}`));
+            return;
+          }
           if (outcome === "restoreSyncPending") toast.message(t("plusPurchase.restoreSyncPending"));
           else if (outcome === "restored") toast.success(t("plusPurchase.restored"));
           else toast.message(t("plusPurchase.nothingToRestore"));
