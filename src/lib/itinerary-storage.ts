@@ -1,3 +1,4 @@
+import { emitSavedTripPersistenceEvent } from "@/lib/analytics/saved-trip-persistence-telemetry";
 import { publishTripCover, SAVED_TRIPS_CHANGED_EVENT } from "@/lib/saved-trip/cover-live-state";
 import { supabase } from "@/integrations/supabase/client";
 import { getAuthenticatedUserId } from "@/lib/auth-session";
@@ -224,17 +225,37 @@ function payloadTitleForSave(
   return { ...payload, title: autoTitle };
 }
 
+type PersistItineraryOptions = {
+  coverMeta?: TripCoverMeta;
+  /** Observation only. Never written to saved_trips. */
+  generationId?: string;
+  source?: "chat" | "plan";
+};
+
 async function persistItinerary(
   itinerary: Itinerary | RoamiePayloadV2,
-  options?: { coverMeta?: TripCoverMeta },
+  options?: PersistItineraryOptions,
 ): Promise<StoredItinerary> {
-  const withTitle = withAutoTitle(itinerary);
-  const userId = await getAuthenticatedUserId();
-  const mood = isRoamiePayloadV2(withTitle) ? withTitle.moodTag : (withTitle as Itinerary).mood;
-  const coverMeta = options?.coverMeta ?? (await resolveCoverForSave(withTitle));
-  const autoTitle = isRoamiePayloadV2(withTitle) ? withTitle.title : (withTitle as Itinerary).title;
+  let insertAttempted = false;
+  let failureStage: "before_insert" | "insert" | "insert_result" = "before_insert";
+  let observedError: unknown;
+  let stored: StoredItinerary;
+  try {
+    const withTitle = withAutoTitle(itinerary);
+    const userId = await getAuthenticatedUserId();
+    const mood = isRoamiePayloadV2(withTitle) ? withTitle.moodTag : (withTitle as Itinerary).mood;
+    const coverMeta = options?.coverMeta ?? (await resolveCoverForSave(withTitle));
+    const autoTitle = isRoamiePayloadV2(withTitle) ? withTitle.title : (withTitle as Itinerary).title;
 
-  if (userId) {
+    if (!userId) throw new Error("請先登入");
+
+    insertAttempted = true;
+    failureStage = "insert";
+    emitSavedTripPersistenceEvent({
+      event: "saved_trip_insert_attempted",
+      generationId: options?.generationId,
+      source: options?.source,
+    });
     const { data, error } = await supabase
       .from("saved_trips")
       .insert({
@@ -254,17 +275,34 @@ async function persistItinerary(
       .select(TRIP_SELECT)
       .single();
     if (error) {
+      observedError = error;
       if (isMissingTableError(error)) {
         throw new Error("行程收藏尚未就緒，請稍後再試或聯絡管理員套用資料庫 migration。");
       }
       throw new Error(error.message);
     }
-    const stored = requireStoredItinerary(data, withTitle);
-    console.info("[CORE_TRIP] created", stored.id);
-    return stored;
+    failureStage = "insert_result";
+    stored = requireStoredItinerary(data, withTitle);
+  } catch (error) {
+    emitSavedTripPersistenceEvent({
+      event: "saved_trip_insert_failed",
+      generationId: options?.generationId,
+      source: options?.source,
+      error: observedError ?? error,
+      stage: failureStage,
+      insertAttempted,
+    });
+    throw error;
   }
 
-  throw new Error("請先登入");
+  console.info("[CORE_TRIP] created", stored.id);
+  emitSavedTripPersistenceEvent({
+    event: "saved_trip_insert_succeeded",
+    generationId: options?.generationId,
+    source: options?.source,
+    savedTripId: stored.id,
+  });
+  return stored;
 }
 
 function afterTripMutation(result: StoredItinerary | null): StoredItinerary | null {
@@ -276,9 +314,18 @@ function afterTripMutation(result: StoredItinerary | null): StoredItinerary | nu
 export async function confirmSaveTrip(
   itinerary: Itinerary | RoamiePayloadV2,
   source: "chat" | "plan" = "chat",
-  options?: { coverMeta?: TripCoverMeta },
+  options?: { coverMeta?: TripCoverMeta; generationId?: string },
 ): Promise<StoredItinerary> {
-  const saved = await persistItinerary(tagUserSavedTrip(itinerary, source), options);
+  emitSavedTripPersistenceEvent({
+    event: "saved_trip_insert_started",
+    generationId: options?.generationId,
+    source,
+  });
+  const saved = await persistItinerary(tagUserSavedTrip(itinerary, source), {
+    coverMeta: options?.coverMeta,
+    generationId: options?.generationId,
+    source,
+  });
   broadcastTripsChanged();
   return saved;
 }

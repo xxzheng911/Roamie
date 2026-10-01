@@ -108,6 +108,7 @@ import { getPreferences } from "@/lib/preferences-storage";
 import { getUserProfile } from "@/lib/profile-storage";
 import { resolveFashionStyle } from "@/lib/outfit/resolve-style";
 import { generateItinerary, type ItineraryInput } from "@/lib/itinerary.functions";
+import { emitSavedTripPersistenceEvent } from "@/lib/analytics/saved-trip-persistence-telemetry";
 import { confirmSaveTrip, updateTripMeta } from "@/lib/itinerary-storage";
 import { clearDraftTrip, loadDraftTrip, saveDraftTrip } from "@/lib/trip-draft-storage";
 import type { RoamiePayloadV2 } from "@/lib/ai/types";
@@ -11099,10 +11100,33 @@ function Chat() {
         itineraryStopCount: coalesceItineraryItems(draftPayload.itinerary).length,
         success: true,
       });
+      if (!dayPlan?.items.length) {
+        emitSavedTripPersistenceEvent({
+          event: "itinerary_client_received",
+          generationId,
+          source: "chat",
+        });
+      }
+      emitSavedTripPersistenceEvent({
+        event: "draft_trip_save_started",
+        generationId,
+        source: "chat",
+      });
       try {
         saveDraftTrip(draftPayload);
+        emitSavedTripPersistenceEvent({
+          event: "draft_trip_save_succeeded",
+          generationId,
+          source: "chat",
+        });
         logItinerarySaveSuccess("draft");
       } catch (saveError) {
+        emitSavedTripPersistenceEvent({
+          event: "draft_trip_save_failed",
+          generationId,
+          source: "chat",
+          error: saveError,
+        });
         const reason = saveError instanceof Error ? saveError.message : String(saveError);
         logItinerarySaveFailed(reason);
         devVerboseInfo("[ITINERARY_SAVE_FAILED_REASON]", reason);
@@ -11126,6 +11150,7 @@ function Chat() {
           cover_source: cover.source,
           cover_query: cover.query,
         },
+        generationId,
       });
       publishTripCover(saved, "pending");
       abandonPendingCover = () => publishTripCover(saved, "fallback");
@@ -11181,6 +11206,12 @@ function Chat() {
       itinCreditsHandle = null;
       logSelectionTiming("credits_committed");
       logSelectionTiming("navigation_start");
+      emitSavedTripPersistenceEvent({
+        event: "saved_trip_navigation_started",
+        generationId,
+        source: "chat",
+        savedTripId: saved.id,
+      });
       const navigation = navigate(tripDetailNavigateOptions(saved.id));
       await Promise.resolve(navigation);
       logSelectionTiming("navigation_done");
@@ -11202,18 +11233,42 @@ function Chat() {
       }, 0);
 
       // Enrich the already-authoritatively-saved row without holding navigation.
-      void Promise.allSettled([
-        getTripLegsWithDurations(
-          legPlaces,
-          travelLabelToRoutesMode(workingSession.transportation ?? "步行"),
-        ),
-        getTripCoverImage({
-          destination,
-          mood: workingSession.mood ?? "",
-          moodTag: workingSession.mood ?? "",
-          title: itinerary.title,
-        }),
-      ])
+      const legEnrichment = getTripLegsWithDurations(
+        legPlaces,
+        travelLabelToRoutesMode(workingSession.transportation ?? "步行"),
+      );
+      emitSavedTripPersistenceEvent({
+        event: "cover_enrichment_started",
+        generationId,
+        source: "chat",
+        savedTripId: saved.id,
+      });
+      const coverEnrichment = getTripCoverImage({
+        destination,
+        mood: workingSession.mood ?? "",
+        moodTag: workingSession.mood ?? "",
+        title: itinerary.title,
+      });
+      void coverEnrichment.then(
+        () => {
+          emitSavedTripPersistenceEvent({
+            event: "cover_enrichment_succeeded",
+            generationId,
+            source: "chat",
+            savedTripId: saved.id,
+          });
+        },
+        (coverError: unknown) => {
+          emitSavedTripPersistenceEvent({
+            event: "cover_enrichment_failed",
+            generationId,
+            source: "chat",
+            savedTripId: saved.id,
+            error: coverError,
+          });
+        },
+      );
+      void Promise.allSettled([legEnrichment, coverEnrichment])
         .then(async ([legsResult, coverResult]) => {
           const enrichedLegs = legsResult.status === "fulfilled" ? legsResult.value : [];
           const enrichedCover = coverResult.status === "fulfilled" ? coverResult.value : cover;

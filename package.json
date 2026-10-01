@@ -106,6 +106,7 @@
     "verify:home-trip-offline-fallback": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-home-trip-offline-fallback.mjs",
     "verify:offline-cold-start-requests": "node scripts/verify-offline-cold-start-requests.mjs",
     "verify:saved-offline-snapshot": "node scripts/verify-saved-offline-snapshot.mjs",
+    "verify:saved-trip-persistence-telemetry": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-saved-trip-persistence-telemetry.mjs",
     "verify:explore-offline-recovery": "node scripts/verify-explore-offline-recovery.mjs",
     "verify:home-personalization-entitlement-ui": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-home-personalization-entitlement-ui.mjs",
     "verify:production-lifecycle-logging": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-production-lifecycle-logging.mjs",
