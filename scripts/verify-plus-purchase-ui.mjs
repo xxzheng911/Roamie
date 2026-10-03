@@ -100,7 +100,8 @@ const resume = read("src/hooks/use-pending-auth-action.ts");
 assert.match(providers, /<AuthActionRuntime/);
 assert.match(runtime, /registerAuthRequirementPrompt\(\(request\) => \{\s*setPrompt\(request\);/);
 assert.match(runtime, /if \(loading \|\| !user\) return/);
-assert.match(runtime, /returnPathsMatch\(href, pending.sourcePath\)/);
+assert.match(runtime, /resolvePendingAuthReturnPath\(\s*pending.sourcePath, isOnboardingCompletedSync\(\), true/);
+assert.match(runtime, /returnPathsMatch\(href, destination\)/);
 assert.match(runtime, /claimPendingAuthAction\(pending.id\)/);
 assert.match(runtime, /dispatchEvent\(new CustomEvent<PendingAuthAction>\(AUTH_ACTION_RESUME_EVENT/);
 assert.match(runtime, /onOpenChange=\{\(open\) => \{[\s\S]*?setPrompt\(null\);\s*\}\}/);
@@ -260,6 +261,7 @@ try {
     "@/hooks/use-add-to-trip": `export const useAddToTrip=()=>({openAddToTrip:()=>{throw Error("unexpected trip write")}});`,
     "@/lib/places-storage": `export const toggleSavePlace=()=>{throw Error("unexpected saved place write")};`,
     "@/components/auth/AuthRequirementDialog": `export const AuthRequirementDialog="auth-dialog";`,
+    "@/lib/onboarding-storage": `export const isOnboardingCompletedSync=()=>true;`,
     "@/hooks/use-auth": `export const useAuth=()=>({user:globalThis.plusGateFixture.user,loading:false});`,
     "@/lib/auth-session": `export const readCachedAuthenticatedUserIdSync=()=>globalThis.plusGateFixture.user?.id??null;`,
     "@/hooks/use-i18n": `export const useI18n=()=>({t:x=>x});`,

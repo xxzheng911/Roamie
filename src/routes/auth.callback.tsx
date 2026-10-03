@@ -4,17 +4,14 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Loader2 } from "lucide-react";
 import { MobileFrame } from "@/components/MobileFrame";
 import { AuthSignInError } from "@/components/auth/AuthSignInError";
-import { finishPostAuthRedirect } from "@/lib/auth-post-redirect";
+import { navigateOnceAfterLogin } from "@/lib/login-navigation";
 import { completeSignInAfterAuth } from "@/lib/complete-sign-in";
-import { resolveAuthenticatedHomePath } from "@/lib/post-auth-navigation";
-import { guardStartupTarget, logStartupNavigationContext } from "@/lib/startup-navigation";
 import { getClientAuthSession } from "@/lib/auth-session";
 import { readStashedOAuthRedirectTarget, stripOAuthParamsFromUrl } from "@/lib/auth-oauth";
 import { logAuthCallbackOpened, logAuthError, logAuthSessionResult } from "@/lib/auth-debug";
 import { resolveSessionFromCallbackUrl } from "@/lib/auth-session-from-url";
 import { clearPendingCallbackPath } from "@/lib/auth-oauth-deep-link";
 import { clearAuthState, resetToLoginScreen } from "@/lib/clear-auth-state";
-import { consumeAdminReturn } from "@/lib/admin/admin-route-boundary";
 import {
   extractOAuthCodeFromPath,
   isOAuthCodeAlreadyConsumed,
@@ -47,16 +44,9 @@ function AuthCallback() {
   const handledRef = useRef(false);
 
   const finishAuthRedirect = async (step: string) => {
-    const next =
-      consumeAdminReturn() ??
-      guardStartupTarget(
-        await resolveAuthenticatedHomePath({ source: "auth-callback" }),
-        "auth-callback",
-      );
-    await logStartupNavigationContext("auth-callback", next, { step });
-    finishPostAuthRedirect(
-      next,
-      (opts) => navigate({ to: opts.to, replace: opts.replace }),
+    logAuthSessionResult(true, { step: `callback.redirect.${step}` });
+    await navigateOnceAfterLogin(
+      (opts) => navigate({ to: opts.to, search: opts.search, replace: opts.replace }),
       "auth-callback",
     );
   };

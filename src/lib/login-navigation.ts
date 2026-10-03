@@ -8,7 +8,7 @@ import {
 import { readBrowserPathname } from "@/lib/startup-path";
 import { guardStartupTarget } from "@/lib/startup-navigation";
 import { consumeAdminReturn } from "@/lib/admin/admin-route-boundary";
-import { isSafeAppReturnPath, peekPendingAuthAction, splitAppReturnPath } from "@/lib/auth-pending-action";
+import { isSafeAppReturnPath, peekPendingAuthAction, resolvePendingAuthReturnPath, splitAppReturnPath } from "@/lib/auth-pending-action";
 
 type RouterNavigate = (opts: {
   to: string;
@@ -36,11 +36,13 @@ export async function navigateOnceAfterLogin(
   if (postLoginNavigationCommitted) return;
   postLoginNavigationCommitted = true;
 
-  await loadOnboardingState();
+  const onboardingCompleted = await loadOnboardingState();
 
   const adminReturn = consumeAdminReturn();
   const pendingReturn = peekPendingAuthAction()?.sourcePath;
-  const safePending = pendingReturn && isSafeAppReturnPath(pendingReturn) ? pendingReturn : null;
+  const safePending = onboardingCompleted && pendingReturn && isSafeAppReturnPath(pendingReturn)
+    ? resolvePendingAuthReturnPath(pendingReturn, onboardingCompleted, true)
+    : null;
   const target =
     adminReturn ??
     safePending ??

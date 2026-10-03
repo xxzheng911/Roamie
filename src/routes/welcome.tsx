@@ -50,7 +50,11 @@ function Welcome() {
   useIosInteractiveRoute("welcome");
   const access = useAccessOptional();
   const { openRevenueCatPaywall } = usePlusUpgrade();
-  const [step, setStep] = useState(0);
+  // Login can return to the companion selection context after onboarding is done.
+  // Remounting that context must not replay the first-launch introduction.
+  const [step, setStep] = useState(() =>
+    isOnboardingCompletedSync() ? INTRO_STEPS.length : 0,
+  );
   const [finishing, setFinishing] = useState(false);
   const isTierStep = step >= INTRO_STEPS.length;
 

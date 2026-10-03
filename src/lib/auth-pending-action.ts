@@ -71,6 +71,21 @@ export function splitAppReturnPath(path: string): {
   return Object.keys(search).length > 0 ? { pathname, search } : { pathname };
 }
 
+/** Welcome is no longer an app destination after onboarding and login are complete.
+ * Keep the stored source context intact; navigation and resume share this mapping.
+ */
+export function resolvePendingAuthReturnPath(
+  sourcePath: string,
+  onboardingCompleted: boolean,
+  authenticated: boolean,
+): string {
+  if (
+    onboardingCompleted && authenticated && isSafeAppReturnPath(sourcePath) &&
+    splitAppReturnPath(sourcePath).pathname.replace(/\/+$/, "") === "/welcome"
+  ) return "/";
+  return sourcePath;
+}
+
 export function returnPathsMatch(currentPath: string, sourcePath: string): boolean {
   if (!isSafeAppReturnPath(currentPath) || !isSafeAppReturnPath(sourcePath)) return false;
   const current = splitAppReturnPath(currentPath);

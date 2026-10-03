@@ -13,11 +13,13 @@ import {
   AUTH_ACTION_RESUME_EVENT,
   claimPendingAuthAction,
   peekPendingAuthAction,
+  resolvePendingAuthReturnPath,
   returnPathsMatch,
   type PendingAuthAction,
 } from "@/lib/auth-pending-action";
 import { toggleSavePlace, type NewPlace } from "@/lib/places-storage";
 import type { TripPlaceInput } from "@/lib/trip/trip-place-input";
+import { isOnboardingCompletedSync } from "@/lib/onboarding-storage";
 
 function currentHref(pathname: string, searchStr: string): string {
   const path = pathname.replace(/\/+$/, "") || "/";
@@ -54,7 +56,11 @@ export function AuthActionRuntime() {
   useEffect(() => {
     if (loading || !user) return;
     const pending = peekPendingAuthAction();
-    if (!pending || !returnPathsMatch(href, pending.sourcePath)) return;
+    if (!pending) return;
+    const destination = resolvePendingAuthReturnPath(
+      pending.sourcePath, isOnboardingCompletedSync(), true,
+    );
+    if (!returnPathsMatch(href, destination)) return;
     const timer = window.setTimeout(() => {
       const claimed = claimPendingAuthAction(pending.id);
       if (!claimed) return;
