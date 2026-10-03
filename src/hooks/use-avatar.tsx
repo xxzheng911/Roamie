@@ -351,13 +351,16 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
     !(mediaOwnerMatches && media.avatarLocalUri) &&
     !(mediaOwnerMatches && media.avatarUrl);
 
-  // Only confirmed absence may show the bundled default.
+  // No account after auth settles, or a confirmed account with no custom avatar.
+  // Both use the bundled default. Unknown logged-in state stays pending.
+  const settledWithoutAccount = !authLoading && !userId && !bootUserId;
   const showAvatarDefault =
-    mediaOwnerMatches &&
-    media.avatarStatus === "none" &&
-    !preview &&
-    !media.avatarUrl &&
-    !media.avatarLocalUri;
+    settledWithoutAccount ||
+    (mediaOwnerMatches &&
+      media.avatarStatus === "none" &&
+      !preview &&
+      !media.avatarUrl &&
+      !media.avatarLocalUri);
 
   const ctx = useMemo(
     () => ({
@@ -374,10 +377,11 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
         (mediaOwnerMatches && media.avatarUrl) ||
         (mediaOwnerMatches && media.hasCustomAvatar),
       ),
-      avatarPending:
-        avatarPending ||
-        (effectiveAvatarStatus === "custom" && !avatarDisplaySrc) ||
-        (effectiveAvatarStatus === "unknown" && !avatarDisplaySrc),
+      avatarPending: showAvatarDefault
+        ? false
+        : avatarPending ||
+          (effectiveAvatarStatus === "custom" && !avatarDisplaySrc) ||
+          (effectiveAvatarStatus === "unknown" && !avatarDisplaySrc),
       showAvatarDefault,
       // Never expose default as a silent fallback while status is unknown/custom.
       avatarSrc: showAvatarDefault ? DEFAULT_USER_AVATAR : avatarDisplaySrc,

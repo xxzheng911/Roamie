@@ -1,4 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { requireAuthenticatedRoute } from "@/lib/require-auth";
 import { ChevronLeft } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -32,7 +33,8 @@ import {
 } from "@/lib/credits";
 
 export const Route = createFileRoute("/_app/developer")({
-  beforeLoad: () => {
+  beforeLoad: async () => {
+    await requireAuthenticatedRoute();
     if (!import.meta.env.DEV) {
       // Never expose developer tools in production/TestFlight builds.
       throw new Error("Developer tools are disabled");

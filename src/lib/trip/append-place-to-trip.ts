@@ -1,5 +1,7 @@
 import { isRoamiePayloadV2, type RoamieItineraryItem, type RoamiePayloadV2 } from "@/lib/ai/types";
 import { confirmSaveTrip, getItinerary, updateItinerary } from "@/lib/itinerary-storage";
+import { requireAuthForAction } from "@/lib/auth-action";
+import { readCachedAuthenticatedUserIdSync } from "@/lib/auth-session";
 import { isValidUuid } from "@/lib/uuid";
 import { loadDraftTrip, saveDraftTrip } from "@/lib/trip-draft-storage";
 import { insertStopOnDate } from "@/lib/trip/trip-stop-mutations";
@@ -26,6 +28,14 @@ export async function appendPlaceToTrip(
   place: TripPlaceInput,
   options: AppendPlaceOptions,
 ): Promise<{ tripId: string; isDraft: boolean; selectedDate: string; selectedDay: number }> {
+  if (!readCachedAuthenticatedUserIdSync()) {
+    requireAuthForAction("trip_add_place", {
+      payload: JSON.stringify(place),
+      targetKind: target.kind,
+      tripId: target.kind === "trip" ? target.tripId : "",
+    });
+    throw new Error("AUTH_REQUIRED");
+  }
   const stop = tripPlaceToItineraryItem(place, {
     date: options.date,
     time: options.time,

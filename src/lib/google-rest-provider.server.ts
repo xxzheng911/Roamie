@@ -1,12 +1,13 @@
 import { googleObservation, observeProviderAttempt, type GuardObservation } from "@/lib/abuse-guard-telemetry.server";
 import { billingFamilyFromUrl } from "@/lib/abuse-guard-policy";
 import { isAbuseGuardEnforcementOn } from "@/lib/abuse-guard-enforcement.server";
-import { authorizeGoogleSpec, runtimeGuardEnv } from "@/lib/abuse-guard.server";
+import { authorizeGoogleSpec, authorizeGuestGoogleSpec, runtimeGuardEnv } from "@/lib/abuse-guard.server";
 import { googleRestRequest } from "@/lib/google-rest-contract";
-import { consumeGoogleBurst } from "@/lib/google-burst.server";
+import { consumeGoogleBurst, consumeGuestGoogleBurst } from "@/lib/google-burst.server";
+import { fixedStatusResponse } from "@/lib/kill-switch.server";
 import { requireGoogleServerKey } from "@/lib/google-maps-key-resolve.server";
 import type { CloudflareRuntimeEnv } from "@/lib/server-request-context";
-import { resolveTrustedUserId } from "@/lib/worker-request-scope";
+import { isPublicReadAuthorized, resolveTrustedUserId } from "@/lib/worker-request-scope";
 
 /** All upstream failures are opaque; no Google error body/URL/credential reaches logs or clients. */
 export async function fetchGoogleRestProvider(
@@ -24,9 +25,21 @@ export async function fetchGoogleRestProvider(
   const observation = logicalObservation ?? googleObservation(billingFamilyFromUrl(spec.url));
   const envForGuard = runtimeGuardEnv(env);
   if (isAbuseGuardEnforcementOn(envForGuard)) {
-    const burst = await consumeGoogleBurst(envForGuard, resolveTrustedUserId() ?? "");
-    if (burst) return burst;
-    const denied = await authorizeGoogleSpec(spec, envForGuard, undefined, observation);
+    const userId = resolveTrustedUserId();
+    if (userId) {
+      const burst = await consumeGoogleBurst(envForGuard, userId);
+      if (burst) return burst;
+      const denied = await authorizeGoogleSpec(spec, envForGuard, undefined, observation);
+      if (denied) return denied;
+    } else if (isPublicReadAuthorized()) {
+      const burst = await consumeGuestGoogleBurst(envForGuard);
+      if (burst) return burst;
+    } else {
+      return fixedStatusResponse("google_unavailable");
+    }
+  }
+  if (!resolveTrustedUserId() && isPublicReadAuthorized()) {
+    const denied = await authorizeGuestGoogleSpec(spec, envForGuard, undefined, observation);
     if (denied) return denied;
   }
   let key;

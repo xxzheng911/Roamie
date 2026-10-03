@@ -1,7 +1,7 @@
 import { requireGoogleProviderRate } from "@/lib/google-rate-limit.server";
 import { googleRestFetch } from "@/lib/google-rest-transport";
 import { createServerFn } from "@tanstack/react-start";
-import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { allowGuestPublicRead } from "@/lib/public-read-auth";
 import { z } from "zod";
 import {
   placesAutocompleteUrl,
@@ -66,7 +66,7 @@ function parseGoogleError(text: string): string {
 }
 
 export const searchTripStops = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
+  .middleware([allowGuestPublicRead, requireGoogleProviderRate])
   .inputValidator((input) => StopSearchInput.parse(input))
   .handler(
     async ({ data }): Promise<{ suggestions: TripStopSuggestion[]; error: string | null }> => {
@@ -154,7 +154,7 @@ export const searchTripStops = createServerFn({ method: "POST" })
   );
 
 export const resolveTripStop = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
+  .middleware([allowGuestPublicRead, requireGoogleProviderRate])
   .inputValidator((input) => ResolveStopInput.parse(input))
   .handler(async ({ data }): Promise<{ stop: ResolvedTripStop | null; error: string | null }> => {
     const normalizedPlaceId = normalizeGooglePlaceId(data.placeId);

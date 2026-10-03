@@ -15,7 +15,11 @@ function toAbsoluteAppPath(path: string): string {
   return `${window.location.origin}${normalized}`;
 }
 
-type RouterNavigate = (opts: { to: string; replace?: boolean }) => void;
+type RouterNavigate = (opts: {
+  to: string;
+  search?: Record<string, string>;
+  replace?: boolean;
+}) => void;
 
 export type PostAuthRedirectSource =
   | "auth-post-redirect"
@@ -36,6 +40,7 @@ export function finishPostAuthRedirect(
   path: string,
   navigate?: RouterNavigate,
   source: PostAuthRedirectSource = "auth-post-redirect",
+  search?: Record<string, string>,
 ): void {
   markSessionBootstrapped();
 
@@ -90,14 +95,17 @@ export function finishPostAuthRedirect(
     if (platform.isIOS) {
       scheduleIosSnapshotRefreshBurst("post-auth");
     }
-    navigate({ to: target, replace: true });
+    navigate({ to: target, search, replace: true });
     if (target === "/") {
       markStartupResolved("/");
     }
     return;
   }
 
-  const url = toAbsoluteAppPath(target);
+  const searchText = search
+    ? `?${new URLSearchParams(search).toString()}`
+    : "";
+  const url = toAbsoluteAppPath(`${target}${searchText}`);
   if (platform.isCapacitor) {
     window.location.replace(url);
     return;

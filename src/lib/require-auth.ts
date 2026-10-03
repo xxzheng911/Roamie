@@ -69,8 +69,8 @@ function redirectToStartupTarget(next: StartupPath): never {
 }
 
 /**
- * 主 App 殼層：須有有效 Supabase session；未登入一律 /login。
- * 不以 localStorage 快取或 companion 本機旗標代替登入。
+ * 主 App 殼層：onboarding 完成後，Guest 可以瀏覽公開頁面。
+ * 帳號動作由 requireAuthForAction 擋下；私人 route 仍走 requireAuthenticatedRoute。
  */
 export async function requireAppShellAccess(): Promise<void> {
   if (typeof window === "undefined") return;
@@ -110,17 +110,14 @@ export async function requireAppShellAccess(): Promise<void> {
       hasSessionUser: Boolean(session?.user),
     });
 
-    if (decision.kind === "login") {
+    if (decision.kind === "allow-guest") {
       try {
-        markBootPhase("gate:requireAppShellAccess:redirect:/login");
+        markBootPhase("gate:requireAppShellAccess:guest-browse");
       } catch {
         // ignore
       }
-      blockGuestAccess(
-        isBootCompleted()
-          ? "requireAppShellAccess:boot-completed-signed-out"
-          : "requireAppShellAccess:no-session",
-      );
+      markStartupResolved("/");
+      return;
     }
 
     const bootCompleted = isBootCompleted();
@@ -165,10 +162,13 @@ export async function requireAppShellAccess(): Promise<void> {
     if (isRedirect(e)) throw e;
     logAppError("[requireAppShellAccess] gate failed", e);
     try {
-      markBootPhase("gate:requireAppShellAccess:error->/login");
+      markBootPhase("gate:requireAppShellAccess:error-allow-guest");
     } catch {
       // ignore
     }
-    blockGuestAccess("requireAppShellAccess:error");
+    if (!isOnboardingCompletedSync()) {
+      throw redirect({ to: "/welcome" });
+    }
+    markStartupResolved("/");
   }
 }

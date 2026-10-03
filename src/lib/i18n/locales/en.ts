@@ -91,4 +91,22 @@ export const en = {
   common: {
     dash: "—",
   },
+  authGate: {
+    aiTitle: "Sign in to use Roamie AI",
+    aiBody: "Sign in for personal place recommendations and trip planning.",
+    favoriteTitle: "Sign in to save places",
+    favoriteBody: "Sign in to keep the places you like.",
+    tripTitle: "Sign in to create a trip",
+    tripBody: "Sign in to create, save, and sync your trips.",
+    continueBrowsing: "Browse first",
+    loginCta: "Sign in",
+    savedTitle: "Sign in to see saved places and trips",
+    savedBody: "Sign in to save places and keep your trips in sync.",
+    profileTitle: "Sign in for personal features",
+    profileBody: "Browsing places does not require an account. Sign in to save, plan, and use Roamie AI.",
+    requiredTitle: "Sign in required",
+    requiredBody: "Sign in to continue.",
+    back: "Back",
+    login: "Sign in",
+  },
 } as const;

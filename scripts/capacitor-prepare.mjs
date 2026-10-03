@@ -580,8 +580,10 @@ function patchBundleBootTrace(entryRelPath) {
 function patchClientRouterSuspense(entryRelPath) {
   const entryPath = resolve(clientDir, entryRelPath);
   let code = readFileSync(entryPath, "utf8");
-  const re =
-    /\.render\((\w+)\.jsx\((\w+)\.StrictMode,\{children:\1\.jsx\((\w+),\{\}\)\}\)\)/;
+  const ident = String.raw`\$?\w*`;
+  const re = new RegExp(
+    String.raw`\.render\((${ident})\.jsx\((${ident})\.StrictMode,\{children:\1\.jsx\((\w+),\{\}\)\}\)\)`,
+  );
   if (!re.test(code)) {
     console.info("[capacitor-prepare] router Suspense patch skipped (pattern not found)");
     return;

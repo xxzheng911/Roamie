@@ -11,7 +11,8 @@ import { MobileFrame } from "@/components/MobileFrame";
 import { BackButton } from "@/components/BackButton";
 import { TripPlanEditor } from "@/components/TripPlanEditor";
 import { useIosInteractiveRoute } from "@/hooks/use-ios-interactive-route";
-import { requireAuthenticatedRoute } from "@/lib/require-auth";
+import { requireAuthForAction } from "@/lib/auth-action";
+import { usePendingAuthActionResume } from "@/hooks/use-pending-auth-action";
 import {
   confirmSaveTrip,
   getItinerary,
@@ -50,7 +51,6 @@ export const Route = createFileRoute("/trip")({
     draft: typeof s.draft === "string" ? s.draft : undefined,
   }),
   beforeLoad: async ({ search }) => {
-    await requireAuthenticatedRoute();
     if (typeof window === "undefined") return;
     if (search.id && search.draft !== "1") {
       logTripNav("trip-route-legacy-redirect", search.id);
@@ -173,6 +173,7 @@ function Trip() {
   }, [isDraft]);
 
   const handleSaveDraft = async () => {
+    if (!requireAuthForAction("trip_create")) return;
     if (!trip || !isDraft) return;
     try {
       const saved = await confirmSaveTrip(trip.payload as RoamiePayloadV2, "chat");
@@ -186,6 +187,7 @@ function Trip() {
   };
 
   const handleDelete = async () => {
+    if (!requireAuthForAction("trip_delete")) return;
     if (!trip || isDraft) return;
     setDeleting(true);
     try {
@@ -224,6 +226,7 @@ function Trip() {
   };
 
   const handleSavePayload = async (next: RoamiePayloadV2) => {
+    if (!requireAuthForAction("trip_edit")) return;
     if (!trip) return;
     const updated = await updateItinerary(trip.id, { ...next, recommendations: [], version: 2 });
     if (updated) {
@@ -233,6 +236,7 @@ function Trip() {
   };
 
   const handleReplan = async (settings: TripPlanSettings, items: RoamieItineraryItem[]) => {
+    if (!requireAuthForAction("trip_generation")) return;
     if (!trip || !isRoamiePayloadV2(trip.payload)) return;
     const payload = trip.payload;
     try {
@@ -325,6 +329,11 @@ function Trip() {
         )}
       </>
     ) : null;
+
+  usePendingAuthActionResume("trip_create", (pending) => {
+    if (!pending.sourcePath.startsWith("/trip")) return;
+    void handleSaveDraft();
+  });
 
   if (loading) {
     return (

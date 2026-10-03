@@ -76,7 +76,7 @@ export function guardStartupTarget(
   }
 
   if (target === "/welcome" && onboardingHydrated && onboardingCompleted) {
-    const corrected: StartupPath = hasLikelyPersistedSession() ? "/" : "/login";
+    const corrected: StartupPath = "/";
     if (shouldSkipStartupNavigation(currentRoute, corrected)) {
       logNavSkipSameRoute({
         source: `guardStartupTarget:${source}:completed-onboarding`,

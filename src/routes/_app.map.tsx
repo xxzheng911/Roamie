@@ -1,3 +1,4 @@
+import { requireAuthForAction } from "@/lib/auth-action";
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import {
   beginExploreRequestSession,
@@ -1822,6 +1823,7 @@ function MapView() {
   }, []);
 
   const openInChat = (p: MapPlaceCard) => {
+    if (!requireAuthForAction("ai_chat", { placeId: p.id })) return;
     const distM =
       reliableUserLocation && p.lat != null && p.lng != null
         ? distanceMeters(reliableUserLocation, { lat: p.lat, lng: p.lng })
@@ -1842,30 +1844,31 @@ function MapView() {
   };
 
   const handleToggleSave = async (p: MapPlaceCard) => {
+    const input = buildNewSavedPlaceInput({
+      name: p.name,
+      category: p.primaryType,
+      primaryType: p.primaryType,
+      types: p.types ?? undefined,
+      address: p.address,
+      city: locationLabel,
+      lat: p.lat,
+      lng: p.lng,
+      notes: p.reason,
+      placeId: p.id,
+      googlePlaceId: p.id,
+      photoName: p.photoName,
+      rating: p.rating,
+      userRatingCount: p.userRatingCount,
+      businessStatus: p.businessStatus,
+    });
+    if (!requireAuthForAction("favorite_write", { payload: JSON.stringify(input), placeId: p.id })) return;
     setBusy(p.id);
     try {
-      const { saved: didSave } = await toggleSavePlace(
-        buildNewSavedPlaceInput({
-          name: p.name,
-          category: p.primaryType,
-          primaryType: p.primaryType,
-          types: p.types ?? undefined,
-          address: p.address,
-          city: locationLabel,
-          lat: p.lat,
-          lng: p.lng,
-          notes: p.reason,
-          placeId: p.id,
-          googlePlaceId: p.id,
-          photoName: p.photoName,
-          rating: p.rating,
-          userRatingCount: p.userRatingCount,
-          businessStatus: p.businessStatus,
-        }),
-      );
+      const { saved: didSave } = await toggleSavePlace(input);
       toast.success(didSave ? t("map.saved") : t("map.unsaved"));
       refreshSaved();
     } catch (err) {
+      if (err instanceof Error && err.message === "AUTH_REQUIRED") return;
       toast.error(err instanceof Error ? err.message : t("map.actionFailed"));
     } finally {
       setBusy(null);

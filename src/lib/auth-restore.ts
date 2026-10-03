@@ -17,11 +17,12 @@ export function authShellGateTimeoutMs(isNative: boolean): number {
 export type AppShellRestoreDecision =
   | { kind: "welcome" }
   | { kind: "allow-app" }
-  | { kind: "login"; reason: string };
+  | { kind: "allow-guest" };
 
 /**
  * Cold-start / app-shell destination after session restore has settled.
  * Persisted hint is not an input — hint may only trigger a restore attempt.
+ * Completed onboarding without a session may browse the public shell.
  */
 export function decideAppShellAfterAuthRestore(input: {
   onboardingCompleted: boolean;
@@ -29,5 +30,5 @@ export function decideAppShellAfterAuthRestore(input: {
 }): AppShellRestoreDecision {
   if (!input.onboardingCompleted) return { kind: "welcome" };
   if (input.hasSessionUser) return { kind: "allow-app" };
-  return { kind: "login", reason: "restore-unauthenticated" };
+  return { kind: "allow-guest" };
 }

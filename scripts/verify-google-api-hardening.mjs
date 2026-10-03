@@ -267,7 +267,7 @@ try {
       return Response.json({ places: [] });
     },
   };
-  assert.equal((await handleGoogleProxy(request(undefined, {}, false), env, deps)).status, 401);
+  assert.equal((await handleGoogleProxy(request(undefined, {}, false), env, deps)).status, 200);
   assert.equal((await handleGoogleProxy(request(), {}, deps)).status, 503);
   assert.equal(
     (await handleGoogleProxy(request(), env, { ...deps, authenticate: async () => null })).status,
@@ -290,14 +290,14 @@ try {
   );
   assert.equal((await handleGoogleProxy(request("x".repeat(17000)), env, deps)).status, 413);
   assert.equal((await handleGoogleProxy(request(bad[0]), env, deps)).status, 400);
-  assert.equal(upstream, 0);
+  assert.equal(upstream, 1);
   assert.equal(
     (await handleGoogleProxy(request(undefined, { origin: "capacitor://localhost" }), env, deps))
       .status,
     200,
   );
   assert.ok(limitKeys.includes("google:user:verified-user"));
-  assert.equal(upstream, 1);
+  assert.equal(upstream, 2);
   const source = fs
     .readFileSync("src/lib/google-maps-key-resolve.server.ts", "utf8")
     .replace(/\/\*\*[\s\S]*?\*\//g, "");

@@ -8,23 +8,32 @@ import { isKillSwitchOn } from "@/lib/kill-switch.server";
 import type { CloudflareRuntimeEnv } from "@/lib/server-request-context";
 import { getWorkerScope } from "@/lib/worker-request-scope";
 
-export { checkGoogleProviderRate, consumeGoogleBurst, resolveGoogleRuntimeEnv } from "@/lib/google-burst.server";
+export { checkGoogleProviderRate, consumeGoogleBurst, consumeGuestGoogleBurst, resolveGoogleRuntimeEnv } from "@/lib/google-burst.server";
 
 /** Applied after Supabase auth to existing Google server functions, before any provider call. */
 export const requireGoogleProviderRate = createMiddleware({ type: "function" }).server(
   async ({ next, context }) => {
-    const auth = context as unknown as { userId?: string; cloudflareEnv?: CloudflareRuntimeEnv };
-    if (!auth.userId) throw new Error("Unauthorized");
+    const auth = context as unknown as {
+      userId?: string;
+      publicReadRateKey?: string;
+      cloudflareEnv?: CloudflareRuntimeEnv;
+    };
+    const rateIdentity = auth.userId
+      ? `google:user:${auth.userId}`
+      : auth.publicReadRateKey
+        ? `google:guest:${auth.publicReadRateKey}`
+        : "";
+    if (!rateIdentity) throw new Error("Unauthorized");
     const env = resolveGoogleRuntimeEnv(auth.cloudflareEnv);
     if (!isAbuseGuardEnforcementOn(env)) {
-      if (!(await checkGoogleProviderRate(auth.cloudflareEnv, `google:user:${auth.userId}`))) {
+      if (!(await checkGoogleProviderRate(auth.cloudflareEnv, rateIdentity))) {
         throw new Error("Too Many Requests");
       }
       return next();
     }
     if (isKillSwitchOn(env, "DISABLE_GOOGLE_PROXY")) throw new Error("google_unavailable");
     try {
-      if (!(await checkGoogleProviderRate(env, `google:user:${auth.userId}`))) {
+      if (!(await checkGoogleProviderRate(env, rateIdentity))) {
         throw new Error("Too Many Requests");
       }
     } catch (error) {
@@ -32,7 +41,11 @@ export const requireGoogleProviderRate = createMiddleware({ type: "function" }).
       throw new Error("google_unavailable");
     }
     const store = getWorkerScope();
-    if (store) store.userBurstDone = true;
+    if (store && auth.userId) store.userBurstDone = true;
+    if (store && !auth.userId) {
+      store.ipBurstDone = true;
+      store.guestBurstDone = true;
+    }
     return next();
   },
 );

@@ -1,5 +1,5 @@
 import { newGuardObservation, observeProviderAttempt, observeGuardRejection } from "@/lib/abuse-guard-telemetry.server";
-import { authorizePlacePhotoFetch } from "@/lib/abuse-guard.server";
+import { authorizeGuestPlacePhotoFetch, authorizePlacePhotoFetch } from "@/lib/abuse-guard.server";
 import { isAbuseGuardEnforcementOn } from "@/lib/abuse-guard-enforcement.server";
 import { checkGoogleProviderRate } from "@/lib/google-rate-limit.server";
 import { fixedStatusResponse, isKillSwitchOn } from "@/lib/kill-switch.server";
@@ -272,11 +272,22 @@ export async function handlePlacePhotoRequest(
   }
   const expires = Number(url.searchParams.get("expires"));
   const signature = url.searchParams.get("signature") ?? "";
-  if (!(await verifyPlacePhotoSignature(runtimeEnv, photo!, maxW, expires, signature))) {
+  const guestPhoto = url.searchParams.get("aud") === "guest";
+  if (
+    !(await verifyPlacePhotoSignature(
+      runtimeEnv,
+      photo!,
+      maxW,
+      expires,
+      signature,
+      undefined,
+      guestPhoto ? "guest" : undefined,
+    ))
+  ) {
     return new Response("Unauthorized", { status: 401 });
   }
   const observation = newGuardObservation("google", "place_photos");
-  if (enforced) {
+  if (enforced && !guestPhoto) {
     if (isKillSwitchOn(runtimeEnv, "DISABLE_GOOGLE_PROXY")) {
       observeGuardRejection(observation, "kill_switch");
       return fixedStatusResponse("google_unavailable");
@@ -299,6 +310,10 @@ export async function handlePlacePhotoRequest(
       }
     } catch {
       return new Response("Photo unavailable", { status: 503 });
+    }
+    if (guestPhoto) {
+      const guestBudget = await authorizeGuestPlacePhotoFetch(runtimeEnv, request, observation);
+      if (guestBudget) return guestBudget;
     }
   }
   const validPhoto = photo!;

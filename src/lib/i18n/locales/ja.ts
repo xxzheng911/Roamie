@@ -91,4 +91,22 @@ export const ja = {
   common: {
     dash: "—",
   },
+  authGate: {
+    aiTitle: "ログインして Roamie AI を使う",
+    aiBody: "ログインすると、あなた向けの場所提案と旅程づくりが使えます。",
+    favoriteTitle: "ログインして場所を保存",
+    favoriteBody: "ログインすると、気に入った場所を保存できます。",
+    tripTitle: "ログインして旅程を作成",
+    tripBody: "ログインすると、旅程の作成・保存・同期ができます。",
+    continueBrowsing: "まずは見てみる",
+    loginCta: "ログイン",
+    savedTitle: "ログインして保存と旅程を見る",
+    savedBody: "ログインすると、場所の保存と旅程の同期ができます。",
+    profileTitle: "ログインして個人機能を使う",
+    profileBody: "場所の閲覧にログインは不要です。保存、計画、Roamie AI はログイン後に使えます。",
+    requiredTitle: "ログインが必要です",
+    requiredBody: "続けるには、先にログインしてください。",
+    back: "戻る",
+    login: "ログイン",
+  },
 } as const;

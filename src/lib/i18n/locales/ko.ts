@@ -91,4 +91,22 @@ export const ko = {
   common: {
     dash: "—",
   },
+  authGate: {
+    aiTitle: "로그인 후 Roamie AI 사용",
+    aiBody: "로그인하면 맞춤 장소 추천과 일정 계획을 받을 수 있습니다.",
+    favoriteTitle: "로그인 후 장소 저장",
+    favoriteBody: "로그인하면 좋아하는 장소를 저장할 수 있습니다.",
+    tripTitle: "로그인 후 여행 만들기",
+    tripBody: "로그인하면 여행을 만들고 저장하고 동기화할 수 있습니다.",
+    continueBrowsing: "먼저 둘러보기",
+    loginCta: "로그인",
+    savedTitle: "로그인 후 저장과 여행 보기",
+    savedBody: "로그인하면 장소를 저장하고 여행을 동기화할 수 있습니다.",
+    profileTitle: "로그인 후 개인 기능 사용",
+    profileBody: "장소 둘러보기는 로그인 없이 가능합니다. 저장, 계획, Roamie AI는 로그인 후 사용할 수 있습니다.",
+    requiredTitle: "로그인이 필요해요",
+    requiredBody: "계속하려면 먼저 로그인해 주세요.",
+    back: "돌아가기",
+    login: "로그인",
+  },
 } as const;

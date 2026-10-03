@@ -22,14 +22,12 @@ export async function googleRestFetch(input: string | URL, init?: RequestInit): 
     import("@/lib/api-url"),
   ]);
   const session = await getClientAuthSession();
-  if (!session?.access_token) return Response.json({ error: "unauthorized" }, { status: 401 });
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`;
   return fetch(resolveApiUrl("/api/google"), {
     method: "POST",
     signal: init?.signal,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${session.access_token}`,
-    },
+    headers,
     body: JSON.stringify(payload),
   });
 }

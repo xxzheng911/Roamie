@@ -3,6 +3,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import type { RoutesTravelMode } from "@/lib/routes/types";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { allowGuestPublicRead } from "@/lib/public-read-auth";
 
 const LatLngSchema = z.object({
   lat: z.number().min(-90).max(90),
@@ -12,7 +13,7 @@ const LatLngSchema = z.object({
 const TravelModeSchema = z.enum(["WALK", "DRIVE", "TRANSIT", "BICYCLE", "TWO_WHEELER"]);
 
 export const routesComputeDuration = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
+  .middleware([allowGuestPublicRead, requireGoogleProviderRate])
   .inputValidator((input) =>
     z
       .object({
@@ -29,7 +30,7 @@ export const routesComputeDuration = createServerFn({ method: "POST" })
   });
 
 export const routesComputeDistance = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
+  .middleware([allowGuestPublicRead, requireGoogleProviderRate])
   .inputValidator((input) =>
     z
       .object({
@@ -45,7 +46,7 @@ export const routesComputeDistance = createServerFn({ method: "POST" })
   });
 
 export const routesComputeTripLegs = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
+  .middleware([allowGuestPublicRead, requireGoogleProviderRate])
   .inputValidator((input) =>
     z
       .object({
@@ -60,7 +61,7 @@ export const routesComputeTripLegs = createServerFn({ method: "POST" })
   });
 
 export const routesComputeLegEstimates = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
+  .middleware([allowGuestPublicRead, requireGoogleProviderRate])
   .inputValidator((input) =>
     z
       .object({

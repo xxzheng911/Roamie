@@ -1,6 +1,6 @@
 import { requireGoogleProviderRate } from "@/lib/google-rate-limit.server";
 import { createServerFn } from "@tanstack/react-start";
-import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { allowGuestPublicRead } from "@/lib/public-read-auth";
 import { z } from "zod";
 import type { TransitLegAdvice } from "@/lib/transit/types";
 
@@ -46,9 +46,10 @@ export type RecommendTransitResult = {
 
 /** 智慧交通建議：點到點分析（Google Routes API + Roamie 規則 / AI） */
 export const recommendTransitLegs = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
+  .middleware([allowGuestPublicRead, requireGoogleProviderRate])
   .inputValidator((input) => InputSchema.parse(input))
-  .handler(async ({ data }): Promise<RecommendTransitResult> => {
+  .handler(async ({ data, context }): Promise<RecommendTransitResult> => {
+    const authed = Boolean(context.userId);
     const { buildTransitLegsForItinerary } = await import("@/lib/transit/build-legs.server");
     const weather = data.weather
       ? {
@@ -65,6 +66,6 @@ export const recommendTransitLegs = createServerFn({ method: "POST" })
       preferences: data.preferences,
       weather,
       time: data.time,
-      useAiReasons: data.useAiReasons,
+      useAiReasons: authed ? data.useAiReasons : false,
     });
   });

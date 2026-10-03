@@ -27,6 +27,8 @@ import { toast } from "sonner";
 import { ROAMIE_BUILD_DEBUG } from "@/lib/app-bundle-version";
 import { supabase } from "@/integrations/supabase/client";
 import { loadChatHistory, clearChatHistory, type ChatMsg } from "@/lib/chat-history";
+import { requireAuthForAction } from "@/lib/auth-action";
+import { usePendingAuthActionResume } from "@/hooks/use-pending-auth-action";
 import { buildClientContextBundle, toRoamieRequest } from "@/lib/fetch-context";
 import { enrichRoamieContext } from "@/lib/ai/enrich-context";
 import { resolveEffectivePlanTierWithProfile } from "@/lib/access/resolve";
@@ -2267,6 +2269,15 @@ function Chat() {
     if (hydrating) return;
     const prompt = search.prompt?.trim();
     if (!prompt || autoPromptHandledRef.current) return;
+    const action = search.from === "mood" ? "mood_shortcut" : "ai_chat";
+    if (
+      !requireAuthForAction(action, {
+        prompt,
+        moodId: typeof search.mood === "string" ? search.mood : "",
+      })
+    ) {
+      return;
+    }
     autoPromptHandledRef.current = true;
     void send(prompt, { source: search.from === "mood" ? "home_mood" : "auto" });
     void navigate({
@@ -2282,8 +2293,31 @@ function Chat() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrating, search.prompt]);
 
+  usePendingAuthActionResume("ai_chat", (pending) => {
+    if (pending.sourcePath.startsWith("/chat") && search.prompt?.trim()) return;
+    if (!pending.sourcePath.startsWith("/chat")) return;
+    const draft = pending.metadata.draft;
+    if (typeof draft !== "string" || !draft.trim()) return;
+    void send(draft, { source: "user" });
+  });
+  usePendingAuthActionResume("ai_shortcut", (pending) => {
+    if (!pending.sourcePath.startsWith("/chat") || search.prompt?.trim()) return;
+    const draft = pending.metadata.draft;
+    if (typeof draft !== "string" || !draft.trim()) return;
+    void send(draft, { source: "chat_shortcut" });
+  });
+
   const handleAddToTripFromChat = useCallback(
     async (rec: RoamieRecommendationItem) => {
+      const place = tripPlaceFromRecommendation(rec);
+      if (
+        !requireAuthForAction("trip_add_place", {
+          payload: JSON.stringify(place),
+          surface: "chat",
+        })
+      ) {
+        return;
+      }
       markShortcutEngaged();
       const ctx = session.tripAddPlaceContext;
       if (session.fromTripAddPlace && ctx) {
@@ -2320,27 +2354,29 @@ function Chat() {
   );
 
   const handleSavePlace = async (rec: RoamieRecommendationItem) => {
+    const input = buildNewSavedPlaceInput({
+      name: rec.name,
+      category: rec.type,
+      address: rec.address || null,
+      city: session.location?.city ?? null,
+      lat: rec.lat ?? null,
+      lng: rec.lng ?? null,
+      notes: rec.reason,
+      mood_tag: session.mood ?? partial.moodTag ?? null,
+      placeId: rec.googlePlaceId,
+      googlePlaceId: rec.googlePlaceId,
+      photoName: rec.photoName,
+      rating: rec.rating,
+      userRatingCount: rec.userRatingCount,
+      businessStatus: rec.businessStatus,
+    });
+    if (!requireAuthForAction("favorite_write", { payload: JSON.stringify(input), placeId: rec.googlePlaceId ?? "" })) {
+      return;
+    }
     markShortcutEngaged();
     setSavingName(rec.name);
     try {
-      const { saved } = await toggleSavePlace(
-        buildNewSavedPlaceInput({
-          name: rec.name,
-          category: rec.type,
-          address: rec.address || null,
-          city: session.location?.city ?? null,
-          lat: rec.lat ?? null,
-          lng: rec.lng ?? null,
-          notes: rec.reason,
-          mood_tag: session.mood ?? partial.moodTag ?? null,
-          placeId: rec.googlePlaceId,
-          googlePlaceId: rec.googlePlaceId,
-          photoName: rec.photoName,
-          rating: rec.rating,
-          userRatingCount: rec.userRatingCount,
-          businessStatus: rec.businessStatus,
-        }),
-      );
+      const { saved } = await toggleSavePlace(input);
       setSavedNames((prev) => {
         const next = new Set(prev);
         if (saved) next.add(rec.name);
@@ -2547,6 +2583,7 @@ function Chat() {
 
   const runRecommendationHandoff = useCallback(
     async (handoffSession: ChatPlanningSession) => {
+      if (!requireAuthForAction("ai_recommendation")) return;
       setStreaming(true);
       try {
         const { data: authSession } = await supabase.auth.getSession();
@@ -2662,6 +2699,7 @@ function Chat() {
 
   const runPlanFormHandoff = useCallback(
     async (handoffSession: ChatPlanningSession) => {
+      if (!requireAuthForAction("trip_generation")) return;
       const selectionTrace = handoffSession.planningSelectionHandoffTrace;
       let selectionLoadingCleared = false;
       setStreaming(true);
@@ -2890,6 +2928,7 @@ function Chat() {
     async (handoffSession: ChatPlanningSession) => {
       const ctx = handoffSession.tripAddPlaceContext;
       if (!ctx) return;
+      if (!requireAuthForAction("ai_recommendation", { tripId: ctx.tripId })) return;
       setStreaming(true);
       try {
         const tripAddResult = await fetchTripAddPlaceRecommendations({
@@ -7277,6 +7316,20 @@ function Chat() {
       ? chatShortcutContract(trimmed, locale).displayMessage
       : trimmed;
     if (!trimmed || streaming || generating) return;
+    const action =
+      opts?.source === "home_mood"
+        ? "mood_shortcut"
+        : opts?.source === "chat_shortcut"
+          ? "ai_shortcut"
+          : "ai_chat";
+    if (
+      !requireAuthForAction(action, {
+        draft: trimmed.slice(0, 500),
+        source: opts?.source ?? "user",
+      })
+    ) {
+      return;
+    }
     if (opts?.source !== "auto") {
       const sessionId =
         sessionRef.current.conversationId ??
@@ -10308,6 +10361,7 @@ function Chat() {
     sessionOverride?: ChatPlanningSession,
     msgsOverride?: ChatMsg[],
   ) => {
+    if (!requireAuthForAction("trip_generation")) return;
     let activeSession = sessionOverride ?? sessionRef.current;
     const selectionStartedAt = Date.now();
     const selectionSessionId = activeSession.planningSelection?.id ?? "(not-selection)";
@@ -11360,6 +11414,7 @@ function Chat() {
     context: CanonicalTravelContext,
     conversation: ChatMsg[],
   ) => {
+    if (!requireAuthForAction("trip_generation")) return;
     if (activeGenerationRequestIdRef.current) {
       console.info(
         "[ITINERARY_REQUEST_BLOCKED]",

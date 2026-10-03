@@ -113,7 +113,7 @@ export async function resolveStartupPath(options?: StartupOptions): Promise<Star
   }
 
   if (!hasSession) {
-    const next = guardStartupTarget("/login", source);
+    const next = guardStartupTarget("/", source);
     await logStartupState(next, options);
     await logStartupNavigationContext(source, next);
     return next;

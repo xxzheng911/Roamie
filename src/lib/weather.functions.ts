@@ -2,6 +2,7 @@ import { requireGoogleProviderRate } from "@/lib/google-rate-limit.server";
 import { googleRestFetch } from "@/lib/google-rest-transport";
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { allowGuestPublicRead } from "@/lib/public-read-auth";
 import { z } from "zod";
 import { KAOHSIUNG_COORDS } from "@/lib/api/constants";
 import { geocodeReverseUrl } from "@/lib/google-maps-api";
@@ -131,7 +132,7 @@ const ForecastInput = z.object({
 });
 
 export const getWeatherForecast = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
+  .middleware([allowGuestPublicRead, requireGoogleProviderRate])
   .inputValidator((input) => ForecastInput.parse(input))
   .handler(async ({ data }): Promise<WeatherForecastResult> => {
     try {
@@ -154,7 +155,7 @@ export const getWeatherForecast = createServerFn({ method: "POST" })
   });
 
 export const getWeather = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
+  .middleware([allowGuestPublicRead, requireGoogleProviderRate])
   .inputValidator((input) => Input.parse(input))
   .handler(async ({ data }): Promise<{ weather: WeatherSummary | null; error: string | null }> => {
     const { hasOpenWeatherApiKey } = await import("@/lib/openweather-key-resolve.server");

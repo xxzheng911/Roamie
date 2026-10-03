@@ -91,4 +91,22 @@ export const zhTW = {
   common: {
     dash: "—",
   },
+  authGate: {
+    aiTitle: "登入後使用 Roamie AI",
+    aiBody: "登入即可取得個人化地點推薦與行程規劃。",
+    favoriteTitle: "登入後收藏地點",
+    favoriteBody: "登入即可保存喜歡的地點。",
+    tripTitle: "登入後建立行程",
+    tripBody: "登入即可建立、保存與同步你的旅程。",
+    continueBrowsing: "先逛逛",
+    loginCta: "登入",
+    savedTitle: "登入後查看收藏與行程",
+    savedBody: "登入即可保存喜歡的地點，並建立、同步你的旅程。",
+    profileTitle: "登入後使用個人功能",
+    profileBody: "瀏覽地點不需要登入。登入後可以收藏、規劃行程，並使用 Roamie AI。",
+    requiredTitle: "需要登入",
+    requiredBody: "若要繼續，需要先完成登入。",
+    back: "返回",
+    login: "登入",
+  },
 } as const;

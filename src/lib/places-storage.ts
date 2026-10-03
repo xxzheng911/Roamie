@@ -1,4 +1,5 @@
 import { supabase } from "@/integrations/supabase/client";
+import { requireAuthForAction } from "@/lib/auth-action";
 import { getAuthenticatedUserId, readCachedAuthenticatedUserIdSync } from "@/lib/auth-session";
 import {
   readOwnedPersonalizedCache,
@@ -173,27 +174,7 @@ export async function savePlace(input: NewPlace): Promise<SavedPlace> {
     emitSavedPlacesChanged();
     return remotePlace;
   }
-  const place: SavedPlace = {
-    id: `guest-${Date.now()}`,
-    name: input.name,
-    category: input.category,
-    address: input.address,
-    city: input.city,
-    lat: input.lat,
-    lng: input.lng,
-    notes: input.notes,
-    mood_tag: input.mood_tag,
-    cover_image: input.cover_image,
-    image_url: null,
-    image_source: null,
-    metadata: input.metadata ?? {},
-    created_at: new Date().toISOString(),
-  };
-  const local: SavedPlace[] = [];
-  writeLocalCache(userId, [place, ...local.filter((p) => p.name !== place.name)]);
-  console.info("[FAVORITE_PLACE] saved to store");
-  emitSavedPlacesChanged();
-  return place;
+  throw new Error("AUTH_REQUIRED");
 }
 
 function removePlaceFromLocalCaches(id: string, name?: string): void {
@@ -208,6 +189,7 @@ function removePlaceFromLocalCaches(id: string, name?: string): void {
 
 export async function deletePlace(id: string, name?: string): Promise<void> {
   const userId = await resolveStableUserId();
+  if (!userId) throw new Error("AUTH_REQUIRED");
   if (userId) {
     const { error } = await supabase.from("saved_places").delete().eq("id", id);
     if (error && !isMissingTableError(error)) {
@@ -246,6 +228,17 @@ export async function deletePlaceByName(name: string): Promise<boolean> {
 export async function toggleSavePlace(
   input: NewPlace,
 ): Promise<{ saved: boolean; place: SavedPlace | null }> {
+  if (!readCachedAuthenticatedUserIdSync()) {
+    const placeId =
+      input.metadata && typeof input.metadata === "object" && "placeId" in input.metadata
+        ? String((input.metadata as { placeId?: unknown }).placeId ?? "")
+        : "";
+    requireAuthForAction("favorite_write", {
+      payload: JSON.stringify(input),
+      placeId,
+    });
+    throw new Error("AUTH_REQUIRED");
+  }
   const existingId = await isPlaceSavedByName(input.name);
   if (existingId) {
     await deletePlace(existingId, input.name);

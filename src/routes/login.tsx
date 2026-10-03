@@ -30,6 +30,7 @@ import {
   setIosSnapshotLiveInteractionForced,
 } from "@/lib/ios-snapshot-bridge";
 import { isPostLoginNavigationCommitted, navigateOnceAfterLogin } from "@/lib/login-navigation";
+import { clearPendingAuthAction, peekPendingAuthAction, splitAppReturnPath } from "@/lib/auth-pending-action";
 import { readStashedTripInviteToken } from "@/lib/trip/trip-collab";
 import { tripInvitePathFromToken } from "@/lib/trip/trip-invite-deep-link";
 import { detectPlatform } from "@/services/platform";
@@ -117,6 +118,19 @@ function Login() {
   const oauthBusyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const authAttemptRef = useRef(0);
   const authSucceededRef = useRef(false);
+  const [pendingAction, setPendingAction] = useState(() => peekPendingAuthAction());
+
+  const continueBrowsing = () => {
+    const source = pendingAction?.sourcePath;
+    clearPendingAuthAction();
+    setPendingAction(null);
+    if (source && source.startsWith("/") && !source.startsWith("/login")) {
+      const target = splitAppReturnPath(source);
+      void navigate({ to: target.pathname, search: target.search, replace: true });
+      return;
+    }
+    void navigate({ to: "/", replace: true });
+  };
 
   const clearOAuthBusyTimer = () => {
     if (oauthBusyTimerRef.current != null) {
@@ -212,7 +226,7 @@ function Login() {
       return;
     }
     void navigateOnceAfterLogin(
-      (opts) => navigate({ to: opts.to, replace: opts.replace }),
+      (opts) => navigate({ to: opts.to, search: opts.search, replace: opts.replace }),
       isBootCompleted() ? "login-session-restore-after-boot" : "login-session-restore",
     );
   }, [user, loading, navigate]);
@@ -411,7 +425,7 @@ function Login() {
           return;
         }
         await navigateOnceAfterLogin(
-          (opts) => navigate({ to: opts.to, replace: opts.replace }),
+          (opts) => navigate({ to: opts.to, search: opts.search, replace: opts.replace }),
           "login-session-restore",
         );
         return;
@@ -522,6 +536,14 @@ function Login() {
             </button>
             。
           </p>
+
+          <button
+            type="button"
+            onClick={continueBrowsing}
+            className="mx-auto block px-3 py-2 text-center text-[11px] leading-relaxed text-foreground underline underline-offset-2"
+          >
+            {uiT("authGate.continueBrowsing")}
+          </button>
 
           {isDev ? (
             <button

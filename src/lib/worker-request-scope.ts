@@ -46,6 +46,12 @@ export type WorkerRequestScope = {
   allowLocalIp?: boolean;
   userBurstDone?: boolean;
   ipBurstDone?: boolean;
+  guestBurstDone?: boolean;
+  /** Server-only. Set by the public-read middleware after a trusted IP rate key is admitted. */
+  publicReadAuthorized?: boolean;
+  publicReadRateKey?: string;
+  /** Server-only. Guest Google budget already admitted for this upstream operation. */
+  guestGoogleAdmitted?: Record<string, true>;
   googleOperationId?: string;
   aiOperationKeys?: Partial<Record<string, string>>;
 };
@@ -107,6 +113,29 @@ export function bindVerifiedUserId(userId: string): void {
   const store = storage.getStore();
   if (!store || !userId) return;
   store.verifiedUserId = userId;
+}
+
+/** Guest public read. Never accepts a client-supplied identity. */
+export function markPublicReadAuthorized(rateKey: string): void {
+  const store = storage.getStore();
+  if (!store || !rateKey) return;
+  store.publicReadAuthorized = true;
+  store.publicReadRateKey = rateKey;
+}
+
+export function isPublicReadAuthorized(): boolean {
+  return storage.getStore()?.publicReadAuthorized === true;
+}
+
+/** Same upstream operation must not consume the guest durable budget twice. */
+export function hasGuestGoogleBudgetAdmission(operationId: string): boolean {
+  return storage.getStore()?.guestGoogleAdmitted?.[operationId] === true;
+}
+
+export function admitGuestGoogleBudget(operationId: string): void {
+  const store = storage.getStore();
+  if (!store || !operationId) return;
+  store.guestGoogleAdmitted = { ...store.guestGoogleAdmitted, [operationId]: true };
 }
 
 function restoreAfter<T>(fn: () => T, restore: () => void): T {

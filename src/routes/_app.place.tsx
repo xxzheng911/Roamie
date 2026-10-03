@@ -8,6 +8,7 @@ import { PlaceDetailSheet, ExploreSubpageHeader } from "@/components/map/PlaceDe
 import { useAppMainScroll } from "@/hooks/use-app-main-scroll";
 import { useIosInteractiveRoute } from "@/hooks/use-ios-interactive-route";
 import { useI18n } from "@/hooks/use-i18n";
+import { requireAuthForAction } from "@/lib/auth-action";
 import { useAddToTrip } from "@/hooks/use-add-to-trip";
 import { useAccess } from "@/hooks/use-access";
 import { usePlaceNavigation } from "@/hooks/use-place-navigation";
@@ -546,27 +547,27 @@ function PlaceDetailPageContent() {
 
   const handleToggleSave = async () => {
     if (!place) return;
+    const input = buildNewSavedPlaceInput({
+      name: place.name,
+      category: place.primaryType,
+      primaryType: place.primaryType,
+      types: place.types ?? undefined,
+      address: place.address,
+      lat: place.lat,
+      lng: place.lng,
+      notes: place.reason,
+      placeId: place.id,
+      googlePlaceId: place.id,
+      photoName: place.photoName,
+      rating: place.rating,
+      userRatingCount: place.userRatingCount,
+      businessStatus: place.businessStatus,
+      coverImageUrl: imageUrls[0] ?? null,
+    });
+    if (!requireAuthForAction("favorite_write", { payload: JSON.stringify(input), placeId: place.id })) return;
     setBusy(true);
     try {
-      const { saved: didSave } = await toggleSavePlace(
-        buildNewSavedPlaceInput({
-          name: place.name,
-          category: place.primaryType,
-          primaryType: place.primaryType,
-          types: place.types ?? undefined,
-          address: place.address,
-          lat: place.lat,
-          lng: place.lng,
-          notes: place.reason,
-          placeId: place.id,
-          googlePlaceId: place.id,
-          photoName: place.photoName,
-          rating: place.rating,
-          userRatingCount: place.userRatingCount,
-          businessStatus: place.businessStatus,
-          coverImageUrl: imageUrls[0] ?? null,
-        }),
-      );
+      const { saved: didSave } = await toggleSavePlace(input);
       toast.success(didSave ? uiT("productionUi.p4220592340") : uiT("productionUi.p7fa7b63b0e"));
       setSavedNames((prev) => {
         const next = new Set(prev);
@@ -575,6 +576,7 @@ function PlaceDetailPageContent() {
         return next;
       });
     } catch (e) {
+      if (e instanceof Error && e.message === "AUTH_REQUIRED") return;
       toast.error(e instanceof Error ? e.message : uiT("productionUi.p59ede0ba72"));
     } finally {
       setBusy(false);
@@ -583,6 +585,7 @@ function PlaceDetailPageContent() {
 
   const handleOpenChat = () => {
     if (!place) return;
+    if (!requireAuthForAction("ai_chat", { placeId: place.id })) return;
     const distM =
       navigationOrigin && place.lat != null && place.lng != null
         ? distanceMeters(navigationOrigin, { lat: place.lat, lng: place.lng })

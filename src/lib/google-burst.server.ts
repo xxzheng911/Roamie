@@ -24,6 +24,32 @@ export function resolveGoogleRuntimeEnv(
   return getWorkerScope()?.env ?? contextEnv;
 }
 
+/** Guest burst. Fails closed when the trusted IP is missing. */
+export async function consumeGuestGoogleBurst(
+  env: CloudflareRuntimeEnv | undefined,
+  request?: Request,
+): Promise<Response | null> {
+  if (!isAbuseGuardEnforcementOn(env)) return null;
+  const store = getWorkerScope();
+  const ip = resolveTrustedIp(request);
+  if (!ip) return fixedStatusResponse("google_unavailable");
+  try {
+    if (!store?.ipBurstDone) {
+      if (!(await checkGoogleProviderRate(env, `google:ip:${ip}`))) return fixedStatusResponse("rate_limited", 60);
+      if (store) store.ipBurstDone = true;
+    }
+    if (!store?.guestBurstDone) {
+      if (!(await checkGoogleProviderRate(env, `google:guest:${ip}`))) {
+        return fixedStatusResponse("rate_limited", 60);
+      }
+      if (store) store.guestBurstDone = true;
+    }
+    return null;
+  } catch {
+    return fixedStatusResponse("google_unavailable");
+  }
+}
+
 /** Burst layer. Daily authority is the AbuseGuard, and a completed burst is not charged again. */
 export async function consumeGoogleBurst(
   env: CloudflareRuntimeEnv | undefined,

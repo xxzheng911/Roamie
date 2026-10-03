@@ -1,7 +1,7 @@
 import { requireGoogleProviderRate } from "@/lib/google-rate-limit.server";
 import { googleRestFetch } from "@/lib/google-rest-transport";
 import { createServerFn } from "@tanstack/react-start";
-import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { allowGuestPublicRead } from "@/lib/public-read-auth";
 import { z } from "zod";
 import {
   GOOGLE_PLACES_MAX_RADIUS_METERS,
@@ -504,7 +504,7 @@ function prefersGeocodeFirst(query: string): boolean {
 }
 
 export const searchTripLocations = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
+  .middleware([allowGuestPublicRead, requireGoogleProviderRate])
   .inputValidator((input) => AutocompleteInput.parse(input))
   .handler(
     async ({ data }): Promise<{ suggestions: LocationSuggestion[]; error: string | null }> => {
@@ -908,7 +908,7 @@ async function resolveViaPlacesAutocompleteDetails(params: {
  * even when Server stdout is not visible in Xcode.
  */
 export const geocodeTripLocationFromText = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
+  .middleware([allowGuestPublicRead, requireGoogleProviderRate])
   .inputValidator((input) => GeocodeTextInput.parse(input))
   .handler(
     async ({
@@ -1251,7 +1251,7 @@ export const geocodeTripLocationFromText = createServerFn({ method: "POST" })
   );
 
 export const resolveTripLocation = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
+  .middleware([allowGuestPublicRead, requireGoogleProviderRate])
   .inputValidator((input) => ResolveInput.parse(input))
   .handler(async ({ data }): Promise<{ location: TripLocation | null; error: string | null }> => {
     const apiKey = "roamie-server-proxy";

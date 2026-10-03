@@ -7,6 +7,7 @@ import { bindVerifiedUserId } from "@/lib/worker-request-scope";
 import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 import { requireAuthenticatedAiRequest } from "@/lib/ai/endpoint-guard.server";
+import { resolvePublicReadPrincipal } from "@/lib/public-read-auth";
 import { signPlacePhoto } from "@/lib/place-photo-signature.server";
 import { buildPlacePhotoProxyUrl } from "@/lib/safe-image-url";
 import { validatePhotoResource } from "@/routes/api/place-photo";
@@ -22,13 +23,25 @@ export const Route = createFileRoute("/api/place-photo/sign")({
   server: {
     handlers: {
       POST: async ({ request, context }) => {
-        let auth;
-        try {
-          auth = await requireAuthenticatedAiRequest(request);
-        } catch {
-          return Response.json({ error: "photo_auth_unavailable" }, { status: 503 });
+        const presentedAuth = request.headers.get("authorization");
+        let auth: { userId: string } | null = null;
+        let guestRateKey: string | null = null;
+        if (presentedAuth) {
+          try {
+            auth = await requireAuthenticatedAiRequest(request);
+          } catch {
+            return Response.json({ error: "photo_auth_unavailable" }, { status: 503 });
+          }
+          if (!auth) return Response.json({ error: "Unauthorized" }, { status: 401 });
+        } else {
+          try {
+            const principal = await resolvePublicReadPrincipal(request);
+            if (principal.kind !== "guest") return Response.json({ error: "Unauthorized" }, { status: 401 });
+            guestRateKey = principal.rateKey;
+          } catch {
+            return Response.json({ error: "Unauthorized" }, { status: 401 });
+          }
         }
-        if (!auth) return Response.json({ error: "Unauthorized" }, { status: 401 });
         let body: z.infer<typeof Body>;
         try {
           body = Body.parse(await readGoogleRequestJson(request, 8192));
@@ -48,8 +61,9 @@ export const Route = createFileRoute("/api/place-photo/sign")({
             observeGuardRejection(newGuardObservation("google", "place_photos"), "kill_switch");
             return fixedStatusResponse("google_unavailable");
           }
-          bindVerifiedUserId(auth.userId);
-          if (!(await checkGoogleProviderRate(runtimeEnv, `google:sign:${auth.userId}`))) {
+          if (auth) bindVerifiedUserId(auth.userId);
+          const rateIdentity = auth ? `google:sign:${auth.userId}` : `google:guest-photo:${guestRateKey}`;
+          if (!(await checkGoogleProviderRate(runtimeEnv, rateIdentity))) {
             return enforced
               ? fixedStatusResponse("rate_limited", 60)
               : Response.json(
@@ -57,15 +71,22 @@ export const Route = createFileRoute("/api/place-photo/sign")({
                   { status: 429, headers: { "Retry-After": "60" } },
                 );
           }
-          if (enforced) {
+          if (enforced && auth) {
             const photoGuard = await authorizePlacePhotoSign(body.photo, runtimeEnv, request, auth.userId);
             if (photoGuard) return photoGuard;
           }
-          const token = await signPlacePhoto(runtimeEnv ?? {}, body.photo, body.width);
+          const token = await signPlacePhoto(
+            runtimeEnv ?? {},
+            body.photo,
+            body.width,
+            undefined,
+            auth ? undefined : "guest",
+          );
           const base = buildPlacePhotoProxyUrl(body.photo, body.width);
           const separator = base.includes("?") ? "&" : "?";
+          const audience = auth ? "" : "&aud=guest";
           return Response.json({
-            url: `${base}${separator}expires=${token.expires}&signature=${encodeURIComponent(token.signature)}`,
+            url: `${base}${separator}expires=${token.expires}&signature=${encodeURIComponent(token.signature)}${audience}`,
           });
         } catch {
           return Response.json({ error: "photo_signing_unavailable" }, { status: 503 });

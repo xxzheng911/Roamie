@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
 import { build, stop } from "esbuild";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
+import { createMemoryAbuseGuard } from "../src/lib/abuse-guard-memory.ts";
+import { handleGoogleProxy } from "../src/lib/google-proxy.server.ts";
+import { fetchGoogleRestProvider } from "../src/lib/google-rest-provider.server.ts";
+import { requireAuthenticatedAiRequest } from "../src/lib/ai/endpoint-guard.server.ts";
+import { markPublicReadAuthorized, resolveTrustedUserId, runWithWorkerRequest } from "../src/lib/worker-request-scope.ts";
+import { utcDay } from "../src/lib/abuse-guard-clock.ts";
+import { GOOGLE_FAMILY_LIMITS, GOOGLE_IP_DAILY_WEIGHT, GOOGLE_GLOBAL_DAILY_UNITS_DEFAULT } from "../src/lib/abuse-guard-policy.ts";
 const dir = mkdtempSync(join(tmpdir(), "google-transport-"));
 const original = globalThis.fetch;
 const originalWindow = globalThis.window;
@@ -118,16 +125,132 @@ try {
   }
   assert.equal(requests.length, 12);
   assert.ok(requests.some((r) => r.fields === "id,location,addressComponents"));
-  globalThis.fixtureSession = null;
-  assert.equal(
-    (await googleRestFetch("https://maps.googleapis.com/maps/api/geocode/json?address=Tokyo"))
-      .status,
-    401,
-  );
-  assert.equal(requests.length, 12);
-  console.log(
-    "PASS actual browser transport: 12 browser/native Places/geocode/DRIVE/WALK/TRANSIT operations, only authenticated Roamie requests, no Google key, field masks preserved, missing session blocks network",
-  );
+  // Exercise the actual client -> proxy -> provider pipeline. Only the external
+  // authenticator, Cloudflare binding, durable storage and Google network are fixtures.
+  globalThis.window = undefined;
+  const ip = "203.0.113.82";
+  const textUrl = "https://places.googleapis.com/v1/places:searchText";
+  const textInit = { method: "POST", body: JSON.stringify({ textQuery: "Tokyo", pageSize: 1 }) };
+  let state;
+  function reset() {
+    globalThis.fixtureSession = null;
+    const guard = createMemoryAbuseGuard();
+    state = { guard, upstream: 0, auth: 0, limiter: [], trustedIp: ip, denied: false,
+      env: { ABUSE_GUARD: guard.namespace,
+        GOOGLE_PLACES_SERVER_API_KEY: publicKey,
+        GOOGLE_ROUTES_SERVER_API_KEY: publicKey,
+        GOOGLE_GEOCODING_SERVER_API_KEY: publicKey } };
+    state.env.GOOGLE_API_RATE_LIMITER = { limit: async ({ key }) => {
+      state.limiter.push(key);
+      return { success: !state.denied };
+    } };
+  }
+  const weight = () => state.guard.counter(`ip:${ip}`, `ip:weight:${utcDay()}`);
+  const globalWeight = () => state.guard.counter("global:google", `global:weight:${utcDay()}`);
+  globalThis.fetch = async (url, init) => {
+    assert.equal(url, "/api/google");
+    const headers = new Headers(init.headers);
+    assert.equal(headers.get("authorization"), globalThis.fixtureSession
+      ? `Bearer ${globalThis.fixtureSession.access_token}` : null);
+    assert.ok(!init.body.includes(publicKey), "client credentials never cross the proxy wire");
+    if (state.trustedIp) headers.set("cf-connecting-ip", state.trustedIp);
+    headers.set("x-forwarded-for", "203.0.113.99");
+    headers.set("x-user-id", "forged-user");
+    const request = new Request("https://roamie.example/api/google", { ...init, headers });
+    return handleGoogleProxy(request, state.env, {
+      authenticate: async (req) => {
+        state.auth += 1;
+        return req.headers.get("authorization") === "Bearer verified-session-fixture" ? "verified-user" : null;
+      },
+      provider: (input, env) => fetchGoogleRestProvider(input, env, async () => {
+        state.upstream += 1;
+        return Response.json({ places: [], results: [] });
+      }),
+    });
+  };
+  reset();
+  assert.equal((await googleRestFetch(textUrl, textInit)).status, 200);
+  assert.equal(state.auth, 0, "absent Authorization is the Guest path");
+  assert.equal(state.upstream, 1);
+  assert.deepEqual(state.limiter, [`google:ip:${ip}`, `google:guest:${ip}`]);
+  assert.equal(weight(), GOOGLE_FAMILY_LIMITS.places_text.weight);
+  assert.equal(globalWeight(), GOOGLE_FAMILY_LIMITS.places_text.weight);
+
+  for (const token of ["invalid-token", "expired-token"]) {
+    reset();
+    globalThis.fixtureSession = { access_token: token };
+    assert.equal((await googleRestFetch(textUrl, textInit)).status, 401);
+    assert.equal(state.auth, 1);
+    assert.equal(state.upstream, 0);
+    assert.equal(weight(), 0);
+    assert.equal(globalWeight(), 0);
+    assert.ok(!state.limiter.includes(`google:guest:${ip}`), "invalid Bearer never falls back to Guest");
+  }
+  for (const [url, init] of [
+    ["https://places.googleapis.com/v1/places:unsupported", textInit],
+    ["https://evil.example/v1/places:searchText", textInit],
+    ["https://places.googleapis.com/v1/places/ChIJfixture", { method: "DELETE" }],
+    ["https://places.googleapis.com/v1/places/ChIJfixture", { method: "PATCH", body: "{}" }],
+  ]) {
+    reset();
+    assert.equal((await googleRestFetch(url, init)).status, 400, "non-public operations are not admitted");
+    assert.equal(state.upstream, 0);
+    assert.equal(weight(), 0);
+    assert.equal(globalWeight(), 0);
+  }
+  reset();
+  state.trustedIp = null;
+  assert.equal((await googleRestFetch(textUrl, textInit)).status, 401, "forwarded/user headers cannot establish Guest identity");
+  assert.equal(state.upstream, 0);
+  reset();
+  state.denied = true;
+  assert.equal((await googleRestFetch(textUrl, textInit)).status, 429);
+  assert.equal(state.upstream, 0);
+  assert.equal(weight(), 0);
+  reset();
+  delete state.env.GOOGLE_API_RATE_LIMITER;
+  assert.equal((await googleRestFetch(textUrl, textInit)).status, 503);
+  assert.equal(state.upstream, 0);
+  for (const [name, bucket, limit] of [
+    [`ip:${ip}`, `ip:weight:${utcDay()}`, GOOGLE_IP_DAILY_WEIGHT],
+    ["global:google", `global:weight:${utcDay()}`, GOOGLE_GLOBAL_DAILY_UNITS_DEFAULT],
+  ]) {
+    reset();
+    const seeded = await state.guard.namespace.get(name).fetch(new Request("https://abuse-guard.internal/", {
+      method: "POST", body: JSON.stringify({ action: "charge", operationId: "seed",
+        buckets: [{ key: bucket, limit, delta: limit, reason: "fixture", retryAt: Date.now() + 86400000 }] }),
+    }));
+    assert.equal((await seeded.json()).ok, true);
+    assert.equal((await googleRestFetch(textUrl, textInit)).status, 429);
+    assert.equal(state.upstream, 0, "exhausted durable budgets block upstream");
+  }
+  reset();
+  state.env.ABUSE_GUARD = { idFromName: name => name, get: () => ({ fetch: async () => { throw new Error("fixture DO outage"); } }) };
+  assert.equal((await googleRestFetch(textUrl, textInit)).status, 503);
+  assert.equal(state.upstream, 0, "DO failure is fail-closed");
+  reset();
+  const aiRequest = new Request("https://roamie.example/api/roamie", { method: "POST", headers: { "cf-connecting-ip": ip } });
+  await runWithWorkerRequest({ env: state.env, request: aiRequest }, async () => {
+    markPublicReadAuthorized(ip);
+    assert.equal(resolveTrustedUserId(), null, "public read cannot establish account authority");
+    assert.equal(await requireAuthenticatedAiRequest(aiRequest), null, "Guest public read cannot authorize AI");
+  });
+  const trips = readFileSync("src/lib/trips.functions.ts", "utf8");
+  assert.match(trips, /requireSupabaseAuth/);
+  assert.doesNotMatch(trips, /allowGuestPublicRead/);
+  for (const path of ["roamie", "chat", "generate-itinerary"]) {
+    const source = readFileSync(`src/routes/api/${path}.ts`, "utf8");
+    assert.match(source, /requireAuthenticatedAiRequest/);
+    assert.doesNotMatch(source, /allowGuestPublicRead/);
+  }
+  reset();
+  globalThis.fixtureSession = { access_token: "verified-session-fixture" };
+  assert.equal((await googleRestFetch(textUrl, textInit)).status, 200);
+  assert.equal(state.auth, 1);
+  assert.equal(state.upstream, 1);
+  assert.equal(weight(), 0, "authenticated transport does not charge Guest budget");
+  assert.equal(globalWeight(), 0);
+  console.log("PASS Google transport: 12 authenticated browser/native cases; Guest public-read, whitelist, trusted identity, limiter, durable budgets, fail-closed, invalid Bearer, AI and write boundaries");
 } finally {
   globalThis.fetch = original;
   globalThis.window = originalWindow;

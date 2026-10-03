@@ -145,7 +145,7 @@ export async function fetchOpenWeatherCurrentClient(
       name?: string;
       timezone?: number;
     };
-    const weather = parseCurrentWeather25(json, cityHint || json.name || "", json.timezone ?? 0);
+    const weather = parseCurrentWeather25(json, cityHint, json.timezone ?? 0);
     logOpenWeatherResponse({
       transport: "client-direct",
       endpoint: "current25",

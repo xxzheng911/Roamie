@@ -1,6 +1,10 @@
 import type { WeatherSummary } from "@/lib/weather-types";
 import type { Locale } from "@/lib/i18n/types";
 import { translate } from "@/lib/i18n/translate";
+import {
+  localizedCurrentLocationLabel,
+  resolveHomeLocationDisplayLabel,
+} from "@/lib/home-location-display";
 
 export type WeatherCondition = "Clear" | "FewClouds" | "PartlyCloudy" | "Overcast" | "Rain" | "Snow" | "Thunderstorm" | "Fog" | "Unknown";
 
@@ -36,10 +40,10 @@ export function homeWeatherCondition(weather: WeatherSummary): WeatherCondition 
 }
 
 export function homeWeatherMetadata(weather: WeatherSummary, locale: Locale) {
-  // Legacy location sentinel, not a place name or user-authored city.
-  const currentLocation = !weather.city.trim() || weather.city === translate("zh-TW", "uiCoverage.weatherCurrentLocation");
   return {
-    city: currentLocation ? translate(locale, "uiCoverage.weatherCurrentLocation") : weather.city,
+    city:
+      resolveHomeLocationDisplayLabel(weather.city, locale) ??
+      localizedCurrentLocationLabel(locale),
     condition: translate(locale, `uiCoverage.weather${homeWeatherCondition(weather)}`),
   };
 }

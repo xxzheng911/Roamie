@@ -130,7 +130,9 @@ import {
 } from "@/lib/place-detail-log";
 import { openAppSettings } from "@/lib/open-app-settings";
 import { clearHomeMoodUiSelection, HOME_MOOD_MORE_ROUTE } from "@/lib/home-mood";
+import { requireAuthForAction } from "@/lib/auth-action";
 import { beginHomeMoodShortcutSession } from "@/lib/home-mood-shortcut-session";
+import { usePendingAuthActionResume } from "@/hooks/use-pending-auth-action";
 import { HOME_MOOD_EMOJI, HOME_MOOD_SHORTCUT_IDS, type HomeMoodId } from "@/lib/home-mood-options";
 import { saveChatSession, createEmptySession, loadChatSession } from "@/lib/chat-session";
 import { useAuth } from "@/hooks/use-auth";
@@ -847,11 +849,13 @@ function Home() {
 
   const handleMoodSelect = (moodId: HomeMoodId) => {
     const next = selectedMood === moodId ? null : moodId;
-    setSelectedMood(next);
     if (!next) {
+      setSelectedMood(null);
       resetHomeMoodUi();
       return;
     }
+    if (!requireAuthForAction("mood_shortcut", { moodId: next })) return;
+    setSelectedMood(next);
     clearHomeMoodUiSelection();
     const moodLabel = t(`home.moods.${next}`);
     const prompt = t(`home.moodPrompts.${next}`);
@@ -985,36 +989,47 @@ function Home() {
   }, [refreshSavedNames]);
 
   const handleToggleSaveNearby = async (pick: HomeNearbyPick) => {
+    const input = buildNewSavedPlaceInput({
+      name: pick.name,
+      category: pick.displayCategory ?? pick.primaryType,
+      primaryType: pick.primaryType,
+      types: pick.types ?? undefined,
+      address: pick.address,
+      lat: pick.lat,
+      lng: pick.lng,
+      notes: pick.reason,
+      mood_tag: selectedMood,
+      placeId: pick.id,
+      googlePlaceId: pick.id,
+      photoName: pick.photoName,
+      rating: pick.rating,
+      userRatingCount: pick.userRatingCount,
+      businessStatus: pick.businessStatus,
+      coverImageUrl: pick.coverImageUrl,
+    });
+    if (!requireAuthForAction("favorite_write", { payload: JSON.stringify(input), placeId: pick.id })) return;
     setSaveBusyId(pick.id);
     try {
-      const { saved: didSave } = await toggleSavePlace(
-        buildNewSavedPlaceInput({
-          name: pick.name,
-          category: pick.displayCategory ?? pick.primaryType,
-          primaryType: pick.primaryType,
-          types: pick.types ?? undefined,
-          address: pick.address,
-          lat: pick.lat,
-          lng: pick.lng,
-          notes: pick.reason,
-          mood_tag: selectedMood,
-          placeId: pick.id,
-          googlePlaceId: pick.id,
-          photoName: pick.photoName,
-          rating: pick.rating,
-          userRatingCount: pick.userRatingCount,
-          businessStatus: pick.businessStatus,
-          coverImageUrl: pick.coverImageUrl,
-        }),
-      );
+      const { saved: didSave } = await toggleSavePlace(input);
       toast.success(didSave ? uiT("productionUi.p4220592340") : uiT("productionUi.p7fa7b63b0e"));
       await refreshSavedNames();
     } catch (e) {
+      if (e instanceof Error && e.message === "AUTH_REQUIRED") return;
       toast.error(e instanceof Error ? e.message : uiT("productionUi.p59ede0ba72"));
     } finally {
       setSaveBusyId(null);
     }
   };
+
+  usePendingAuthActionResume("mood_shortcut", (pending) => {
+    const moodId = pending.metadata.moodId;
+    if (typeof moodId === "string") handleMoodSelect(moodId as HomeMoodId);
+  });
+  usePendingAuthActionResume("ai_recommendation", (pending) => {
+    const moodId = pending.metadata.moodId;
+    if (typeof moodId !== "string") return;
+    void handleRecommend(moodId as HomeMoodId);
+  });
 
   const latestTripIdRef = useRef<string | null>(null);
   const latestTripLoadGenerationRef = useRef(0);
@@ -1155,11 +1170,14 @@ function Home() {
     return () => window.removeEventListener(PLACE_RUNTIME_CACHE_UPDATED, onRuntimeCache);
   }, []);
 
-  const handleRecommend = async () => {
-    if (!selectedMood) {
+  const handleRecommend = async (moodOverride?: HomeMoodId) => {
+    const mood = moodOverride ?? selectedMood;
+    if (!mood) {
       toast.message(t("home.pickMood"));
       return;
     }
+    if (!requireAuthForAction("ai_recommendation", { moodId: mood })) return;
+    const moodLabel = t(`home.moods.${mood}`);
     setAiLoading(true);
     try {
       const [bundle, savedPlaces] = await Promise.all([
@@ -1175,11 +1193,11 @@ function Home() {
       const at = new Date(bundle.time);
       const data = await fetchRoamieAI(
         toRoamieRequest("recommend", bundle, {
-          mood: selectedMoodLabel,
-          selectedCategory: selectedMoodLabel,
-          selectedMood: selectedMoodLabel,
+          mood: moodLabel,
+          selectedCategory: moodLabel,
+          selectedMood: moodLabel,
           locale,
-          lateNightMode: shouldActivateLateNightSceneFlow(selectedMood, at),
+          lateNightMode: shouldActivateLateNightSceneFlow(mood, at),
           recentRecommendationNames: loadRecentRecommendationNames(),
           savedPlaceNames: savedPlaces.map((p) => p.name),
         }),
@@ -1188,7 +1206,7 @@ function Home() {
 
       recordRecommendationNames(data.recommendations.map((r) => r.name));
       const saved = await saveRecommendation(data, {
-        mood: selectedMoodLabel ?? undefined,
+        mood: moodLabel,
         generatedLocale: locale,
       });
       resetHomeMoodUi();
@@ -1258,7 +1276,7 @@ function Home() {
         </div>
         <button
           type="button"
-          onClick={handleRecommend}
+          onClick={() => void handleRecommend()}
           disabled={aiLoading || !selectedMood}
           className="mt-4 flex w-full items-center justify-center gap-2 rounded-full bg-primary py-3.5 text-[15px] font-medium text-primary-foreground shadow-lift disabled:opacity-50"
         >

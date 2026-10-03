@@ -45,10 +45,10 @@ await test("timeout constants are centralized", () => {
   assert.equal(authShellGateTimeoutMs(false), 5_000);
 });
 
-await test("1. no persisted auth → unauthenticated → login", () => {
+await test("1. no persisted auth → unauthenticated → guest shell", () => {
   assert.deepEqual(
     decideAppShellAfterAuthRestore({ onboardingCompleted: true, hasSessionUser: false }),
-    { kind: "login", reason: "restore-unauthenticated" },
+    { kind: "allow-guest" },
   );
 });
 
@@ -66,12 +66,12 @@ await test("2. valid session → authenticated → app", () => {
   );
 });
 
-await test("3/4/5. stale / timeout / refresh fail → login, hint is not an input", () => {
+await test("3/4/5. stale / timeout / refresh fail → guest shell, hint is not an input", () => {
   const decision = decideAppShellAfterAuthRestore({
     onboardingCompleted: true,
     hasSessionUser: false,
   });
-  assert.equal(decision.kind, "login");
+  assert.equal(decision.kind, "allow-guest");
   const src = readSrc("src/lib/auth-restore.ts");
   assert.doesNotMatch(src, /hasLikelyPersistedSession|hadPersistedHint/);
 });
@@ -87,13 +87,15 @@ await test("gate no longer defers login forever on persisted hint", () => {
   assert.match(requireAuth, /blockGuestAccess/);
 });
 
-await test("missing session must not markStartupResolved as authenticated shell", () => {
+await test("missing session opens guest shell and private routes stay authenticated", () => {
   const requireAuth = readSrc("src/lib/require-auth.ts");
   assert.doesNotMatch(
     requireAuth,
     /defer login redirect[\s\S]{0,80}markStartupResolved\("\/"\)/,
   );
-  assert.match(requireAuth, /requireAppShellAccess:no-session/);
+  assert.match(requireAuth, /requireAppShellAccess:guest-browse/);
+  assert.match(requireAuth, /blockGuestAccess/);
+  assert.match(requireAuth, /requireAuthenticatedRoute:no-session/);
 });
 
 await test("getSession settle caches unauthenticated and clears stale blob", () => {

@@ -155,8 +155,10 @@ export async function openWeatherGetCurrent(
       console.warn("[OpenWeather] onecall current failed, trying 2.5", e);
     }
 
-    const { json, city, tz } = await fetchCurrent25(lat, lng);
-    return parseCurrentWeather25(json, cityHint || city, tz);
+    const { json, tz } = await fetchCurrent25(lat, lng);
+    // `name` is the nearest GeoNames populated place (for example Lindefu / 林德富),
+    // not a city or district. Home display must not inherit that token.
+    return parseCurrentWeather25(json, cityHint, tz);
   });
 }
 

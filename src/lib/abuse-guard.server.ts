@@ -20,7 +20,9 @@ import { checkRateLimit, SECURITY_RATE_LIMITS } from "@/lib/rate-limit.server";
 import type { CloudflareRuntimeEnv } from "@/lib/server-request-context";
 import {
   currentAiOperation,
+  admitGuestGoogleBudget,
   getWorkerScope,
+  hasGuestGoogleBudgetAdmission,
   rememberAiOperation,
   resolveTrustedIp,
   resolveTrustedUserId,
@@ -150,12 +152,14 @@ export async function authorizeGoogleBilling(input: {
   chargeIp: boolean;
   userId?: string | null;
   ip?: string | null;
+  /** Guest public reads have no user bucket, but still count toward the global Google budget. */
+  includeGlobalBudget?: boolean;
   observation?: GuardObservation;
 }): Promise<Response | null> {
   const observation = input.observation ?? newGuardObservation("google", input.family);
   const env = runtimeGuardEnv(input.env);
   if (!isAbuseGuardEnforcementOn(env)) return null;
-  const userId = input.userId ?? resolveTrustedUserId();
+  const userId = input.userId === undefined ? resolveTrustedUserId() : input.userId;
   const ip = input.ip ?? resolveTrustedIp();
   if (isKillSwitchOn(env, "DISABLE_GOOGLE_PROXY")) {
     observeGuardRejection(observation, "kill_switch");
@@ -184,7 +188,11 @@ export async function authorizeGoogleBilling(input: {
       }
       charged.push(`ip:${ip}`);
     }
-    if (input.chargeUser && input.chargeIp && countsTowardGlobalBudget(input.family)) {
+    const includeGlobal =
+      input.includeGlobalBudget === true
+        ? countsTowardGlobalBudget(input.family)
+        : Boolean(input.chargeUser && input.chargeIp && countsTowardGlobalBudget(input.family));
+    if (includeGlobal) {
       const global = await chargeNamed(
         env,
         "global:google",
@@ -240,6 +248,85 @@ export async function authorizeGoogleSpec(
   });
 }
 
+/**
+ * Canonical durable budget for one Guest Google upstream.
+ * Runs whether or not ABUSE_GUARD_ENFORCEMENT is set.
+ * Authenticated billing stays on authorizeGoogleBilling and still follows that flag.
+ * IP daily weight and global units come from the existing AbuseGuard policy.
+ * A repeated operation id in this request, or a Durable Object replay, is not charged again.
+ */
+export async function authorizeGuestGoogleBilling(input: {
+  env?: CloudflareRuntimeEnv;
+  family: GoogleBillingFamily;
+  operationId: string;
+  request?: Request;
+  observation?: GuardObservation;
+}): Promise<Response | null> {
+  const observation = input.observation ?? newGuardObservation("google", input.family);
+  const env = runtimeGuardEnv(input.env);
+  if (!input.operationId) {
+    observeGuardRejection(observation, "guard_unavailable");
+    return fixedStatusResponse("google_unavailable");
+  }
+  if (hasGuestGoogleBudgetAdmission(input.operationId)) return null;
+  if (isKillSwitchOn(env, "DISABLE_GOOGLE_PROXY")) {
+    observeGuardRejection(observation, "kill_switch");
+    return fixedStatusResponse("google_unavailable");
+  }
+  const ip = resolveTrustedIp(input.request);
+  if (!ip) {
+    observeGuardRejection(observation, "missing_principal");
+    return fixedStatusResponse("google_unavailable");
+  }
+  const charged: string[] = [];
+  try {
+    const ipResult = await chargeNamed(env, `ip:${ip}`, input.operationId, googleIpBuckets(input.family));
+    if (!ipResult.ok) {
+      observeGuardRejection(observation, ipResult.reason);
+      return fixedStatusResponse("rate_limited", retrySeconds(ipResult.retryAt));
+    }
+    if (!ipResult.replay) charged.push(`ip:${ip}`);
+    if (countsTowardGlobalBudget(input.family)) {
+      const global = await chargeNamed(
+        env,
+        "global:google",
+        input.operationId,
+        googleGlobalBuckets(input.family, readGlobalDailyUnits(env)),
+      );
+      if (!global.ok) {
+        if (!ipResult.replay) await rollback(env, charged, input.operationId);
+        observeGuardRejection(observation, global.reason);
+        return fixedStatusResponse("rate_limited", retrySeconds(global.retryAt));
+      }
+    }
+    admitGuestGoogleBudget(input.operationId);
+    observeGuardDecision(observation, "allow", "allowed");
+    return null;
+  } catch {
+    await rollback(env, charged, input.operationId);
+    observeGuardRejection(observation, "guard_unavailable");
+    return fixedStatusResponse("google_unavailable");
+  }
+}
+
+/** Anonymous public read. IP is the only principal. No user bucket and no client-supplied id. */
+export async function authorizeGuestGoogleSpec(
+  spec: { url: string; method: string; body?: unknown },
+  env?: CloudflareRuntimeEnv,
+  request?: Request,
+  observation?: GuardObservation,
+): Promise<Response | null> {
+  const family = billingFamilyFromUrl(spec.url);
+  const operationId = await googleOperationId(spec, request);
+  return authorizeGuestGoogleBilling({
+    env,
+    family,
+    operationId,
+    request,
+    observation: observation ?? googleObservation(family),
+  });
+}
+
 export async function authorizePlacePhotoSign(
   photo: string,
   env: CloudflareRuntimeEnv | undefined,
@@ -256,6 +343,26 @@ export async function authorizePlacePhotoSign(
     chargeIp: false,
     userId,
     ip: null,
+  });
+}
+
+/**
+ * Guest photo media fetch. Signing a URL does not call Google, so it is not an admission.
+ * Each origin fetch that reaches this Worker is one upstream and is admitted once here.
+ */
+export async function authorizeGuestPlacePhotoFetch(
+  env: CloudflareRuntimeEnv | undefined,
+  request: Request,
+  observation?: GuardObservation,
+): Promise<Response | null> {
+  const signature = new URL(request.url).searchParams.get("signature") ?? "";
+  const digest = (await sha256Hex(signature || request.url)).slice(0, 16);
+  return authorizeGuestGoogleBilling({
+    env,
+    family: "place_photos",
+    observation,
+    operationId: `photo-fetch:${utcDay()}:${digest}:${crypto.randomUUID()}`,
+    request,
   });
 }
 

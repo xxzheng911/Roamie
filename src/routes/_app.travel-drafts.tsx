@@ -1,4 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { requireAuthenticatedRoute } from "@/lib/require-auth";
 import { ChevronLeft, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -25,6 +26,7 @@ import {
 } from "@/lib/conversation-workspace";
 
 export const Route = createFileRoute("/_app/travel-drafts")({
+  beforeLoad: () => requireAuthenticatedRoute(),
   component: TravelDraftsPage,
 });
 

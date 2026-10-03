@@ -1,5 +1,5 @@
 import type { Locale } from "@/lib/i18n/types";
-import { translate } from "@/lib/i18n/translate";
+import { resolveHomeLocationDisplayLabel } from "@/lib/home-location-display";
 import { classifyWeatherScene } from "@/lib/weather-scene";
 import type { WeatherSummary } from "@/lib/weather-types";
 import type { DailyPrepAdvice } from "@/lib/recommendation/types";
@@ -147,12 +147,11 @@ function logOutfitSourceOnce(key: string, payload: Record<string, unknown>): voi
   console.info("[OUTFIT_SOURCE]", payload);
 }
 
-// Weather's exact legacy sentinel denotes current location, not a place name.
-// Project on read so persisted weather remains valid across locale changes.
+// Same Home location authority as the weather card. Empty stays empty.
+// Unconfirmed GPS labels become the localized current-location sentinel.
 function locationDisplay(city: string | undefined, locale: Locale): string | undefined {
-  return city === translate("zh-TW", "uiCoverage.weatherCurrentLocation")
-    ? translate(locale, "uiCoverage.weatherCurrentLocation")
-    : city;
+  if (!city?.trim()) return undefined;
+  return resolveHomeLocationDisplayLabel(city, locale) ?? undefined;
 }
 
 function defaultPrepAdvice(locale: Locale, city?: string): DailyPrepAdvice {

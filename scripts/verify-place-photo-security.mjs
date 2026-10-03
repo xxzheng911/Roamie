@@ -42,7 +42,7 @@ assert.match(proxy, /checkGoogleProviderRate/);
 assert.match(proxy, /authorizePlacePhotoFetch/);
 assert.match(proxy, /max-age=300, s-maxage=540/);
 assert.match(signer, /requireAuthenticatedAiRequest/);
-assert.match(client, /Authorization: `Bearer \$\{token\}`/);
+assert.match(client, /if \(token\) headers\.Authorization = `Bearer \$\{token\}`;/);
 assert.match(safeImage, /getSignedPlacePhotoUrl/);
 assert.match(coverHook, /getSignedPlacePhotoUrl/);
 assert.doesNotMatch(`${proxy}\n${signer}\n${client}`, /X-Goog-Api-Key.*VITE_/);

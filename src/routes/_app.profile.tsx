@@ -10,7 +10,9 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import defaultCover from "@/assets/roamie-default-cover.png";
 import { useAuth } from "@/hooks/use-auth";
+import { requireAuthForAction } from "@/lib/auth-action";
 import { useAvatar } from "@/hooks/use-avatar";
 import { ProfileAvatar } from "@/components/profile/ProfileAvatar";
 import { useCover } from "@/hooks/use-cover";
@@ -448,7 +450,7 @@ function Profile() {
   }, [hasPlusAccess, applyProfileToState, userId, locale]);
 
   useEffect(() => {
-    if (search.quiz !== "done" || quizDoneToastShown.current) return;
+    if (search.quiz !== "done" || quizDoneToastShown.current || !userId) return;
     quizDoneToastShown.current = true;
     setQuizSyncing(true);
     toast.success(t("profile.quizDone"));
@@ -567,10 +569,7 @@ function Profile() {
   useEffect(() => {
     if (authLoading) return;
     if (!userId) {
-      if (!session) {
-        logAuthRedirectLogin("profile:no-user-after-auth-ready");
-        navigate({ to: "/login", replace: true });
-      }
+      setLoading(false);
       return;
     }
     if (!shouldHydrateProfileUi(userId)) {
@@ -792,15 +791,23 @@ function Profile() {
 
   const cancelLabel = t("profile.cancel");
   const applyLabel = t("profile.apply");
+  const guest = !authLoading && !user;
+  const requireAccount = () => {
+    requireAuthForAction("account_action");
+  };
 
   return (
     <div className="profile-page flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-y-contain px-5 pb-[max(2.5rem,env(safe-area-inset-bottom,0px))] pt-3 no-scrollbar">
       <div className="overflow-visible rounded-[2rem] border border-border bg-card shadow-soft">
         <ProfileCover
-          displaySrc={coverPreviewUrl ?? coverDisplaySrc}
-          pending={coverPending && !coverPreviewUrl}
+          displaySrc={guest ? defaultCover : (coverPreviewUrl ?? coverDisplaySrc)}
+          pending={guest ? false : coverPending && !coverPreviewUrl}
           busy={coverApplying || coverRemoving}
           onPress={() => {
+            if (guest) {
+              requireAccount();
+              return;
+            }
             if (!coverApplying && !coverRemoving) {
               setCoverSourceOpen(true);
             }
@@ -836,12 +843,22 @@ function Profile() {
           <div className="absolute -top-14 left-0 z-20 h-[6.75rem] w-[6.75rem]">
             <button
               type="button"
-              onClick={() => !avatarBusy && !avatarPicking && setAvatarSourceOpen(true)}
-              disabled={avatarBusy || avatarPicking}
+              onClick={() => {
+                if (guest) {
+                  requireAccount();
+                  return;
+                }
+                if (!avatarBusy && !avatarPicking) setAvatarSourceOpen(true);
+              }}
+              disabled={!guest && (avatarBusy || avatarPicking)}
               className="group relative block h-full w-full shrink-0 overflow-hidden rounded-full border-[3px] border-card bg-secondary shadow-soft disabled:opacity-90"
               aria-label={t("profile.editAvatar")}
             >
-              <ProfileAvatar self priority className="absolute inset-0 h-full w-full" />
+              {guest ? (
+                <ProfileAvatar showDefault priority className="absolute inset-0 h-full w-full" />
+              ) : (
+                <ProfileAvatar self priority className="absolute inset-0 h-full w-full" />
+              )}
               <div
                 className={`pointer-events-none absolute inset-0 rounded-full transition duration-200 ${
                   avatarBusy
@@ -955,7 +972,13 @@ function Profile() {
                   </div>
                   <button
                     type="button"
-                    onClick={beginProfileEditing}
+                    onClick={() => {
+                      if (guest) {
+                        requireAccount();
+                        return;
+                      }
+                      beginProfileEditing();
+                    }}
                     className="rounded-full bg-secondary p-2 text-muted-foreground"
                     aria-label={t("profile.editProfile")}
                   >
@@ -1053,6 +1076,18 @@ function Profile() {
             const cls = `flex w-full items-center gap-3 px-4 py-3.5 text-left ${i !== items.length - 1 ? "border-b border-border" : ""}`;
             return (
               <li key={it.label} className={i !== items.length - 1 ? "border-b border-border" : ""}>
+                {guest ? (
+                  <button type="button" onClick={requireAccount} className={cls}>
+                    <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-secondary">
+                      <Icon className="h-4 w-4" />
+                    </div>
+                    <p className="flex-1 text-[15px]">{it.label}</p>
+                    {"value" in it && it.value ? (
+                      <p className="text-sm text-muted-foreground">{it.value}</p>
+                    ) : null}
+                    <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                  </button>
+                ) : (
                 <Link
                   to={it.to}
                   {...("search" in it && it.search ? { search: it.search } : {})}
@@ -1067,6 +1102,7 @@ function Profile() {
                   ) : null}
                   <ChevronRight className="h-4 w-4 text-muted-foreground" />
                 </Link>
+                )}
               </li>
             );
           })}

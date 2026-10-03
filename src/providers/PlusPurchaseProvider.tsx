@@ -11,16 +11,17 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useNavigate, useRouterState } from "@tanstack/react-router";
+import { useRouterState } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { PlusComingSoonDialog } from "@/components/PlusComingSoonDialog";
 import { useAccess } from "@/hooks/use-access";
 import { useAuth } from "@/hooks/use-auth";
+import { usePendingAuthActionResume } from "@/hooks/use-pending-auth-action";
+import { requireAuthForAction } from "@/lib/auth-action";
 import { canBypassSubscriptionBilling } from "@/lib/access/subscription-dev-mode";
 import {
   clearPlusPurchaseContinuation,
   consumePlusPurchaseContinuation,
-  savePlusPurchaseContinuation,
 } from "@/lib/subscription/purchase-continuation";
 import { useSubscription } from "@/providers/SubscriptionProvider";
 
@@ -35,7 +36,6 @@ const PlusPurchaseContext = createContext<PlusPurchaseContextValue | null>(null)
 /** Single rendering and state authority for every formal Plus purchase entry. */
 export function PlusPurchaseProvider({ children }: { children: ReactNode }) {
   const { t } = useI18n();
-  const navigate = useNavigate();
   const pathname = useRouterState({
     select: (state) => (state.status === "pending" ? null : state.location.pathname),
   });
@@ -71,9 +71,8 @@ export function PlusPurchaseProvider({ children }: { children: ReactNode }) {
     (options?: { onClose?: () => void }): PlusUpgradeResult => {
       console.info("[PLUS_UPGRADE_TAP]", { canInstantUpgrade });
       if (!user?.id) {
-        savePlusPurchaseContinuation("open_paywall");
         setPaywallOpen(false);
-        void navigate({ to: "/login" });
+        requireAuthForAction("subscription_action");
         return "auth_required";
       }
       if (!canInstantUpgrade) {
@@ -84,8 +83,12 @@ export function PlusPurchaseProvider({ children }: { children: ReactNode }) {
       toast.success(t("plusPurchase.active"));
       return "upgraded";
     },
-    [t, canInstantUpgrade, enablePlusTestMode, navigate, openAuthenticatedPaywall, user?.id],
+    [t, canInstantUpgrade, enablePlusTestMode, openAuthenticatedPaywall, user?.id],
   );
+
+  usePendingAuthActionResume("subscription_action", () => {
+    openAuthenticatedPaywall();
+  });
 
   useEffect(() => {
     if (authLoading || !pathname) return;

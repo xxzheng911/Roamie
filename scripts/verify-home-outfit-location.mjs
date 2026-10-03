@@ -29,6 +29,17 @@ for (const [locale, [location, night]] of Object.entries(expected)) {
     assert.ok(buildDailyPrepAdvice(input, locale, weather.city).headline.startsWith(`${location} · `));
   }
   assert.ok(buildDailyPrepAdvice({ ...weather, available: false }, locale).headline.startsWith(`${location} · `));
+  assert.equal(
+    buildDailyPrepAdvice({ ...weather, city: "Lindefu" }, locale).headline,
+    `${location} · ${night}`,
+  );
+  assert.equal(
+    buildDailyPrepAdvice(weather, locale, "Lindefu").headline,
+    `${location} · ${night}`,
+  );
+  for (const city of ["高雄市", "三民區", "大阪市", "新宿區"]) {
+    assert.equal(buildDailyPrepAdvice({ ...weather, city }, locale).headline, `${city} · ${night}`);
+  }
   for (const city of ["高雄", "Tokyo", "大阪", "目前位置咖啡館"]) {
     assert.equal(buildDailyPrepAdvice({ ...weather, city }, locale).headline, `${city} · ${night}`);
     assert.equal(buildDailyPrepAdvice(weather, locale, city).headline, `${city} · ${night}`);

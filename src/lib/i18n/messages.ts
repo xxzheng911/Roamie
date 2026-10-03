@@ -5,6 +5,7 @@ import { productionUiMessages } from "./production-ui";
 import { uiCoverageMessages } from "./ui-coverage";
 import { purchaseLegalTranslations } from "@/content/legal-purchase-translations";
 import { plusPurchaseMessages } from "./plus-purchase";
+import { authGateMessages } from "./auth-gate";
 import type { Locale } from "@/lib/i18n/types";
 
 const exploreCategory = {
@@ -379,6 +380,7 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
       saveFailed: "儲存設定失敗",
     },
     login: { title: "登入 Roamie" },
+    authGate: authGateMessages["zh-TW"],
     saved: {
       title: "我的收藏",
       emptyAllTitle: "還沒有收藏內容",
@@ -735,6 +737,7 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
       saveFailed: "Couldn't save settings",
     },
     login: { title: "Sign in to Roamie" },
+    authGate: authGateMessages.en,
     saved: {
       title: "Saved",
       emptyAllTitle: "Nothing saved yet",
@@ -1081,6 +1084,7 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
       saveFailed: "保存に失敗",
     },
     login: { title: "Roamieにログイン" },
+    authGate: authGateMessages.ja,
     saved: {
       title: "保存",
       emptyAllTitle: "まだ保存がありません",
@@ -1422,6 +1426,7 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
       saveFailed: "설정 저장 실패",
     },
     login: { title: "Roamie 로그인" },
+    authGate: authGateMessages.ko,
     saved: {
       title: "저장",
       emptyAllTitle: "아직 저장한 내용이 없어요",

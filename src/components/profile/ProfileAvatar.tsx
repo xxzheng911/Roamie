@@ -191,17 +191,8 @@ function ProfileAvatarSelf({ className, imgClassName, alt = "", priority = false
     );
   }
 
-  // Unknown/custom-without-bytes is neutral. Bundled default exclusively means
-  // the provider has verified that this user has no custom avatar.
-  if (
-    avatarPending ||
-    media.avatarStatus === "unknown" ||
-    media.avatarStatus === "custom" ||
-    (media.hasCustomAvatar !== false && !showAvatarDefault)
-  ) {
-    return <NeutralAvatarPlaceholder className={className} alt={alt} />;
-  }
-
+  // Bundled default: guest (no account) or a verified account with no custom avatar.
+  // Logged-in unknown/custom-without-bytes stays neutral so a custom avatar cannot flash.
   if (showAvatarDefault) {
     return (
       <AvatarImageNode
@@ -214,6 +205,15 @@ function ProfileAvatarSelf({ className, imgClassName, alt = "", priority = false
         source="default"
       />
     );
+  }
+
+  if (
+    avatarPending ||
+    media.avatarStatus === "unknown" ||
+    media.avatarStatus === "custom" ||
+    media.hasCustomAvatar !== false
+  ) {
+    return <NeutralAvatarPlaceholder className={className} alt={alt} />;
   }
 
   return <NeutralAvatarPlaceholder className={className} alt={alt} />;

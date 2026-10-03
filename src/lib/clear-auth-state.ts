@@ -1,6 +1,7 @@
 import { Preferences } from "@capacitor/preferences";
 import { resetPostAuthRedirect } from "@/lib/auth-post-redirect";
 import { resetPostLoginNavigation } from "@/lib/login-navigation";
+import { clearPendingAuthAction } from "@/lib/auth-pending-action";
 import { clearPendingCallbackPath, OAUTH_PENDING_CALLBACK_KEY } from "@/lib/auth-oauth-deep-link";
 import { clearOAuthCodeConsumedMarker } from "@/lib/oauth-callback-guard";
 import { AUTH_RESTORE_TIMEOUT } from "@/lib/auth-restore";
@@ -145,6 +146,7 @@ export type ClearAuthStateOptions = {
 export function clearAuthStateSync(options: ClearAuthStateOptions = {}): void {
   resetPostLoginNavigation();
   resetPostAuthRedirect();
+  clearPendingAuthAction();
   clearAuthMemoryCache();
   clearProfileSessionCache();
   resetAppBootCachesForUserChange();

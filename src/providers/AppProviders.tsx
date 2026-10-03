@@ -8,6 +8,7 @@ import { AnalyticsProvider } from "@/providers/AnalyticsProvider";
 import { PlatformProvider } from "@/providers/PlatformProvider";
 import { AccessProvider } from "@/hooks/use-access";
 import { AddToTripProvider } from "@/hooks/use-add-to-trip";
+import { AuthActionRuntime } from "@/components/auth/AuthActionRuntime";
 import { SubscriptionProvider } from "@/providers/SubscriptionProvider";
 import { PlusPurchaseProvider } from "@/providers/PlusPurchaseProvider";
 import { assertClientEnv } from "@/constants/env";
@@ -31,7 +32,10 @@ function PurchaseShellProviders({ children }: { children: ReactNode }) {
     <SubscriptionProvider>
       <AccessProvider>
         <PlusPurchaseProvider>
-          <AddToTripProvider>{children}</AddToTripProvider>
+          <AddToTripProvider>
+            <AuthActionRuntime />
+            {children}
+          </AddToTripProvider>
         </PlusPurchaseProvider>
       </AccessProvider>
     </SubscriptionProvider>

@@ -8,8 +8,13 @@ import {
 import { readBrowserPathname } from "@/lib/startup-path";
 import { guardStartupTarget } from "@/lib/startup-navigation";
 import { consumeAdminReturn } from "@/lib/admin/admin-route-boundary";
+import { isSafeAppReturnPath, peekPendingAuthAction, splitAppReturnPath } from "@/lib/auth-pending-action";
 
-type RouterNavigate = (opts: { to: string; replace?: boolean }) => void;
+type RouterNavigate = (opts: {
+  to: string;
+  search?: Record<string, string>;
+  replace?: boolean;
+}) => void;
 
 let postLoginNavigationCommitted = false;
 
@@ -34,23 +39,27 @@ export async function navigateOnceAfterLogin(
   await loadOnboardingState();
 
   const adminReturn = consumeAdminReturn();
+  const pendingReturn = peekPendingAuthAction()?.sourcePath;
+  const safePending = pendingReturn && isSafeAppReturnPath(pendingReturn) ? pendingReturn : null;
   const target =
     adminReturn ??
+    safePending ??
     guardStartupTarget(
       await resolveStartupPath({ hasSession: true, skipLog: true, source }),
       source,
     );
+  const { pathname, search } = splitAppReturnPath(target);
 
   const current = readBrowserPathname();
-  if (shouldSkipStartupNavigation(current, target)) {
-    if (target === "/") {
+  if (shouldSkipStartupNavigation(current, pathname)) {
+    if (pathname === "/") {
       markStartupResolved("/");
     }
     return;
   }
 
-  finishPostAuthRedirect(target, navigate, source);
-  if (target === "/") {
+  finishPostAuthRedirect(pathname, navigate, source, search);
+  if (pathname === "/") {
     markStartupResolved("/");
   }
 }

@@ -9,7 +9,7 @@ import { writePlaceRuntimeCache } from "@/lib/place-runtime-cache";
 import { getExploreRequestSession } from "@/lib/explore-request-session";
 import type { PlacesRequestOwner } from "@/lib/places-api-guard";
 import { createServerFn } from "@tanstack/react-start";
-import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { allowGuestPublicRead } from "@/lib/public-read-auth";
 import { z } from "zod";
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import {
@@ -977,7 +977,7 @@ export async function executeExploreSearch(
 }
 
 export const searchPlaces = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
+  .middleware([allowGuestPublicRead, requireGoogleProviderRate])
   .inputValidator((input) => ExploreSearchInput.parse(input))
   .handler(async ({ data }): Promise<{ places: PlaceResult[]; error: string | null }> => {
     return executeExploreSearch(data);
@@ -1327,7 +1327,7 @@ const PlaceDetailsInput = z.object({
 });
 
 export const getPlaceDetails = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth, requireGoogleProviderRate])
+  .middleware([allowGuestPublicRead, requireGoogleProviderRate])
   .inputValidator((input) => PlaceDetailsInput.parse(input))
   .handler(
     async ({ data }): Promise<{ place: PlaceDetailsScreenResult | null; error: string | null }> => {

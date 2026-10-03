@@ -45,7 +45,7 @@ export function HomePersonalizationCard({
   const navigate = useNavigate();
   const { locale, t } = useI18n();
   const { hasPlusAccess, subscriptionSource, entitlementDisplayStable } = useAccess();
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const { upgradeToPlus } = usePlusUpgrade();
   const sessionKey = user?.id ?? null;
   const insightKey = JSON.stringify([sessionKey, locale]);
@@ -55,10 +55,13 @@ export function HomePersonalizationCard({
   }));
   const plusInsight = insightState.key === insightKey ? insightState.text : null;
   const plusInsightReady = !hasPlusAccess || plusInsight !== null;
-  const variant = resolveHomePersonalizationVariant(
-    entitlementDisplayStable === true && plusInsightReady,
-    hasPlusAccess,
-  );
+  const guestSettled = !authLoading && !user;
+  const variant = guestSettled
+    ? "free"
+    : resolveHomePersonalizationVariant(
+        entitlementDisplayStable === true && plusInsightReady,
+        hasPlusAccess,
+      );
 
   useEffect(() => {
     const status = hasPlusAccess ? "plus" : "free";

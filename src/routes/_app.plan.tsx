@@ -1,8 +1,10 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useFormKeyboardOpen } from "@/hooks/use-form-keyboard-open";
+import { usePendingAuthActionResume } from "@/hooks/use-pending-auth-action";
 import { useI18n } from "@/hooks/use-i18n";
+import { requireAuthForAction } from "@/lib/auth-action";
 import {
   getPlanBudgetOptions,
   getPlanStyleOptions,
@@ -323,8 +325,9 @@ function PlanPage() {
     };
   };
 
-  const handleCreateTripDirect = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleCreateTripDirect = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!requireAuthForAction("trip_create")) return;
     const resolved = await resolvePlanFormForSubmit();
     if (!resolved) return;
 
@@ -367,6 +370,7 @@ function PlanPage() {
   };
 
   const startPlanChat = async (planAiMode: boolean) => {
+    if (!requireAuthForAction(planAiMode ? "trip_generation" : "ai_chat")) return;
     // Selection click feedback must be the first synchronous state transition.
     if (planAiMode) setLoading(true);
     const normalizedStyles = normalizePlanTravelStyles(styles, styleOptions);
@@ -555,6 +559,23 @@ function PlanPage() {
   const handleAiAssist = async () => {
     await startPlanChat(true);
   };
+
+  const startPlanChatRef = useRef(startPlanChat);
+  const handleCreateTripDirectRef = useRef(handleCreateTripDirect);
+  startPlanChatRef.current = startPlanChat;
+  handleCreateTripDirectRef.current = handleCreateTripDirect;
+
+  usePendingAuthActionResume("trip_generation", () => {
+    window.setTimeout(() => {
+      void startPlanChatRef.current(true);
+    }, 0);
+  });
+  usePendingAuthActionResume("trip_create", (pending) => {
+    if (!pending.sourcePath.startsWith("/plan")) return;
+    window.setTimeout(() => {
+      void handleCreateTripDirectRef.current();
+    }, 0);
+  });
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">

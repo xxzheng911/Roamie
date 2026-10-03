@@ -132,10 +132,7 @@ export function tryStartBootRouteSync(): boolean {
   return true;
 }
 
-export function shouldSkipStartupNavigation(
-  current: string,
-  target: StartupPath,
-): boolean {
+export function shouldSkipStartupNavigation(current: string, target: string): boolean {
   return normalizeRoute(current) === normalizeRoute(target);
 }
 

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { homeWeatherMetadata, homeWeatherCondition } from '../src/lib/home-weather-metadata.ts';
+import { buildDailyPrepAdvice } from '../src/lib/recommendation/daily-prep-advice.ts';
 import { localizeWeatherSummary } from '../src/lib/weather-scene.ts';
 import { generatedPlacesForLocale } from '../src/lib/generated-display-projection.ts';
 import { buildUnifiedPlaceCard } from '../src/lib/unified-place-card.ts';
@@ -16,6 +17,14 @@ for(const locale of Object.keys(expected)){
  const projected=localizeWeatherSummary(weather,locale);
  assert.deepEqual(Object.values(homeWeatherMetadata(projected,locale)),expected[locale]);
  assert.equal(homeWeatherMetadata({...weather,city:'Seoul'},locale).city,'Seoul');
+ assert.equal(homeWeatherMetadata({...weather,city:'Lindefu'},locale).city,expected[locale][0]);
+ for (const city of ['高雄市','三民區','大阪市','新宿區','Tokyo','高雄']) {
+  assert.equal(homeWeatherMetadata({...weather,city},locale).city,city);
+ }
+ assert.equal(
+  buildDailyPrepAdvice({...weather,city:'Lindefu',isDaytime:false},locale).headline.split(' · ')[0],
+  homeWeatherMetadata({...weather,city:'Lindefu'},locale).city,
+ );
  const recommendation=generatedPlacesForLocale([place],{generatedLocale:'zh-TW'},locale)[0];
  const card=buildUnifiedPlaceCard({place:recommendation,locale});
  for(const key of ['id','googlePlaceId','photoName','photoUrl','generatedImageUrl','fallbackImageUrl'])assert.equal(card[key],place[key]);

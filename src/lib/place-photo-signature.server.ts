@@ -9,8 +9,9 @@ function readSecret(env?: CloudflareRuntimeEnv): string | null {
   return typeof fallback === "string" && fallback.trim().length >= 32 ? fallback.trim() : null;
 }
 
-function tokenPayload(photo: string, width: number, expires: number): string {
-  return `${photo}\n${width}\n${expires}`;
+function tokenPayload(photo: string, width: number, expires: number, audience?: "guest"): string {
+  const base = `${photo}\n${width}\n${expires}`;
+  return audience === "guest" ? `${base}\nguest` : base;
 }
 
 async function hmac(secret: string, value: string): Promise<string> {
@@ -41,11 +42,12 @@ export async function signPlacePhoto(
   photo: string,
   width: number,
   nowSeconds = Math.floor(Date.now() / 1000),
+  audience?: "guest",
 ): Promise<{ expires: number; signature: string }> {
   const secret = readSecret(env);
   if (!secret) throw new Error("place_photo_signing_configuration_missing");
   const expires = nowSeconds + TOKEN_TTL_SECONDS;
-  return { expires, signature: await hmac(secret, tokenPayload(photo, width, expires)) };
+  return { expires, signature: await hmac(secret, tokenPayload(photo, width, expires, audience)) };
 }
 
 export async function verifyPlacePhotoSignature(
@@ -55,6 +57,7 @@ export async function verifyPlacePhotoSignature(
   expires: number,
   signature: string,
   nowSeconds = Math.floor(Date.now() / 1000),
+  audience?: "guest",
 ): Promise<boolean> {
   const secret = readSecret(env);
   if (
@@ -64,6 +67,6 @@ export async function verifyPlacePhotoSignature(
     expires > nowSeconds + TOKEN_TTL_SECONDS + 30
   )
     return false;
-  const expected = await hmac(secret, tokenPayload(photo, width, expires));
+  const expected = await hmac(secret, tokenPayload(photo, width, expires, audience));
   return constantTimeEqual(expected, signature);
 }

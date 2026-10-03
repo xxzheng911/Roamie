@@ -6,6 +6,7 @@ import { tripPlaceFromSavedPlace } from "@/lib/trip/trip-place-input";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useI18n } from "@/hooks/use-i18n";
+import { readCachedAuthenticatedUserIdSync } from "@/lib/auth-session";
 import { SavedTripCard } from "@/components/saved/SavedTripCard";
 import { SavedPlaceCoverThumb } from "@/components/saved/SavedPlaceCoverThumb";
 import { SavedPlaceRemoveConfirmDialog } from "@/components/saved/SavedPlaceRemoveConfirmDialog";
@@ -109,9 +110,13 @@ function Saved() {
   const requestGuardRef = useRef(createLatestRequestGuard());
   const search = Route.useSearch();
   const [tab, setTab] = useState<Tab>(search.tab === "places" ? "places" : "trips");
-  const initialTrips = readSavedTripsSnapshot();
-  const initialPlaces =
-    readSavedPlacesSnapshot().length > 0 ? readSavedPlacesSnapshot() : readPlacesLocalCacheSync();
+  const cachedUserId = readCachedAuthenticatedUserIdSync();
+  const initialTrips = cachedUserId ? readSavedTripsSnapshot() : [];
+  const initialPlaces = cachedUserId
+    ? readSavedPlacesSnapshot().length > 0
+      ? readSavedPlacesSnapshot()
+      : readPlacesLocalCacheSync()
+    : [];
   const hasCachedAtMountRef = useRef(initialTrips.length > 0 || initialPlaces.length > 0);
   const [trips, setTrips] = useState<CoreTrip[]>(() => initialTrips);
   const [places, setPlaces] = useState<SavedPlace[]>(() => initialPlaces);
@@ -120,7 +125,7 @@ function Saved() {
   tripsRef.current = trips;
   placesRef.current = places;
   const [loading, setLoading] = useState(
-    () => initialTrips.length === 0 && initialPlaces.length === 0,
+    () => Boolean(cachedUserId) && initialTrips.length === 0 && initialPlaces.length === 0,
   );
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
   const [shareTarget, setShareTarget] = useState<{

@@ -1,4 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { requireAuthenticatedRoute } from "@/lib/require-auth";
 import { ChevronLeft } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -42,6 +43,7 @@ import {
 } from "@/lib/trip-reminder-notifications";
 
 export const Route = createFileRoute("/_app/settings")({
+  beforeLoad: () => requireAuthenticatedRoute(),
   component: SettingsPage,
 });
 

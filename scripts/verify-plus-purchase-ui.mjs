@@ -2,6 +2,10 @@ import { productionUiMessages } from "../src/lib/i18n/production-ui.ts";
 import { uiCoverageMessages } from "../src/lib/i18n/ui-coverage.ts";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { build, stop } from "esbuild";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createRequire } from "node:module";
 import { withSubscriptionTimeout } from "../src/lib/subscription/async-timeout.ts";
 import {
   consumePlusPurchaseContinuation,
@@ -87,8 +91,25 @@ assert.equal((purchaseProvider.match(/<PlusComingSoonDialog/g) ?? []).length, 1)
 assert.match(purchaseProvider, /openRevenueCatPaywall/);
 assert.match(purchaseProvider, /paywallOpen/);
 assert.match(purchaseProvider, /if \(!user\?\.id\)/);
-assert.match(purchaseProvider, /savePlusPurchaseContinuation\("open_paywall"\)/);
-assert.match(purchaseProvider, /navigate\(\{ to: "\/login" \}\)/);
+assert.match(purchaseProvider, /if \(!user\?\.id\)\s*\{\s*setPaywallOpen\(false\);\s*requireAuthForAction\("subscription_action"\);\s*return "auth_required";/);
+assert.doesNotMatch(purchaseProvider, /savePlusPurchaseContinuation|navigate\(|stashPendingAuthAction/);
+assert.match(purchaseProvider, /usePendingAuthActionResume\("subscription_action", \(\) => \{\s*openAuthenticatedPaywall\(\);/);
+const runtime = read("src/components/auth/AuthActionRuntime.tsx");
+const dialog = read("src/components/auth/AuthRequirementDialog.tsx");
+const resume = read("src/hooks/use-pending-auth-action.ts");
+assert.match(providers, /<AuthActionRuntime/);
+assert.match(runtime, /registerAuthRequirementPrompt\(\(request\) => \{\s*setPrompt\(request\);/);
+assert.match(runtime, /if \(loading \|\| !user\) return/);
+assert.match(runtime, /returnPathsMatch\(href, pending.sourcePath\)/);
+assert.match(runtime, /claimPendingAuthAction\(pending.id\)/);
+assert.match(runtime, /dispatchEvent\(new CustomEvent<PendingAuthAction>\(AUTH_ACTION_RESUME_EVENT/);
+assert.match(runtime, /onOpenChange=\{\(open\) => \{[\s\S]*?setPrompt\(null\);\s*\}\}/);
+assert.match(runtime, /onLogin=\{\(\) => \{[\s\S]*?commitAuthRequirementLogin\(current\);/);
+assert.doesNotMatch(runtime, /RevenueCat|purchase\(|subscription_action/);
+assert.match(dialog, /<AlertDialogCancel[^>]*>\{t\("authGate.back"\)\}<\/AlertDialogCancel>/);
+assert.match(dialog, /event.preventDefault\(\);\s*onLogin\(\);/);
+assert.match(resume, /AUTH_ACTION_RESUME_EVENT/);
+assert.match(resume, /pending.action !== action/);
 assert.match(purchaseProvider, /consumePlusPurchaseContinuation\(\)/);
 assert.match(purchaseProvider, /continuation === "open_paywall"/);
 assert.match(purchaseProvider, /continuation === "restore_purchases"/);
@@ -212,7 +233,113 @@ assert.doesNotMatch(infoPlist, /<key>UIBackgroundModes<\/key>/);
 assert.match(geolocationPlugin, /requestLocationAuthorisation\(type: \.whenInUse\)/);
 assert.doesNotMatch(geolocationPlugin, /requestLocationAuthorisation\(type: \.always\)/);
 
-console.info("Plus purchase UI and hydration regression: PASS");
+
 
 assert.equal(uiCoverageMessages["zh-TW"].plusTitle, "讓 Roamie 更懂你");
 assert.equal(uiCoverageMessages["zh-TW"].plusBody, "記住你的旅行偏好，讓每次推薦更貼近你。");
+
+// Execute the real provider CTA and canonical gate/pending authority. React hooks
+// are a small synchronous harness; external billing boundaries throw if reached.
+const fixtureDir = fs.mkdtempSync(join(tmpdir(), "plus-gate-"));
+const oldSessionStorage = globalThis.sessionStorage;
+try {
+  globalThis.sessionStorage = window.sessionStorage;
+  window.location = { pathname: "/profile", search: "?tab=plus", assign: () => assert.fail("unexpected direct login") };
+  globalThis.plusGateFixture = { user: null, states: [], cursor: 0, bypass: false, resume: null, effects: [], navigations: [] };
+  const mocks = {
+    "react": `const f=()=>globalThis.plusGateFixture;
+      export const createContext=()=>({Provider:"context"});
+      export const useContext=()=>null;
+      export const useCallback=x=>x;
+      export const useMemo=x=>x();
+      export const useRef=x=>({current:x});
+      export const useEffect=effect=>{f().effects.push(effect)};
+      export const useState=x=>{const slots=f().states;const i=f().cursor++;if(!(i in slots))slots[i]=x;return[slots[i],v=>{slots[i]=v}];};`,
+    "react/jsx-runtime": `export const jsx=(type,props)=>({type,props});export const jsxs=jsx;`,
+    "@tanstack/react-router": `export const useRouterState=({select})=>select({status:"idle",location:{pathname:"/profile",searchStr:"?tab=plus"}});export const useNavigate=()=>options=>globalThis.plusGateFixture.navigations.push(options.to);`,
+    "@/hooks/use-add-to-trip": `export const useAddToTrip=()=>({openAddToTrip:()=>{throw Error("unexpected trip write")}});`,
+    "@/lib/places-storage": `export const toggleSavePlace=()=>{throw Error("unexpected saved place write")};`,
+    "@/components/auth/AuthRequirementDialog": `export const AuthRequirementDialog="auth-dialog";`,
+    "@/hooks/use-auth": `export const useAuth=()=>({user:globalThis.plusGateFixture.user,loading:false});`,
+    "@/lib/auth-session": `export const readCachedAuthenticatedUserIdSync=()=>globalThis.plusGateFixture.user?.id??null;`,
+    "@/hooks/use-i18n": `export const useI18n=()=>({t:x=>x});`,
+    "@/hooks/use-access": `export const useAccess=()=>({enablePlusTestMode:()=>{throw Error("unexpected test upgrade")}});`,
+    "@/hooks/use-subscription-operation": `export const useSubscriptionOperation=()=>()=>{throw Error("unexpected billing operation")};`,
+    "@/providers/SubscriptionProvider": `export const useSubscription=()=>({restore:()=>{throw Error("unexpected restore")},purchase:()=>{throw Error("unexpected purchase")}});`,
+    "@/lib/access/subscription-dev-mode": `export const canBypassSubscriptionBilling=()=>globalThis.plusGateFixture.bypass;`,
+    "@/hooks/use-pending-auth-action": `export const usePendingAuthActionResume=(action,handler)=>{globalThis.plusGateFixture.resume={action,handler}};`,
+    "@/components/PlusComingSoonDialog": `export const PlusComingSoonDialog="paywall";`,
+    "sonner": `export const toast={success:()=>{throw Error("unexpected upgrade toast")}};`,
+  };
+  const file = join(fixtureDir, "fixture.cjs");
+  await build({
+    stdin: { contents: `export {PlusPurchaseProvider} from './src/providers/PlusPurchaseProvider';export {AuthActionRuntime} from './src/components/auth/AuthActionRuntime';export * from './src/lib/auth-action';export * from './src/lib/auth-pending-action';`, resolveDir: process.cwd() },
+    bundle: true, platform: "node", format: "cjs", outfile: file,
+    plugins: [{ name: "external-boundaries", setup(b) {
+      b.onResolve({ filter: /.*/ }, args => args.path in mocks ? { path: args.path, namespace: "fixture" } : undefined);
+      b.onLoad({ filter: /.*/, namespace: "fixture" }, args => ({ contents: mocks[args.path], loader: "js" }));
+    } }],
+  });
+  const api = createRequire(import.meta.url)(file);
+  const fixture = globalThis.plusGateFixture;
+  const providerStates = [];
+  const runtimeStates = [];
+  const render = () => {
+    fixture.states = providerStates; fixture.cursor = 0; fixture.effects = [];
+    return api.PlusPurchaseProvider({ children: null });
+  };
+  const renderRuntime = () => {
+    fixture.states = runtimeStates; fixture.cursor = 0; fixture.effects = [];
+    return api.AuthActionRuntime();
+  };
+  const paywallOpen = tree => tree.props.children.find(child => child?.type === "paywall").props.open;
+  renderRuntime();
+  fixture.effects[0](); // Mount the actual runtime's prompt and navigation registration.
+  const navigations = fixture.navigations;
+  for (const bypass of [false, true]) {
+    fixture.bypass = bypass;
+    assert.equal(render().props.value.openRevenueCatPaywall(), "auth_required");
+    let prompt = renderRuntime();
+    assert.equal(prompt.type, "auth-dialog");
+    assert.equal(prompt.props.open, true);
+    assert.equal(paywallOpen(render()), false);
+    assert.equal(api.peekPendingAuthAction(), null, "CTA does not stash before explicit login");
+    assert.deepEqual(navigations, [], "Guest CTA does not directly navigate to login");
+    prompt = renderRuntime();
+    prompt.props.onOpenChange(false); // Actual cancel callback from AuthActionRuntime.
+    assert.equal(renderRuntime().props.open, false);
+    assert.equal(api.peekPendingAuthAction(), null);
+    assert.equal(paywallOpen(render()), false);
+    assert.deepEqual(navigations, []);
+    assert.equal(window.location.pathname + window.location.search, "/profile?tab=plus");
+  }
+  fixture.bypass = false;
+  render().props.value.openRevenueCatPaywall();
+  renderRuntime().props.onLogin(); // Actual login callback stashes through canonical authority.
+  const pending = api.peekPendingAuthAction();
+  assert.equal(pending.action, "subscription_action");
+  assert.equal(pending.sourcePath, "/profile?tab=plus");
+  assert.deepEqual(navigations, ["/login"]);
+  assert.equal(consumePlusPurchaseContinuation(), null, "new Guest flow creates no second legacy continuation");
+  assert.equal(paywallOpen(render()), false, "choosing login cannot start Guest purchase");
+  fixture.user = { id: "verified-user", email: "fixture@example.test" };
+  render();
+  assert.equal(fixture.resume.action, "subscription_action");
+  assert.equal(api.returnPathsMatch("/profile?tab=plus", pending.sourcePath), true);
+  assert.equal(api.returnPathsMatch("/map", pending.sourcePath), false);
+  const claimed = api.claimPendingAuthAction(pending.id);
+  assert.equal(claimed.action, fixture.resume.action);
+  fixture.resume.handler();
+  assert.equal(paywallOpen(render()), true, "canonical resume opens existing authenticated paywall");
+  assert.equal(api.claimPendingAuthAction(pending.id), null, "continuation cannot replay");
+  assert.equal(render().props.value.openRevenueCatPaywall(), "coming_soon");
+  assert.equal(paywallOpen(render()), true);
+  assert.equal(renderRuntime().props.open, false, "authenticated CTA keeps existing flow");
+  assert.deepEqual(navigations, ["/login"]);
+} finally {
+  globalThis.sessionStorage = oldSessionStorage;
+  delete globalThis.plusGateFixture;
+  stop();
+  fs.rmSync(fixtureDir, { recursive: true, force: true });
+}
+console.info("Plus purchase UI, Auth Action Gate, canonical continuation and hydration regression: PASS");

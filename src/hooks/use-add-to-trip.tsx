@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { useNavigate } from "@tanstack/react-router";
+import { requireAuthForAction } from "@/lib/auth-action";
 import { toast } from "sonner";
 import {
   InvalidTripPlaceInputError,
@@ -41,6 +42,14 @@ export function AddToTripProvider({ children }: { children: ReactNode }) {
   const [busy, setBusy] = useState(false);
 
   const openAddToTrip = useCallback((p: TripPlaceInput, surface: AddToTripSurface = "unknown") => {
+    if (
+      !requireAuthForAction("trip_add_place", {
+        payload: JSON.stringify(p),
+        surface,
+      })
+    ) {
+      return;
+    }
     try {
       const normalized = normalizeTripPlaceInput({
         ...p,

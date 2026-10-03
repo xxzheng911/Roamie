@@ -5,6 +5,7 @@ import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { MobileFrame } from "@/components/MobileFrame";
 import { useAuth } from "@/hooks/use-auth";
+import { requireAuthForAction } from "@/lib/auth-action";
 import {
   acceptTripInvite,
   clearStashedTripInviteToken,
@@ -23,6 +24,7 @@ function TripInviteAcceptPage() {
   const navigate = useNavigate();
   const { session, loading: authLoading } = useAuth();
   const [status, setStatus] = useState<"pending" | "accepting" | "done" | "error">("pending");
+  const [needsAuth, setNeedsAuth] = useState(false);
   const [message, setMessage] = useState("正在處理邀請…");
   const startedRef = useRef(false);
 
@@ -34,9 +36,10 @@ function TripInviteAcceptPage() {
     if (authLoading || startedRef.current) return;
 
     if (!session) {
-      setMessage("請先登入以接受邀請");
       startedRef.current = true;
-      navigate({ to: "/login", replace: true });
+      setNeedsAuth(true);
+      setMessage("");
+      requireAuthForAction("collaboration");
       return;
     }
 
@@ -60,10 +63,19 @@ function TripInviteAcceptPage() {
   return (
     <MobileFrame>
       <div className="flex min-h-[60dvh] flex-col items-center justify-center gap-4 px-8 text-center">
-        {status === "accepting" || status === "pending" ? (
+        {(status === "accepting" || (status === "pending" && !needsAuth)) ? (
           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
         ) : null}
-        <p className="text-sm text-muted-foreground">{message}</p>
+        {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
+        {needsAuth ? (
+          <button
+            type="button"
+            className="rounded-full bg-primary px-6 py-2 text-sm text-primary-foreground"
+            onClick={() => requireAuthForAction("collaboration")}
+          >
+            {uiT("authGate.login")}
+          </button>
+        ) : null}
         {status === "error" ? (
           <button
             type="button"

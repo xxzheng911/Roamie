@@ -71,16 +71,17 @@ export async function getSignedPlacePhotoUrl(
     if (signal.aborted) return null;
     const token = data.session?.access_token;
     state.authPresent = Boolean(token);
-    if (!token) { state.fallbackReason = "auth_session_missing"; return null; }
     state.stage = "endpoint_resolution";
     const endpoint = resolveApiUrl("/api/place-photo/sign");
     const endpointLocation = new URL(endpoint, window.location.href);
     state.endpointScheme = endpointLocation.protocol.replace(":", "");
     state.endpointHost = endpointLocation.host;
     state.stage = "fetch"; state.requestStarted = true;
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (token) headers.Authorization = `Bearer ${token}`;
     const response = await fetch(endpoint, {
       method: "POST", signal,
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      headers,
       body: JSON.stringify({ photo, width: normalizedWidth }),
     });
     if (signal.aborted) return null;
