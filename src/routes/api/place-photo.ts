@@ -1,8 +1,7 @@
-import { newGuardObservation, observeProviderAttempt, observeGuardRejection } from "@/lib/abuse-guard-telemetry.server";
-import { authorizeGuestPlacePhotoFetch, authorizePlacePhotoFetch } from "@/lib/abuse-guard.server";
+import { runGoogleUpstreamAttempt } from "@/lib/google-upstream-attempt.server";
 import { isAbuseGuardEnforcementOn } from "@/lib/abuse-guard-enforcement.server";
 import { checkGoogleProviderRate } from "@/lib/google-rate-limit.server";
-import { fixedStatusResponse, isKillSwitchOn } from "@/lib/kill-switch.server";
+import { fixedStatusResponse } from "@/lib/kill-switch.server";
 import { checkRateLimit, SECURITY_RATE_LIMITS } from "@/lib/rate-limit.server";
 import { createFileRoute } from "@tanstack/react-router";
 import {
@@ -11,7 +10,7 @@ import {
 } from "@/lib/google-maps-key-resolve.server";
 import { recordPlacesHttpCall } from "@/lib/places-api-stats";
 import type { CloudflareRuntimeEnv } from "@/lib/server-request-context";
-import { verifyPlacePhotoSignature } from "@/lib/place-photo-signature.server";
+import { verifyPlacePhotoSignature, openPlacePhotoPrincipal } from "@/lib/place-photo-signature.server";
 import { resolveTrustedIp } from "@/lib/worker-request-scope";
 
 const MAX_PHOTO_RESOURCE_LENGTH = 2_048;
@@ -272,7 +271,10 @@ export async function handlePlacePhotoRequest(
   }
   const expires = Number(url.searchParams.get("expires"));
   const signature = url.searchParams.get("signature") ?? "";
-  const guestPhoto = url.searchParams.get("aud") === "guest";
+  const audience = url.searchParams.get("aud") ?? undefined;
+  if (audience !== undefined && audience !== "guest" && audience !== "authenticated")
+    return new Response("Unauthorized", { status: 401 });
+  const principal = url.searchParams.get("principal") ?? undefined;
   if (
     !(await verifyPlacePhotoSignature(
       runtimeEnv,
@@ -281,41 +283,21 @@ export async function handlePlacePhotoRequest(
       expires,
       signature,
       undefined,
-      guestPhoto ? "guest" : undefined,
+      audience,
+      principal,
     ))
   ) {
     return new Response("Unauthorized", { status: 401 });
   }
-  const observation = newGuardObservation("google", "place_photos");
-  if (enforced && !guestPhoto) {
-    if (isKillSwitchOn(runtimeEnv, "DISABLE_GOOGLE_PROXY")) {
-      observeGuardRejection(observation, "kill_switch");
-      return fixedStatusResponse("google_unavailable");
-    }
-    const ip = resolveTrustedIp(request) ?? "";
-    try {
-      if (!ip || !(await checkGoogleProviderRate(runtimeEnv, `google:photo:${ip}`))) {
-        return ip ? fixedStatusResponse("rate_limited", 60) : fixedStatusResponse("google_unavailable");
-      }
-    } catch {
-      return fixedStatusResponse("google_unavailable");
-    }
-    const photoGuard = await authorizePlacePhotoFetch(runtimeEnv, request, observation);
-    if (photoGuard) return photoGuard;
-  } else {
-    const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
-    try {
-      if (!(await checkGoogleProviderRate(runtimeEnv, `google:photo:${ip}`))) {
-        return new Response("Rate limited", { status: 429, headers: { "Retry-After": "60" } });
-      }
-    } catch {
-      return new Response("Photo unavailable", { status: 503 });
-    }
-    if (guestPhoto) {
-      const guestBudget = await authorizeGuestPlacePhotoFetch(runtimeEnv, request, observation);
-      if (guestBudget) return guestBudget;
-    }
-  }
+  const photoUserId = audience === "authenticated"
+    ? await openPlacePhotoPrincipal(runtimeEnv, principal ?? "") : null;
+  if (audience === "authenticated" && !photoUserId) return new Response("Unauthorized", { status: 401 });
+  const ip = resolveTrustedIp(request);
+  try {
+    if (!ip) return fixedStatusResponse("google_unavailable");
+    if (!(await checkGoogleProviderRate(runtimeEnv, `google:photo:${ip}`)))
+      return fixedStatusResponse("rate_limited", 60);
+  } catch { return fixedStatusResponse("google_unavailable"); }
   const validPhoto = photo!;
 
   let keySource: GoogleMapsServerKeySource = "none";
@@ -329,8 +311,6 @@ export async function handlePlacePhotoRequest(
     return photoFailureResponse(500, "key_resolution", keySource, { error });
   }
 
-  let finish: ((success: boolean) => void) | undefined;
-  let providerSuccess = false;
   let upstreamPath: string;
   try {
     upstreamPath = buildPlacePhotoUpstreamPath(validPhoto);
@@ -364,13 +344,20 @@ export async function handlePlacePhotoRequest(
       screen: "unknown",
     });
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), dependencies.timeoutMs);
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     const fetchUpstream = dependencies.fetch;
     let res: Response;
     try {
       try {
-        finish = observeProviderAttempt(observation);
-        res = await fetchUpstream(mediaUrl, { redirect: "follow", signal: controller.signal });
+        const attempt = await runGoogleUpstreamAttempt({
+          family: "place_photos", env: runtimeEnv, request, kind: "initial",
+          photoPrincipal: { userId: photoUserId, audience: audience ?? "legacy_capability" },
+        }, () => {
+          timeout = setTimeout(() => controller.abort(), dependencies.timeoutMs);
+          return fetchUpstream(mediaUrl, { redirect: "follow", signal: controller.signal });
+        });
+        if ("denied" in attempt) return attempt.denied;
+        res = attempt.response;
       } catch (error) {
         const stage: PhotoFailureStage =
           safeErrorName(error) === "AbortError" ? "timeout" : "upstream_fetch_call";
@@ -439,13 +426,10 @@ export async function handlePlacePhotoRequest(
         "cache-control": "public, max-age=300, s-maxage=540",
       },
     });
-    providerSuccess = true;
     return response;
   } catch (error) {
     console.error("[place-photo] error", safeErrorName(error));
     return photoFailureResponse(500, "unexpected", keySource, { error });
-  } finally {
-    finish?.(providerSuccess);
   }
 }
 

@@ -43,6 +43,7 @@ type DurationFn = (args: {
     destination: LatLng;
     travelMode: RoutesTravelMode;
     departureTime?: string;
+    googleAttemptKind?: DirectionsQueryOptions["googleAttemptKind"];
   };
 }) => Promise<unknown>;
 
@@ -245,6 +246,7 @@ async function fetchRouteDurationUncached(
 
   const directionsQuery: DirectionsQueryOptions | undefined = queryOptions
     ? {
+        googleAttemptKind: queryOptions.googleAttemptKind,
         region: queryOptions.region,
         locationContext: queryOptions.locationContext,
         originPlaceId: queryOptions.originPlaceId,
@@ -258,7 +260,7 @@ async function fetchRouteDurationUncached(
   if (!isCapacitorNativeShell() && boundDuration) {
     try {
       const raw = await boundDuration({
-        data: { origin, destination, travelMode, departureTime },
+        data: { origin, destination, travelMode, departureTime, googleAttemptKind: queryOptions?.googleAttemptKind },
       });
       const api = normalizeDurationResponse(raw);
       if (api.ok) {
@@ -287,7 +289,7 @@ async function fetchRouteDurationUncached(
     destination,
     travelMode,
     departureTime,
-    directionsQuery,
+    { ...directionsQuery, googleAttemptKind: !isCapacitorNativeShell() && boundDuration ? "fallback" : directionsQuery?.googleAttemptKind },
   );
   if (client.ok) return client;
   return {

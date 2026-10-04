@@ -50,9 +50,6 @@ export type WorkerRequestScope = {
   /** Server-only. Set by the public-read middleware after a trusted IP rate key is admitted. */
   publicReadAuthorized?: boolean;
   publicReadRateKey?: string;
-  /** Server-only. Guest Google budget already admitted for this upstream operation. */
-  guestGoogleAdmitted?: Record<string, true>;
-  googleOperationId?: string;
   aiOperationKeys?: Partial<Record<string, string>>;
 };
 
@@ -127,17 +124,6 @@ export function isPublicReadAuthorized(): boolean {
   return storage.getStore()?.publicReadAuthorized === true;
 }
 
-/** Same upstream operation must not consume the guest durable budget twice. */
-export function hasGuestGoogleBudgetAdmission(operationId: string): boolean {
-  return storage.getStore()?.guestGoogleAdmitted?.[operationId] === true;
-}
-
-export function admitGuestGoogleBudget(operationId: string): void {
-  const store = storage.getStore();
-  if (!store || !operationId) return;
-  store.guestGoogleAdmitted = { ...store.guestGoogleAdmitted, [operationId]: true };
-}
-
 function restoreAfter<T>(fn: () => T, restore: () => void): T {
   try {
     const result = fn();
@@ -157,16 +143,6 @@ export function runWithVerifiedPrincipal<T>(userId: string, fn: () => T): T {
   existing.verifiedUserId = userId;
   return restoreAfter(fn, () => {
     existing.verifiedUserId = previous;
-  });
-}
-
-export function withGoogleOperation<T>(operationId: string, fn: () => T): T {
-  const store = storage.getStore();
-  if (!store) return storage.run({ googleOperationId: operationId }, fn);
-  const previous = store.googleOperationId;
-  store.googleOperationId = operationId;
-  return restoreAfter(fn, () => {
-    store.googleOperationId = previous;
   });
 }
 

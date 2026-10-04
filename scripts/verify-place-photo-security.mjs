@@ -39,7 +39,7 @@ assert.match(proxy, /verifyPlacePhotoSignature/);
 assert.match(proxy, /validatePhotoResource/);
 assert.match(proxy, /MAX_PHOTO_BYTES/);
 assert.match(proxy, /checkGoogleProviderRate/);
-assert.match(proxy, /authorizePlacePhotoFetch/);
+assert.match(proxy, /runGoogleUpstreamAttempt/);
 assert.match(proxy, /max-age=300, s-maxage=540/);
 assert.match(signer, /requireAuthenticatedAiRequest/);
 assert.match(client, /if \(token\) headers\.Authorization = `Bearer \$\{token\}`;/);

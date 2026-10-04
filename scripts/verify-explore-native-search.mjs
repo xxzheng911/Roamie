@@ -46,12 +46,18 @@ await build({
           path: "middleware",
           namespace: "fixture",
         }));
+        b.onResolve({ filter: /^@\/lib\/public-read-auth$/ }, () => ({
+          path: "public-read",
+          namespace: "fixture",
+        }));
         b.onLoad({ filter: /.*/, namespace: "fixture" }, (a) => ({
           contents:
             a.path === "session"
               ? 'export const getClientAuthSession=async()=>({access_token:"fixture-session"});'
               : a.path === "framework"
                 ? 'export const createMiddleware=()=>({server:()=>({})});export const createServerFn=()=>({middleware(){return this},inputValidator(){return this},handler(){return async()=>{throw Error("Unexpected server function")}}});'
+                : a.path === "public-read"
+                  ? "export const allowGuestPublicRead={};"
                 : a.path === "middleware"
                   ? "export const requireSupabaseAuth={};"
                   : "export const isSupabaseConfigured=false;export const supabase={auth:{getSession:async()=>({data:{session:null}})}};",

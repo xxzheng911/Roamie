@@ -1,9 +1,6 @@
-import { newGuardObservation } from "@/lib/abuse-guard-telemetry.server";
-import { billingFamilyFromUrl } from "@/lib/abuse-guard-policy";
 import { readGoogleRequestJson } from "@/lib/google-request-body.server";
 import { createClient } from "@supabase/supabase-js";
 import { isAbuseGuardEnforcementOn } from "@/lib/abuse-guard-enforcement.server";
-import { authorizeGoogleSpec, authorizeGuestGoogleSpec, googleOperationId } from "@/lib/abuse-guard.server";
 import { fetchGoogleRestProvider } from "@/lib/google-rest-provider.server";
 import { googleRestRequest } from "@/lib/google-rest-contract";
 import { consumeGoogleBurst, consumeGuestGoogleBurst } from "@/lib/google-burst.server";
@@ -14,7 +11,7 @@ import {
   markPublicReadAuthorized,
   resolveTrustedIp,
   runWithVerifiedPrincipal,
-  withGoogleOperation,
+  runWithWorkerRequest,
 } from "@/lib/worker-request-scope";
 
 export async function authenticateGoogleRequest(
@@ -98,16 +95,10 @@ function handleLegacyGoogleProxy(
       } catch (failure) {
         return error("invalid_google_request", failure instanceof RangeError ? 413 : 400);
       }
-      if (guestIp) {
-        const operationId = await googleOperationId(spec, request);
-        return withGoogleOperation(operationId, async () => {
-          markPublicReadAuthorized(guestIp);
-          const denied = await authorizeGuestGoogleSpec(spec, env, request);
-          if (denied) return denied;
-          return deps.provider(input, env);
-        });
-      }
-      return await deps.provider(input, env);
+      bindIncomingRequest(request);
+      return userId
+        ? await runWithVerifiedPrincipal(userId, () => deps.provider(input, env))
+        : await deps.provider(input, env);
     } catch {
       return error("google_proxy_unavailable", 503);
     }
@@ -119,6 +110,10 @@ export async function handleGoogleProxy(
   env: CloudflareRuntimeEnv,
   deps = { authenticate: authenticateGoogleRequest, provider: fetchGoogleRestProvider },
 ): Promise<Response> {
+  return runWithWorkerRequest({ env, request }, () => handleScopedGoogleProxy(request, env, deps));
+}
+
+async function handleScopedGoogleProxy(request: Request, env: CloudflareRuntimeEnv, deps: GoogleProxyDeps): Promise<Response> {
   if (!isAbuseGuardEnforcementOn(env)) return handleLegacyGoogleProxy(request, env, deps);
   const error = (code: string, status: number) =>
     Response.json(
@@ -158,13 +153,7 @@ export async function handleGoogleProxy(
       }
       const burst = await consumeGuestGoogleBurst(env, request);
       if (burst) return burst;
-      const observation = newGuardObservation("google", billingFamilyFromUrl(spec.url));
-      const operationId = await googleOperationId(spec, request);
-      return withGoogleOperation(operationId, async () => {
-        const denied = await authorizeGuestGoogleSpec(spec, env, request, observation);
-        if (denied) return denied;
-        return deps.provider(input, env, undefined, observation);
-      });
+      return deps.provider(input, env);
     }
     return await runWithVerifiedPrincipal(userId, async () => {
       bindIncomingRequest(request);
@@ -179,13 +168,7 @@ export async function handleGoogleProxy(
       }
       const burst = await consumeGoogleBurst(env, userId, request);
       if (burst) return burst;
-      const observation = newGuardObservation("google", billingFamilyFromUrl(spec.url));
-      const operationId = await googleOperationId(spec, request);
-      return withGoogleOperation(operationId, async () => {
-        const denied = await authorizeGoogleSpec(spec, env, request, observation);
-        if (denied) return denied;
-        return deps.provider(input, env, undefined, observation);
-      });
+      return deps.provider(input, env);
     });
   } catch {
     return fixedStatusResponse("google_unavailable");

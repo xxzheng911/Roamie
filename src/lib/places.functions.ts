@@ -103,6 +103,7 @@ const ExploreSearchInput = z.object({
   locale: z.enum(["zh-TW", "en", "ja", "ko"]).optional(),
   categoryId: z.string().max(32).optional(),
   placesCaller: z.string().max(80).optional(),
+  placesAttemptKind: z.enum(["initial", "retry", "fallback", "unknown"]).optional(),
   placesExploreSessionId: z.string().max(128).optional(),
   placesScreen: z
     .enum([
@@ -320,7 +321,7 @@ async function postPlaces(
     guarded = await runPlacesApiDeduped(
       httpKey,
       callType,
-      async (signal) => {
+      async (signal, attemptIndex = 0) => {
         recordPlacesHttpCall(callType, {
           functionName: "postPlaces",
           requestKey: httpKey,
@@ -357,7 +358,7 @@ async function postPlaces(
               "X-Goog-FieldMask": PLACES_FIELD_MASK,
             },
             body: JSON.stringify(body),
-          });
+          }, { kind: attemptIndex > 0 ? "retry" : stats?.attemptKind ?? "unknown" });
         } catch (error) {
           devVerboseInfo("[PLACES_PROVIDER_RESULT]", {
             requestId: `places_${ownerRequestId}`,
@@ -531,6 +532,7 @@ function exploreLocale(lat: number, lng: number, userLocale?: Locale) {
 }
 
 type PlacesSearchStats = {
+  attemptKind?: "initial" | "retry" | "fallback" | "unknown";
   caller: string;
   screen: PlacesScreen;
   category?: string;
@@ -548,6 +550,7 @@ type PlacesSearchStats = {
 function buildSearchStats(data: z.infer<typeof ExploreSearchInput>): PlacesSearchStats {
   return {
     caller: data.placesCaller ?? "executeExploreSearch",
+    attemptKind: data.placesAttemptKind,
     screen: data.placesScreen ?? "unknown",
     category: data.categoryId,
     destinationName: data.destinationName,
@@ -1141,7 +1144,7 @@ async function fetchScreenDetailsNetwork(
   const guarded = await runPlacesApiDeduped(
     httpKey,
     "details",
-    async (signal) => {
+    async (signal, attemptIndex = 0) => {
       recordPlacesHttpCall("details", {
         functionName: "fetchPlaceDetailsForScreenWithKey",
         requestKey: httpKey,
@@ -1160,7 +1163,7 @@ async function fetchScreenDetailsNetwork(
             "X-Goog-FieldMask": PLACE_DETAILS_SCREEN_FIELD_MASK,
             "Accept-Language": languageCode,
           },
-        });
+        }, { kind: attemptIndex > 0 ? "retry" : "initial" });
         if (!res.ok) {
           const detail = await res.text().catch(() => "");
           const googleError = parseGooglePlaceDetailError(detail);

@@ -177,7 +177,7 @@ export async function fetchGoogleRoute(
         "X-Goog-FieldMask": "routes.duration,routes.distanceMeters,routes.legs.staticDuration",
       },
       body: JSON.stringify(requestBody),
-    });
+    }, { kind: queryOptions?.googleAttemptKind ?? "initial" });
 
     const text = await res.text();
     let json: {

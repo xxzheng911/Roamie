@@ -6,6 +6,7 @@ const entry = `
 import { AbuseGuard } from "./src/lib/abuse-guard-do.ts";
 import { utcDay } from "./src/lib/abuse-guard-clock.ts";
 import { authorizeGoogleBilling } from "./src/lib/abuse-guard.server.ts";
+import { runGoogleUpstreamAttempt } from "./src/lib/google-upstream-attempt.server.ts";
 import { installWorkerRequestStorage } from "./src/lib/worker-request-als.server.ts";
 import {
   resolveTrustedIp,
@@ -34,6 +35,23 @@ export default {
   async fetch(request, env) {
     installWorkerRequestStorage();
     const job = await request.json();
+    if (job.kind === "attempt-accounting") {
+      let attempts = 0;
+      const statuses = await runWithWorkerRequest({
+        env: { ...env, GOOGLE_GLOBAL_DAILY_UNITS: "24" }, request,
+      }, () => runWithGuardTestContext({ userId: "attempt-user", ip: "203.0.113.91" }, async () => {
+        const results = [];
+        for (let i = 0; i < 4; i++) {
+          const result = await runGoogleUpstreamAttempt({ family: "places_text" }, async () => {
+            attempts++;
+            return Response.json({ places: [] });
+          });
+          results.push("denied" in result ? result.denied.status : result.response.status);
+        }
+        return results;
+      }));
+      return Response.json({ attempts, statuses });
+    }
     if (job.kind === "als") {
       const ip = await runWithWorkerRequest({ env, request, allowLocalIp: false }, async () => {
         await Promise.resolve();
@@ -225,8 +243,8 @@ assert.equal(missing.status, 503);
 assert.deepEqual(missing.body, { error: "google_unavailable" });
 
 const bootstrap = await call("bootstrap-no-do");
-assert.equal(bootstrap.status, 200);
-assert.equal(bootstrap.calls, 0);
+assert.equal(bootstrap.status, 503, "Google costs remain fail-closed with enforcement unset");
+assert.equal(bootstrap.calls, 3, "unset flag still attempts durable admission and rejects malformed response");
 
 const exploded = await call("do-exception");
 assert.equal(exploded.status, 503);
@@ -274,6 +292,9 @@ assert.equal(denied.later.ok, true);
 assert.equal(denied.later.replay, false);
 
 const rate = await call("ratelimit");
+const accounted = await call("attempt-accounting", {}, { "x-roamie-request-id": "same-client-id" });
+assert.deepEqual(accounted, { attempts: 3, statuses: [200, 200, 200, 429] },
+  "real SQLite DO charges each new dispatch, even with one replayed client ID and flag unset");
 assert.equal(outbound, 0);
 await worker.dispose();
 

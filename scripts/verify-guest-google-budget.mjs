@@ -214,7 +214,7 @@ function photoDeps(upstream) {
   assert.equal((await load("&aud=guest")).status, 200, "case 3");
   assert.equal(upstream.count, 1);
   assert.equal(weight(guard, ip), GOOGLE_FAMILY_LIMITS.place_photos.weight);
-  assert.equal(globalWeight(guard), 0);
+  assert.equal(globalWeight(guard), GOOGLE_FAMILY_LIMITS.place_photos.weight);
   const stripped = await load("");
   assert.equal(stripped.status, 401);
   assert.equal(upstream.count, 1);
@@ -290,10 +290,10 @@ function photoDeps(upstream) {
     { ...keys(), ABUSE_GUARD: down, GOOGLE_API_RATE_LIMITER: limiter() },
     {
       authenticate: async () => null,
-      provider: async () => {
+      provider: (input, env) => fetchGoogleRestProvider(input, env, async () => {
         upstream += 1;
         return Response.json({ places: [] });
-      },
+      }),
     },
   );
   assert.equal(response.status, 503, "case 6");
@@ -349,25 +349,25 @@ function photoDeps(upstream) {
     envOf(guard, { GOOGLE_API_RATE_LIMITER: limiter(), DISABLE_GOOGLE_PROXY: "1" }),
     {
       authenticate: async () => "logged-in-user",
-      provider: async () => {
+      provider: (input, env) => fetchGoogleRestProvider(input, env, async () => {
         upstream += 1;
         return Response.json({ places: [] });
-      },
+      }),
     },
   );
-  assert.equal(authed.status, 200, "case 8");
-  assert.equal(upstream, 1);
+  assert.equal(authed.status, 503, "case 8: authenticated Google kill switch is mandatory");
+  assert.equal(upstream, 0);
   assert.equal(weight(guard, ip), 0);
   assert.equal(globalWeight(guard), 0);
   const killed = await handleGoogleProxy(guestRequest(text), envOf(guard, { GOOGLE_API_RATE_LIMITER: limiter(), DISABLE_GOOGLE_PROXY: "1" }), {
     authenticate: async () => null,
-    provider: async () => {
+    provider: (input, env) => fetchGoogleRestProvider(input, env, async () => {
       upstream += 1;
       return Response.json({ places: [] });
-    },
+    }),
   });
   assert.equal(killed.status, 503);
-  assert.equal(upstream, 1);
+  assert.equal(upstream, 0);
 }
 
 {
@@ -387,10 +387,10 @@ function photoDeps(upstream) {
     envOf(guard, { GOOGLE_API_RATE_LIMITER: limiter() }),
     {
       authenticate: async () => null,
-      provider: async () => {
+      provider: (input, env) => fetchGoogleRestProvider(input, env, async () => {
         upstream += 1;
         return Response.json({ places: [] });
-      },
+      }),
     },
   );
   assert.equal(response.status, 401, "case 10");
@@ -407,10 +407,10 @@ function photoDeps(upstream) {
     envOf(guard, { GOOGLE_API_RATE_LIMITER: limiter() }),
     {
       authenticate: async () => null,
-      provider: async () => {
+      provider: (input, env) => fetchGoogleRestProvider(input, env, async () => {
         upstream += 1;
         return Response.json({ places: [] });
-      },
+      }),
     },
   );
   assert.equal(response.status, 400, "case 11");

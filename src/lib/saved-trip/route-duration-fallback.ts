@@ -465,7 +465,7 @@ export async function fetchRouteWithDirectionFallbacks(
   for (let i = 0; i < chain.length; i++) {
     const mode = chain[i]!;
     attempted.push(mode);
-    const result = await tryFetchMode(ctx, mode);
+    const result = await tryFetchMode({ ...ctx, query: { ...ctx.query, googleAttemptKind: i === 0 ? "initial" : "fallback" } }, mode);
 
     if (result.ok) {
       // Manual strict mode: success only counts if it matches the requested mode.

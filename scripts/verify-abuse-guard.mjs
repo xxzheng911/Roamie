@@ -5,7 +5,6 @@ import { createMemoryAbuseGuard } from "../src/lib/abuse-guard-memory.ts";
 import {
   authorizeAiUse,
   authorizeGoogleBilling,
-  googleOperationId,
 } from "../src/lib/abuse-guard.server.ts";
 import { setAbuseGuardClockForTests, utcDay, windowStart } from "../src/lib/abuse-guard-clock.ts";
 import { beginAiRequest } from "../src/lib/ai/endpoint-guard.server.ts";
@@ -208,7 +207,7 @@ try {
       }),
       { GOOGLE_GLOBAL_DAILY_UNITS: "8" },
     );
-    assert.equal(auto, null);
+    assert.equal(auto.status, 429, "Autocomplete is now subject to global daily cost protection");
     assert.equal(guard.counter("global:google", `global:weight:${nowDay}`), 8);
     const photo = await asUser(guard, "global-user", "203.0.113.13", () =>
       authorizeGoogleBilling({
@@ -526,11 +525,9 @@ try {
   }
 
   {
-    const request = new Request("https://roamie.tw/", { headers: { "x-roamie-request-id": "google-payload" } });
-    const left = { url: text.url, method: "POST", body: { textQuery: "Kyoto" } };
-    const right = { url: text.url, method: "POST", body: { textQuery: "Osaka" } };
-    assert.equal(await googleOperationId(left, request), await googleOperationId(left, request));
-    assert.notEqual(await googleOperationId(left, request), await googleOperationId(right, request));
+    const attempt = readFileSync("src/lib/google-upstream-attempt.server.ts", "utf8");
+    assert.doesNotMatch(attempt, /headers\.get|googleOperationId|withGoogleOperation/);
+    assert.match(attempt, /freshAttempt: true/);
   }
 
   {
@@ -626,8 +623,8 @@ try {
 
   const read = (path) => readFileSync(path, "utf8");
   assert.match(read("src/lib/google-rest-transport.ts"), /fetchGoogleRestProvider/);
-  assert.match(read("src/lib/google-rest-provider.server.ts"), /authorizeGoogleSpec/);
-  assert.match(read("src/routes/api/place-photo.ts"), /authorizePlacePhotoFetch/);
+  assert.match(read("src/lib/google-rest-provider.server.ts"), /runGoogleUpstreamAttempt/);
+  assert.match(read("src/routes/api/place-photo.ts"), /runGoogleUpstreamAttempt/);
   assert.match(read("src/routes/api/google.ts"), /handleGoogleProxy/);
   assert.match(read("src/lib/transit/transit-ai.server.ts"), /assertAiUse\("transit"\)/);
   assert.match(read("src/lib/outfit/outfit-ai.server.ts"), /assertAiUse\("outfit"\)/);

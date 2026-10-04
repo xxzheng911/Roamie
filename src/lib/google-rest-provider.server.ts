@@ -1,7 +1,7 @@
-import { googleObservation, observeProviderAttempt, type GuardObservation } from "@/lib/abuse-guard-telemetry.server";
+import { runGoogleUpstreamAttempt } from "@/lib/google-upstream-attempt.server";
 import { billingFamilyFromUrl } from "@/lib/abuse-guard-policy";
 import { isAbuseGuardEnforcementOn } from "@/lib/abuse-guard-enforcement.server";
-import { authorizeGoogleSpec, authorizeGuestGoogleSpec, runtimeGuardEnv } from "@/lib/abuse-guard.server";
+import { runtimeGuardEnv } from "@/lib/abuse-guard.server";
 import { googleRestRequest } from "@/lib/google-rest-contract";
 import { consumeGoogleBurst, consumeGuestGoogleBurst } from "@/lib/google-burst.server";
 import { fixedStatusResponse } from "@/lib/kill-switch.server";
@@ -14,7 +14,6 @@ export async function fetchGoogleRestProvider(
   input: unknown,
   env?: CloudflareRuntimeEnv,
   fetcher: typeof fetch = fetch,
-  logicalObservation?: GuardObservation,
 ): Promise<Response> {
   let spec;
   try {
@@ -22,15 +21,12 @@ export async function fetchGoogleRestProvider(
   } catch {
     return Response.json({ error: "invalid_google_request" }, { status: 400 });
   }
-  const observation = logicalObservation ?? googleObservation(billingFamilyFromUrl(spec.url));
   const envForGuard = runtimeGuardEnv(env);
   if (isAbuseGuardEnforcementOn(envForGuard)) {
     const userId = resolveTrustedUserId();
     if (userId) {
       const burst = await consumeGoogleBurst(envForGuard, userId);
       if (burst) return burst;
-      const denied = await authorizeGoogleSpec(spec, envForGuard, undefined, observation);
-      if (denied) return denied;
     } else if (isPublicReadAuthorized()) {
       const burst = await consumeGuestGoogleBurst(envForGuard);
       if (burst) return burst;
@@ -38,9 +34,8 @@ export async function fetchGoogleRestProvider(
       return fixedStatusResponse("google_unavailable");
     }
   }
-  if (!resolveTrustedUserId() && isPublicReadAuthorized()) {
-    const denied = await authorizeGuestGoogleSpec(spec, envForGuard, undefined, observation);
-    if (denied) return denied;
+  if (!resolveTrustedUserId() && !isPublicReadAuthorized()) {
+    return fixedStatusResponse("google_unavailable");
   }
   let key;
   try {
@@ -54,48 +49,48 @@ export async function fetchGoogleRestProvider(
     url.searchParams.set("key", key);
   else headers["X-Goog-Api-Key"] = key;
   if (spec.fields) headers["X-Goog-FieldMask"] = spec.fields;
-  const finish = observeProviderAttempt(observation);
-  let success = false;
   try {
-    const response = await fetcher(url.toString(), {
-      method: spec.method,
-      headers,
-      body: spec.body == null ? undefined : JSON.stringify(spec.body),
-      signal: AbortSignal.timeout(15000),
-      redirect: "manual",
-    });
-    if (!response.ok) {
-      const status = response.status === 400 ? 400 : response.status === 429 ? 429 : 502;
-      return Response.json(
-        {
-          error: {
-            status:
-              status === 400
-                ? "INVALID_ARGUMENT"
-                : status === 429
-                  ? "RESOURCE_EXHAUSTED"
-                  : "UPSTREAM_UNAVAILABLE",
-            message: "google_upstream_unavailable",
+    const attempt = await runGoogleUpstreamAttempt({
+      family: billingFamilyFromUrl(spec.url), env: envForGuard, kind: spec.attemptKind,
+    }, async () => {
+      const response = await fetcher(url.toString(), {
+        method: spec.method,
+        headers,
+        body: spec.body == null ? undefined : JSON.stringify(spec.body),
+        signal: AbortSignal.timeout(15000),
+        redirect: "manual",
+      });
+      if (!response.ok) {
+        const status = response.status === 400 ? 400 : response.status === 429 ? 429 : 502;
+        return Response.json(
+          {
+            error: {
+              status:
+                status === 400
+                  ? "INVALID_ARGUMENT"
+                  : status === 429
+                    ? "RESOURCE_EXHAUSTED"
+                    : "UPSTREAM_UNAVAILABLE",
+              message: "google_upstream_unavailable",
+            },
           },
-        },
-        { status },
-      );
-    }
-    const json = await response.json();
-    if (json?.error || (json?.status && !["OK", "ZERO_RESULTS"].includes(json.status)))
-      return Response.json({ error: "google_upstream_unavailable" }, { status: 502 });
-    const safe = JSON.stringify(json)
-      .split(key)
-      .join("<REDACTED>")
-      .replace(/AIza[\w-]{20,}/g, "<REDACTED>");
-    const safeResponse = new Response(safe, {
-      headers: { "Content-Type": "application/json", "Cache-Control": "private, no-store" },
+          { status },
+        );
+      }
+      const json = await response.json();
+      if (json?.error || (json?.status && !["OK", "ZERO_RESULTS"].includes(json.status)))
+        return Response.json({ error: "google_upstream_unavailable" }, { status: 502 });
+      const safe = JSON.stringify(json)
+        .split(key)
+        .join("<REDACTED>")
+        .replace(/AIza[\w-]{20,}/g, "<REDACTED>");
+      const safeResponse = new Response(safe, {
+        headers: { "Content-Type": "application/json", "Cache-Control": "private, no-store" },
+      });
+      return safeResponse;
     });
-    success = true;
-    return safeResponse;
+    return "denied" in attempt ? attempt.denied : attempt.response;
   } catch {
     return Response.json({ error: "google_upstream_unavailable" }, { status: 502 });
-  } finally {
-    finish(success);
   }
 }

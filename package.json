@@ -25,6 +25,7 @@
     "verify:revenuecat-ownership": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-revenuecat-ownership.mjs",
     "verify:google-maps-server-key": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-google-maps-server-key.mjs",
     "verify:guest-google-budget": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-guest-google-budget.mjs",
+    "verify:google-upstream-accounting": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-google-upstream-accounting.mjs",
     "verify:abuse-guard": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-abuse-guard.mjs",
     "verify:abuse-guard-bootstrap": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-abuse-guard-bootstrap.mjs",
     "verify:abuse-guard-runtime": "node scripts/verify-abuse-guard-runtime.mjs",

@@ -30,13 +30,9 @@ export const AI_FAIR_USE = {
 
 export type AiSurface = keyof typeof AI_FAIR_USE;
 
-const GLOBAL_EXCLUDED: ReadonlySet<GoogleBillingFamily> = new Set([
-  "places_autocomplete",
-  "place_photos",
-]);
-
-export function countsTowardGlobalBudget(family: GoogleBillingFamily): boolean {
-  return !GLOBAL_EXCLUDED.has(family);
+/** Every Google billing family consumes the durable global cost budget. */
+export function countsTowardGlobalBudget(_family: GoogleBillingFamily): boolean {
+  return true;
 }
 
 export function readGlobalDailyUnits(env: Readonly<Record<string, unknown>> | undefined): number {

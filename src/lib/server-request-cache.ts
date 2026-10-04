@@ -20,12 +20,14 @@ export function createServerRequestCache(ttlMs: number) {
     key: string,
     fetcher: () => Promise<T>,
     shouldCache: (value: T) => boolean = () => true,
+    observe?: (outcome: "hit" | "miss" | "deduped") => void,
   ): Promise<T> {
     const cached = get<T>(key);
-    if (cached !== null) return cached;
+    if (cached !== null) { observe?.("hit"); return cached; }
 
     const pending = inflight.get(key) as Promise<T> | undefined;
-    if (pending) return pending;
+    if (pending) { observe?.("deduped"); return pending; }
+    observe?.("miss");
 
     const promise = fetcher()
       .then((data) => {

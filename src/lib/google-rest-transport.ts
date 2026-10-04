@@ -3,12 +3,14 @@ export function getGoogleRestTransportToken(): string {
   return "roamie-server-proxy";
 }
 
-export async function googleRestFetch(input: string | URL, init?: RequestInit): Promise<Response> {
+export type GoogleAttemptContext = { kind?: "initial" | "retry" | "fallback" | "unknown" };
+export async function googleRestFetch(input: string | URL, init?: RequestInit, context?: GoogleAttemptContext): Promise<Response> {
   const url = new URL(String(input));
   url.searchParams.delete("key");
   const fieldMask = new Headers(init?.headers).get("X-Goog-FieldMask");
   const payload = {
     url: url.toString(),
+    ...(context?.kind ? { attemptKind: context.kind } : {}),
     method: (init?.method ?? "GET").toUpperCase(),
     ...(fieldMask ? { fieldMask } : {}),
     ...(typeof init?.body === "string" ? { body: JSON.parse(init.body) } : {}),

@@ -21,6 +21,7 @@ import { normalizePlacesSearchResult } from "@/lib/places-search-normalize";
 async function runClientSearch(
   args: Parameters<SearchPlacesFn>[0],
   key: string,
+  attemptKind: "initial" | "fallback" = "initial",
 ): Promise<ReturnType<SearchPlacesFn>> {
   // Never hard-fail mid-generation: wait for cooldown, then let executeExploreSearch
   // / runPlacesApiDeduped apply concurrency + Retry-After backoff.
@@ -42,7 +43,7 @@ async function runClientSearch(
 
   try {
     const clientResult = normalizePlacesSearchResult(
-      await executeExploreSearch(args.data, { apiKey: mapsKey }),
+      await executeExploreSearch({ ...args.data, placesAttemptKind: attemptKind }, { apiKey: mapsKey }),
     );
     return clientResult;
   } catch (e) {
@@ -109,7 +110,7 @@ export function createUnifiedSearchPlacesFn(serverFn: SearchPlacesFn): SearchPla
             : { places: [], error: "places_rate_limited" };
         }
 
-        return runClientSearch(args, key);
+        return runClientSearch(args, key, "fallback");
       },
       {
         signal: session?.controller.signal,

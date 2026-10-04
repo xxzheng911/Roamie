@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { runWithWorkerRequest, runWithGuardTestContext } from "../src/lib/worker-request-scope";
+import { createMemoryAbuseGuard } from "../src/lib/abuse-guard-memory";
 import {
   beginExploreRequestSession,
   canRunExploreBrowse,
@@ -82,6 +84,11 @@ const searchData = (session, query = "首爾塔") => ({
   searchMode: "destination",
 });
 const originalFetch = globalThis.fetch;
+const guard = createMemoryAbuseGuard();
+await runWithWorkerRequest({ env: {
+  ABUSE_GUARD: guard.namespace,
+  GOOGLE_PLACES_SERVER_API_KEY: "AIza" + "f".repeat(35),
+} }, () => runWithGuardTestContext({ userId: "explore-fixture", ip: "203.0.113.50" }, async () => {
 try {
   // 1: actual category entry rejects explicit search before any provider callback.
   reset();
@@ -344,3 +351,5 @@ try {
 } finally {
   globalThis.fetch = originalFetch;
 }
+
+}));

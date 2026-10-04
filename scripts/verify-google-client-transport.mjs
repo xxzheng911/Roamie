@@ -248,8 +248,8 @@ try {
   assert.equal((await googleRestFetch(textUrl, textInit)).status, 200);
   assert.equal(state.auth, 1);
   assert.equal(state.upstream, 1);
-  assert.equal(weight(), 0, "authenticated transport does not charge Guest budget");
-  assert.equal(globalWeight(), 0);
+  assert.equal(weight(), 8, "authenticated transport must consume IP daily budget too");
+  assert.equal(globalWeight(), 8, "authenticated transport must consume global daily budget");
   console.log("PASS Google transport: 12 authenticated browser/native cases; Guest public-read, whitelist, trusted identity, limiter, durable budgets, fail-closed, invalid Bearer, AI and write boundaries");
 } finally {
   globalThis.fetch = original;

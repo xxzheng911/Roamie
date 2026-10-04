@@ -15,7 +15,6 @@ import {
 import {
   authorizeAiUse,
   assertAiUse,
-  authorizePlacePhotoSign,
 } from "../src/lib/abuse-guard.server.ts";
 import { handleGoogleProxy } from "../src/lib/google-proxy.server.ts";
 import { fetchGoogleRestProvider } from "../src/lib/google-rest-provider.server.ts";
@@ -65,7 +64,9 @@ const metrics = (events) => events.map((e) => e.blobs[0]);
 function privacy(events) {
   for (const event of events) {
     assert.deepEqual(Object.keys(event).sort(), ["blobs", "doubles", "indexes"]);
-    assert.equal(event.blobs.length, 8);
+    assert.equal(event.blobs.length, 10);
+    assert(["guest", "authenticated", "legacy_capability", "unknown"].includes(event.blobs[8]));
+    assert(["initial", "retry", "fallback", "unknown"].includes(event.blobs[9]));
     assert.deepEqual(event.doubles, [1]);
     assert.deepEqual(event.indexes, [version]);
     assert.equal(event.blobs[6], version);
@@ -238,7 +239,7 @@ try {
     const result = await f.run(() =>
       handleGoogleProxy(req, f.env, {
         authenticate: async () => "private-fixture-user",
-        provider: (input, env, unused, observation) =>
+        provider: (input, env) =>
           fetchGoogleRestProvider(
             input,
             env,
@@ -246,7 +247,6 @@ try {
               fetches++;
               return Response.json({ places: [] });
             },
-            observation,
           ),
       }),
     );
@@ -285,8 +285,8 @@ try {
   await test("photo sign decision only; origin media success/failure; no extra fetch", async () => {
     const photo = "places/fixture/photos/fixture";
     const f = fixture();
-    await f.run(() => authorizePlacePhotoSign(photo, f.env, request(), "private-fixture-user"));
-    assert.deepEqual(metrics(f.events), ["guard_decision"]);
+    await signPlacePhoto(f.env, photo, 600);
+    assert.deepEqual(metrics(f.events), [], "signing is not upstream admission");
     for (const fails of [false, true]) {
       const g = fixture();
       const signed = await signPlacePhoto(g.env, photo, 600);
@@ -418,6 +418,7 @@ try {
       let calls = 0;
       await f.run(async () => {
         const op = newGuardObservation("google", "places_text");
+        observeGuardDecision(op, "allow", "allowed");
         const response = await fetchGoogleRestProvider(
           googleInputs[0][1],
           f.env,
@@ -425,7 +426,6 @@ try {
             calls++;
             return Response.json({ places: [] });
           },
-          op,
         );
         assert.equal(response.status, 200);
         assert.equal(telemetryCoverageComplete(op), false);

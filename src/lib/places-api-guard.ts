@@ -716,7 +716,7 @@ async function waitForRateWindow(key: string): Promise<"ready" | "cooldown"> {
 export async function runPlacesApiDeduped<T>(
   key: string,
   type: string,
-  runner: (signal?: AbortSignal) => Promise<T>,
+  runner: (signal?: AbortSignal, attemptIndex?: number) => Promise<T>,
   owner?: PlacesRequestOwner,
 ): Promise<T | null> {
   const now = Date.now();
@@ -873,7 +873,7 @@ export async function runPlacesApiDeduped<T>(
             })
             .catch(() => {});
 
-          const result = await runner(signal);
+          const result = await runner(signal, attempt);
           // Transport abort is best-effort; completion must still retain publication authority.
           if (
             signal?.aborted ||

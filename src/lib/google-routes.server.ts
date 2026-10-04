@@ -1,3 +1,5 @@
+import { observeGoogleCache } from "@/lib/abuse-guard-telemetry.server";
+import type { GoogleAttemptContext } from "@/lib/google-rest-transport";
 import { API_CACHE_TTL_MS } from "@/lib/api/constants";
 import { createServerRequestCache } from "@/lib/server-request-cache";
 import {
@@ -32,14 +34,16 @@ async function computeRouteRaw(
   destination: LatLng,
   travelMode: RoutesTravelMode,
   departureTime?: string,
+  googleAttemptKind?: GoogleAttemptContext["kind"],
 ): Promise<RouteApiResult> {
   return routeServerCache.getOrFetch(
     routeCacheKey(origin, destination, travelMode, departureTime),
     () => {
       const apiKey = "roamie-server-proxy";
-      return fetchGoogleRoute(apiKey, origin, destination, travelMode, departureTime);
+      return fetchGoogleRoute(apiKey, origin, destination, travelMode, departureTime, { googleAttemptKind });
     },
     (result) => result.ok,
+    outcome => observeGoogleCache(travelMode === "TRANSIT" ? "directions" : "routes", outcome),
   );
 }
 
@@ -48,8 +52,9 @@ export async function getRouteDuration(
   destination: LatLng,
   travelMode: RoutesTravelMode,
   departureTime?: string,
+  googleAttemptKind?: GoogleAttemptContext["kind"],
 ): Promise<RoutesApiSuccess<RouteResult> | RoutesApiError> {
-  return computeRouteRaw(origin, destination, travelMode, departureTime);
+  return computeRouteRaw(origin, destination, travelMode, departureTime, googleAttemptKind);
 }
 
 export async function getRouteDistance(

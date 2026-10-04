@@ -21,12 +21,13 @@ export const routesComputeDuration = createServerFn({ method: "POST" })
         destination: LatLngSchema,
         travelMode: TravelModeSchema,
         departureTime: z.string().max(64).optional(),
+        googleAttemptKind: z.enum(["initial", "retry", "fallback", "unknown"]).optional(),
       })
       .parse(input),
   )
   .handler(async ({ data }) => {
     const { getRouteDuration } = await import("@/lib/google-routes.server");
-    return getRouteDuration(data.origin, data.destination, data.travelMode, data.departureTime);
+    return getRouteDuration(data.origin, data.destination, data.travelMode, data.departureTime, data.googleAttemptKind);
   });
 
 export const routesComputeDistance = createServerFn({ method: "POST" })

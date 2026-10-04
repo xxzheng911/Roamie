@@ -79,10 +79,10 @@ for (const value of ["1", "true", true, 1]) {
     env,
     {
       authenticate: async () => "legacy-user",
-      provider: async () => Response.json({ places: [] }),
+      provider: (input, env) => fetchGoogleRestProvider(input, env, async () => Response.json({ places: [] })),
     },
   );
-  assert.equal(response.status, 200);
+  assert.equal(response.status, 503);
   assert.equal(guard.calls(), 0);
   assert.deepEqual(watched, ["google:ip:203.0.113.10", "google:user:legacy-user"]);
   const missingLimiter = await handleGoogleProxy(
@@ -92,7 +92,7 @@ for (const value of ["1", "true", true, 1]) {
       body: JSON.stringify(text),
     }),
     { ABUSE_GUARD: guard.namespace },
-    { authenticate: async () => "legacy-user", provider: async () => Response.json({ places: [] }) },
+    { authenticate: async () => "legacy-user", provider: (input, env) => fetchGoogleRestProvider(input, env, async () => Response.json({ places: [] })) },
   );
   assert.equal(missingLimiter.status, 503);
   assert.deepEqual(await missingLimiter.json(), { error: "google_rate_limit_unavailable" });
@@ -110,8 +110,8 @@ for (const value of ["1", "true", true, 1]) {
       return Response.json({ places: [] });
     },
   );
-  assert.equal(response.status, 200);
-  assert.equal(fetches, 1);
+  assert.equal(response.status, 503);
+  assert.equal(fetches, 0);
   assert.equal(guard.calls(), 0);
   let enforcedFetches = 0;
   const denied = await runWithGuardTestContext({ userId: "enforced-user", ip: "203.0.113.11" }, () =>
@@ -150,11 +150,11 @@ for (const value of ["1", "true", true, 1]) {
         ip: "203.0.113.12",
       }),
   );
-  assert.equal(allowed, null);
-  assert.equal(guard.calls(), 0);
+  assert.equal(allowed.status, 503);
+  assert.equal(guard.calls(), 3);
   const ai = await authorizeAiUse("chat", new Request("https://roamie.tw/"));
   assert.equal(ai, null);
-  assert.equal(guard.calls(), 0);
+  assert.equal(guard.calls(), 3, "AI bootstrap policy remains unchanged");
   const closed = await runWithWorkerRequest({ env: { ABUSE_GUARD_ENFORCEMENT: "1" }, request: new Request("https://roamie.tw/") }, () =>
     authorizeAiUse("chat", new Request("https://roamie.tw/")),
   );
@@ -237,10 +237,10 @@ for (const value of ["1", "true", true, 1]) {
       dependencies,
       signing,
     );
-  assert.equal((await load("203.0.113.40")).status, 200);
+  assert.equal((await load("203.0.113.40")).status, 503);
   assert.equal(guard.calls(), 0);
   const limitedIp = "203.0.113.41";
-  for (let index = 0; index < 120; index += 1) assert.equal((await load(limitedIp)).status, 200);
+  for (let index = 0; index < 120; index += 1) assert.equal((await load(limitedIp)).status, 503);
   const limited = await load(limitedIp);
   assert.equal(limited.status, 429);
   assert.equal(await limited.text(), "");
@@ -283,4 +283,4 @@ for (const value of ["1", "true", true, 1]) {
   assert.match(readFileSync("wrangler.jsonc", "utf8"), /new_sqlite_classes/);
 }
 
-console.log("PASS abuse guard bootstrap: legacy limits, no DO, kill switches inactive, enforcement still fail closed");
+console.log("PASS bootstrap: Google durable cost and kill switches always enforced; AI/server-function rollout unchanged");

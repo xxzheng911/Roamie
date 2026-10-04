@@ -140,6 +140,8 @@ export const GoogleRestEnvelope = z
     method: z.enum(["GET", "POST"]),
     body: z.unknown().optional(),
     fieldMask: z.string().min(1).max(2048).optional(),
+    // Observational only: never changes admission, weight or principal.
+    attemptKind: z.enum(["initial", "retry", "fallback", "unknown"]).optional(),
   })
   .strict();
 
@@ -199,5 +201,5 @@ export function googleRestRequest(input: unknown) {
     url.search = new URLSearchParams(q as Record<string, string>).toString();
   } else throw new Error("unsupported_google_operation");
   if (data.method === "GET" && data.body != null) throw new Error("unexpected_body");
-  return { url: url.toString(), method: data.method, body, fields, family };
+  return { url: url.toString(), method: data.method, body, fields, family, attemptKind: data.attemptKind };
 }

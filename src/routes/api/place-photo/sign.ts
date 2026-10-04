@@ -1,5 +1,4 @@
 import { newGuardObservation, observeGuardRejection } from "@/lib/abuse-guard-telemetry.server";
-import { authorizePlacePhotoSign } from "@/lib/abuse-guard.server";
 import { isAbuseGuardEnforcementOn } from "@/lib/abuse-guard-enforcement.server";
 import { checkGoogleProviderRate } from "@/lib/google-rate-limit.server";
 import { fixedStatusResponse, isKillSwitchOn } from "@/lib/kill-switch.server";
@@ -8,7 +7,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 import { requireAuthenticatedAiRequest } from "@/lib/ai/endpoint-guard.server";
 import { resolvePublicReadPrincipal } from "@/lib/public-read-auth";
-import { signPlacePhoto } from "@/lib/place-photo-signature.server";
+import { signPlacePhoto, sealPlacePhotoPrincipal } from "@/lib/place-photo-signature.server";
 import { buildPlacePhotoProxyUrl } from "@/lib/safe-image-url";
 import { validatePhotoResource } from "@/routes/api/place-photo";
 import type { CloudflareRuntimeEnv } from "@/lib/server-request-context";
@@ -71,20 +70,19 @@ export const Route = createFileRoute("/api/place-photo/sign")({
                   { status: 429, headers: { "Retry-After": "60" } },
                 );
           }
-          if (enforced && auth) {
-            const photoGuard = await authorizePlacePhotoSign(body.photo, runtimeEnv, request, auth.userId);
-            if (photoGuard) return photoGuard;
-          }
+          // Signing is not a Google upstream. Charge the authenticated owner on media fetch.
+          const principal = auth ? await sealPlacePhotoPrincipal(runtimeEnv ?? {}, auth.userId) : undefined;
           const token = await signPlacePhoto(
             runtimeEnv ?? {},
             body.photo,
             body.width,
             undefined,
-            auth ? undefined : "guest",
+            auth ? "authenticated" : "guest",
+            principal,
           );
           const base = buildPlacePhotoProxyUrl(body.photo, body.width);
           const separator = base.includes("?") ? "&" : "?";
-          const audience = auth ? "" : "&aud=guest";
+          const audience = auth ? `&aud=authenticated&principal=${encodeURIComponent(principal!)}` : "&aud=guest";
           return Response.json({
             url: `${base}${separator}expires=${token.expires}&signature=${encodeURIComponent(token.signature)}${audience}`,
           });

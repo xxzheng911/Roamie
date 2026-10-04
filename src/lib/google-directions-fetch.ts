@@ -1,6 +1,6 @@
 import type { LatLng, RouteApiResult } from "@/lib/google-routes-fetch";
 import type { RoutesTravelMode } from "@/lib/routes/types";
-import { googleRestFetch } from "@/lib/google-rest-transport";
+import { googleRestFetch, type GoogleAttemptContext } from "@/lib/google-rest-transport";
 import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
 import {
   directionsLocationType,
@@ -85,6 +85,7 @@ function directionsFailureTelemetry(params: {
 export type DirectionsTravelMode = "transit" | "walking" | "driving" | "bicycling";
 
 export type DirectionsQueryOptions = {
+  googleAttemptKind?: GoogleAttemptContext["kind"];
   region?: string;
   locationContext?: string;
   /** 送入 Directions API（place_id:…）並供 log */
@@ -156,7 +157,7 @@ export async function fetchGoogleDirectionsRoute(
   mode: DirectionsTravelMode,
   departureTime?: string,
   region?: string,
-  logPlaceIds?: { originPlaceId?: string; destinationPlaceId?: string; logLegKey?: string },
+  logPlaceIds?: { originPlaceId?: string; destinationPlaceId?: string; logLegKey?: string; googleAttemptKind?: GoogleAttemptContext["kind"] },
 ): Promise<RouteApiResult> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
@@ -220,7 +221,7 @@ export async function fetchGoogleDirectionsRoute(
   }
 
   try {
-    const res = await googleRestFetch(requestUrl, { signal: ctrl.signal });
+    const res = await googleRestFetch(requestUrl, { signal: ctrl.signal }, { kind: logPlaceIds?.googleAttemptKind ?? "initial" });
     let json: DirectionsResponse;
     try {
       json = (await res.json()) as DirectionsResponse;
@@ -412,6 +413,7 @@ export async function fetchGoogleDirectionsForRoutesMode(
       originPlaceId: options?.originPlaceId,
       destinationPlaceId: options?.destinationPlaceId,
       logLegKey: options?.logLegKey,
+      googleAttemptKind: options?.googleAttemptKind,
     },
   );
 }

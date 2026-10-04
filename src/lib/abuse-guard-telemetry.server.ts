@@ -10,6 +10,9 @@ import { isAbuseGuardEnforcementOn } from "@/lib/abuse-guard-enforcement.server"
 type Provider = "google" | "ai";
 type Family = GoogleBillingFamily | AiSurface;
 type Metric =
+  | "cache_hit"
+  | "cache_miss"
+  | "cache_deduped"
   | "guard_decision"
   | "provider_attempt"
   | "provider_success"
@@ -35,6 +38,7 @@ const reasons: Record<Decision, readonly GuardTelemetryReason[]> = {
   unavailable: ["guard_unavailable", "missing_principal"],
 };
 const metrics: readonly Metric[] = [
+  "cache_hit", "cache_miss", "cache_deduped",
   "guard_decision",
   "provider_attempt",
   "provider_success",
@@ -53,6 +57,8 @@ type State = {
   seen: Set<string>;
   env: Readonly<Record<string, unknown>> | undefined;
   complete: boolean;
+  audience?: "guest" | "authenticated" | "legacy_capability";
+  attemptKind?: "initial" | "retry" | "fallback" | "unknown";
 };
 const observations = new WeakMap<GuardObservation, State>();
 const aiScopes = new WeakMap<object, Map<AiSurface, GuardObservation>>();
@@ -78,6 +84,28 @@ export function newGuardObservation(provider: Provider, family: Family): GuardOb
 
 export function googleObservation(family: GoogleBillingFamily): GuardObservation {
   return newGuardObservation("google", family);
+}
+
+/** Only bounded dimensions; never identity, payload, URL, token or request ID. */
+export function configureGoogleObservation(
+  observation: GuardObservation,
+  env: Readonly<Record<string, unknown>> | undefined,
+  audience: "guest" | "authenticated" | "legacy_capability",
+  attemptKind: "initial" | "retry" | "fallback" | "unknown",
+): void {
+  const state = observations.get(observation);
+  if (!state || state.provider !== "google") return;
+  state.env = env;
+  state.audience = ["guest", "authenticated", "legacy_capability"].includes(audience) ? audience : undefined;
+  state.attemptKind = ["initial", "retry", "fallback", "unknown"].includes(attemptKind) ? attemptKind : "unknown";
+}
+
+/** Cache events are emitted only at an actual server cache lookup. No inferred client hits. */
+export function observeGoogleCache(family: GoogleBillingFamily, outcome: "hit" | "miss" | "deduped"): void {
+  const observation = googleObservation(family);
+  const scope = getWorkerScope();
+  configureGoogleObservation(observation, scope?.env, scope?.verifiedUserId ? "authenticated" : "guest", "unknown");
+  emit(observation, outcome === "hit" ? "cache_hit" : outcome === "miss" ? "cache_miss" : "cache_deduped");
 }
 
 export function aiObservation(family: AiSurface): GuardObservation {
@@ -107,13 +135,9 @@ function emit(
   if (!state) return false;
   try {
     const env = state.env;
-    // No process-env fallback: these events require an actual Enforcement Worker binding.
-    if (
-      !env ||
-      !Object.prototype.hasOwnProperty.call(env, "ABUSE_GUARD_ENFORCEMENT") ||
-      !isAbuseGuardEnforcementOn(env)
-    )
-      return false;
+    // Google usage is observable even when the broader blocking rollout is disabled.
+    // AI/credits retain their existing rollout contract.
+    if (!env || (state.provider !== "google" && !isAbuseGuardEnforcementOn(env))) return false;
     if (!metrics.includes(metric) || !validFamily(state.provider, state.family)) throw new Error();
     if (metric === "guard_decision") {
       if (!decision || !reasons[decision]?.includes(reason as GuardTelemetryReason))
@@ -144,7 +168,9 @@ function emit(
     if (typeof binding?.writeDataPoint !== "function") throw new Error();
     const hour = new Date(Math.floor(Date.now() / 3_600_000) * 3_600_000).toISOString();
     binding.writeDataPoint({
-      blobs: [metric, state.provider, state.family, decision, reason, "enforcement", version, hour],
+      blobs: [metric, state.provider, state.family, decision, reason,
+        isAbuseGuardEnforcementOn(env) ? "enforcement" : "bootstrap", version, hour,
+        state.audience ?? "unknown", state.attemptKind ?? "unknown"],
       doubles: [1],
       indexes: [version],
     });

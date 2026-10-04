@@ -113,7 +113,8 @@ assertUses("src/routes/_app.tsx", /requireAppShellAccess/);
 assertUses("src/routes/_app.settings.tsx", /requireAuthenticatedRoute/);
 assertUses("src/routes/api/place-photo/sign.ts", /requireAuthenticatedAiRequest/);
 assertOmits("src/routes/api/place-photo/sign.ts", /authorizeGuestPlacePhotoSign|authorizeGuestGoogleBilling/);
-assertUses("src/routes/api/place-photo.ts", /authorizeGuestPlacePhotoFetch/);
+assertUses("src/routes/api/place-photo.ts", /runGoogleUpstreamAttempt/);
+assertUses("src/lib/google-upstream-attempt.server.ts", /includeGlobalBudget: true/);
 assertUses("src/lib/abuse-guard.server.ts", /export async function authorizeGuestGoogleBilling/);
 
 console.log("  ✓ guest public read stays allowlisted and AI routes stay authenticated");
