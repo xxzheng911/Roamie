@@ -9,9 +9,9 @@ function readSecret(env?: CloudflareRuntimeEnv): string | null {
   return typeof fallback === "string" && fallback.trim().length >= 32 ? fallback.trim() : null;
 }
 
-function tokenPayload(photo: string, width: number, expires: number, audience?: "guest"): string {
+function tokenPayload(photo: string, width: number, expires: number, audience?: "guest" | "authenticated", principal?: string): string {
   const base = `${photo}\n${width}\n${expires}`;
-  return audience === "guest" ? `${base}\nguest` : base;
+  return audience === "authenticated" ? `${base}\nauthenticated\n${principal ?? ""}` : audience === "guest" ? `${base}\nguest` : base;
 }
 
 async function hmac(secret: string, value: string): Promise<string> {
@@ -57,7 +57,8 @@ export async function verifyPlacePhotoSignature(
   expires: number,
   signature: string,
   nowSeconds = Math.floor(Date.now() / 1000),
-  audience?: "guest",
+  audience?: "guest" | "authenticated",
+  principal?: string,
 ): Promise<boolean> {
   const secret = readSecret(env);
   if (
@@ -67,6 +68,22 @@ export async function verifyPlacePhotoSignature(
     expires > nowSeconds + TOKEN_TTL_SECONDS + 30
   )
     return false;
-  const expected = await hmac(secret, tokenPayload(photo, width, expires, audience));
-  return constantTimeEqual(expected, signature);
+  if (audience !== undefined && audience !== "guest" && audience !== "authenticated") return false;
+  if (audience === "authenticated" ? !principal : principal !== undefined) return false;
+  const expected = await hmac(secret, tokenPayload(photo, width, expires, audience, principal));
+  if (!constantTimeEqual(expected, signature)) return false;
+  return audience !== "authenticated" || await validPhotoPrincipal(secret, principal!);
+}
+
+/** Verify the opaque subject format emitted by 11eff784; never use it to alter baseline billing. */
+async function validPhotoPrincipal(secret: string, value: string): Promise<boolean> {
+  if (!/^[A-Za-z0-9_-]{38,512}$/.test(value)) return false;
+  try {
+    const material = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`roamie-photo-principal-v1:${secret}`));
+    const key = await crypto.subtle.importKey("raw", material, "AES-GCM", false, ["decrypt"]);
+    const bytes = Uint8Array.from(atob(value.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
+    const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: bytes.slice(0, 12) }, key, bytes.slice(12));
+    const userId = new TextDecoder("utf-8", { fatal: true }).decode(plain);
+    return userId.length > 0 && userId.length <= 128;
+  } catch { return false; }
 }

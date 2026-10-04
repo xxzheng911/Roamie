@@ -272,7 +272,12 @@ export async function handlePlacePhotoRequest(
   }
   const expires = Number(url.searchParams.get("expires"));
   const signature = url.searchParams.get("signature") ?? "";
-  const guestPhoto = url.searchParams.get("aud") === "guest";
+  const audience = url.searchParams.get("aud") ?? undefined;
+  const principal = url.searchParams.get("principal") ?? undefined;
+  // Select exactly one signed format. Never retry a failed new token as legacy.
+  if (audience !== undefined && audience !== "guest" && audience !== "authenticated")
+    return new Response("Unauthorized", { status: 401 });
+  const guestPhoto = audience === "guest";
   if (
     !(await verifyPlacePhotoSignature(
       runtimeEnv,
@@ -281,7 +286,8 @@ export async function handlePlacePhotoRequest(
       expires,
       signature,
       undefined,
-      guestPhoto ? "guest" : undefined,
+      audience,
+      principal,
     ))
   ) {
     return new Response("Unauthorized", { status: 401 });

@@ -140,6 +140,8 @@ export const GoogleRestEnvelope = z
     method: z.enum(["GET", "POST"]),
     body: z.unknown().optional(),
     fieldMask: z.string().min(1).max(2048).optional(),
+    // Compatibility-only metadata; deliberately excluded from provider authority.
+    attemptKind: z.enum(["initial", "retry", "fallback", "unknown"]).optional(),
   })
   .strict();
 
