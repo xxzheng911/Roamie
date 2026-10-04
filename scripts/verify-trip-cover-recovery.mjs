@@ -1,0 +1,46 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { createTripCoverCache, TRIP_COVER_CACHE_NAMESPACE, TRIP_COVER_REMOTE_TTL_MS, TRIP_COVER_NEGATIVE_TTL_MS } from '../src/services/trip-cover-cache.ts';
+import { unsplashSearchClient, searchUnsplashCoverQueries } from '../src/services/unsplashService.ts';
+import { buildTripCoverQueryStages, getTripCoverImage } from '../src/services/placeImageService.ts';
+import { coverFieldsFromStored, resolveDisplayCoverImage } from '../src/lib/saved-trip/display.ts';
+import { buildSavedTripPersistenceRecord } from '../src/lib/analytics/saved-trip-persistence-telemetry.ts';
+const store=new Map();globalThis.localStorage={getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v),removeItem:k=>store.delete(k),key:i=>[...store.keys()][i],get length(){return store.size}};
+globalThis.window={localStorage:globalThis.localStorage};globalThis.fetch=()=>{throw Error('Live network forbidden')};
+const diagnostics=[];const originalInfo=console.warn;console.warn=(tag,event)=>{if(tag==='[TRIP_COVER_RESOLUTION]')diagnostics.push(event)};
+unsplashSearchClient.getAccessToken=async()=> 'TEST_TOKEN_NOT_LOGGED';unsplashSearchClient.resolveUrl=()=> 'https://mock.invalid/api/unsplash';
+let calls=0,seq=0;const photo='https://images.unsplash.com/photo-valid?fm=jpg';const good={results:[{urls:{regular:photo}}]};
+function install(fn){unsplashSearchClient.fetchImpl=async(u,i)=>{calls++;return fn(u,i)}}
+function chain(n=3){const id=++seq;return Array.from({length:n},(_,i)=>({stage:['native','canonical','generic'][i%3],query:`PRIVATE_QUERY_${id}_${i}`}))}
+let count=0;async function test(name,fn){await fn();count++;console.log('PASS',name)}
+await test('valid remote stops immediately',async()=>{install(()=>Response.json(good));const c=calls;assert.ok(await searchUnsplashCoverQueries(chain()));assert.equal(calls-c,1)});
+await test('empty results bounded fallback',async()=>{install(()=>Response.json({results:[]}));const c=calls;assert.equal(await searchUnsplashCoverQueries(chain(5)),null);assert.equal(calls-c,3)});
+for(const [name,fn] of [['malformed JSON',()=>new Response('{bad')],['malformed shape',()=>Response.json({results:{}})],['network failure',()=>{throw Error('PRIVATE_FAILURE')}],['429',()=>new Response('',{status:429})],['500',()=>new Response('',{status:500})],['503',()=>new Response('',{status:503})],['401',()=>new Response('',{status:401})]])await test(name+' stops chain',async()=>{install(fn);const c=calls;assert.equal(await searchUnsplashCoverQueries(chain()),null);assert.equal(calls-c,1)});
+await test('second valid candidate selected',async()=>{install(()=>Response.json({results:[{urls:{regular:'data:image/png;base64,AA'}},{urls:{regular:photo}}]}));const c=calls;assert.ok(await searchUnsplashCoverQueries(chain()));assert.equal(calls-c,1)});
+await test('same candidate small accepted after regular rejection',async()=>{install(()=>Response.json({results:[{urls:{regular:'data:image/png;base64,AA',small:photo}}]}));assert.ok(await searchUnsplashCoverQueries(chain()))});
+await test('all rejected advances bounded query',async()=>{let n=0;install(()=>Response.json(++n===1?{results:[{urls:{regular:'data:image/png;base64,AA'}}]}:good));assert.ok(await searchUnsplashCoverQueries(chain()));assert.equal(n,2)});
+await test('missing URL safely advances',async()=>{install(()=>Response.json({results:[{}]}));const c=calls;assert.equal(await searchUnsplashCoverQueries(chain(2)),null);assert.equal(calls-c,2)});
+await test('auth absent never dispatches',async()=>{unsplashSearchClient.getAccessToken=async()=>null;const c=calls;assert.equal(await searchUnsplashCoverQueries(chain()),null);assert.equal(calls,c);unsplashSearchClient.getAccessToken=async()=> 'TEST_TOKEN_NOT_LOGGED'});
+await test('timeout aborts non-cooperating fetch and stops chain',async()=>{const old=setTimeout;let signal;globalThis.setTimeout=(fn,ms,...args)=>old(fn,ms===10000?5:ms,...args);try{install((_,i)=>{signal=i.signal;return new Promise(()=>{})});const c=calls;assert.equal(await searchUnsplashCoverQueries(chain()),null);assert.equal(calls-c,1);assert.equal(signal.aborted,true)}finally{globalThis.setTimeout=old}});
+const oldNow=Date.now;let now=oldNow();Date.now=()=>now;
+const fallback={url:'/assets/default.png',source:'roamie',query:'native'};const remote={url:photo,source:'unsplash',query:'native'};
+try{
+ const resolve=createTripCoverCache();let n=0;const fetcher=async()=>{n++;return n===1?fallback:remote};
+ await test('fallback memory only, not persistent',async()=>{assert.equal((await resolve('recover',fetcher)).source,'roamie');assert.equal([...store.keys()].some(k=>k.includes('trip-cover-v2:recover')),false)});
+ await test('60s negative cache suppresses requests',async()=>{now+=59999;assert.equal((await resolve('recover',fetcher)).source,'roamie');assert.equal(n,1)});
+ await test('TTL expiry retries and replaces fallback',async()=>{now++;assert.equal((await resolve('recover',fetcher)).source,'unsplash');assert.equal(n,2)});
+ await test('remote persistent TTL exactly 24h',async()=>{const row=JSON.parse(store.get(`roamie:cache:${TRIP_COVER_CACHE_NAMESPACE}:recover`));assert.equal(row.expiresAt-now,86400000);assert.equal(TRIP_COVER_REMOTE_TTL_MS,86400000);assert.equal(TRIP_COVER_NEGATIVE_TTL_MS,60000)});
+ await test('restart reads remote success without fetching',async()=>{const restart=createTripCoverCache();assert.equal((await restart('recover',async()=>{throw Error('must not fetch')})).source,'unsplash')});
+ await test('restart ignores old persistent poison',async()=>{store.set('roamie:cache:place-image:trip:old',JSON.stringify({data:fallback,expiresAt:now+86400000}));let hits=0;assert.equal((await createTripCoverCache()('old',async()=>{hits++;return remote})).source,'unsplash');assert.equal(hits,1)});
+ await test('negative cache does not survive instance recreation',async()=>{await resolve('restart-negative',async()=>fallback);let hits=0;assert.equal((await createTripCoverCache()('restart-negative',async()=>{hits++;return remote})).source,'unsplash');assert.equal(hits,1)});
+ await test('actual resolver failure then 5min recovery',async()=>{install(()=>{throw Error('temporary')});const c=calls;assert.equal((await getTripCoverImage({destination:'recovery-destination'})).source,'roamie');assert.equal(calls-c,1);now+=300000;install(()=>Response.json(good));assert.equal((await getTripCoverImage({destination:'recovery-destination'})).source,'unsplash');assert.equal(calls-c,2)});
+ await test('20 concurrent requests one resolver chain',async()=>{let release;const wait=new Promise(r=>release=r);let hits=0;const many=Array.from({length:20},()=>resolve('concurrent',async()=>{hits++;await wait;return fallback}));release();assert.equal((await Promise.all(many)).length,20);assert.equal(hits,1)});
+ await test('remote expires at 24h',async()=>{now+=86400001;let hits=0;await createTripCoverCache()('recover',async()=>{hits++;return remote});assert.equal(hits,1)});
+}finally{Date.now=oldNow}
+await test('native canonical generic, dedup, absent canonical skipped',async()=>{assert.deepEqual(buildTripCoverQueryStages({destination:'芭達雅'}).map(x=>x.stage),['native','generic']);assert.equal(buildTripCoverQueryStages({destination:'Pattaya',canonicalEnglishDestination:'Pattaya'}).length,2);assert.equal(buildTripCoverQueryStages({destination:'芭達雅',canonicalEnglishDestination:'Pattaya'}).length,3)});
+await test('20 actual cover calls share one bounded HTTP chain',async()=>{install(async()=>{await new Promise(r=>setTimeout(r,5));return Response.json({results:[]})});const c=calls;const result=await Promise.all(Array.from({length:20},()=>getTripCoverImage({destination:'actual-concurrent-chain'})));assert.ok(result.every(r=>r.source==='roamie'));assert.equal(calls-c,2)});
+await test('HTTP chain dedup',async()=>{install(()=>Response.json({results:[]}));const c=calls;const qs=chain(1);await searchUnsplashCoverQueries([...qs,...qs]);assert.equal(calls-c,1)});
+await test('remote and stored fallback display preserved',async()=>{for(const value of [photo,'/assets/roamie-default-cover-DAbJiF1P.png'])assert.equal(resolveDisplayCoverImage(coverFieldsFromStored({cover_image:value,is_cover_customized:false})),value)});
+await test('fallback enrichment distinct from remote success',async()=>{const r=buildSavedTripPersistenceRecord({event:'cover_enrichment_fallback',savedTripId:'290f5996-a079-4d52-b5d6-d8cfe0f05c9b',source:'chat'});assert.equal(r.event,'cover_enrichment_fallback');assert.equal(r.stage,'cover_enrichment');assert.match(readFileSync('src/routes/_app.chat.tsx','utf8'),/resolvedCover\.source === "unsplash" \? "cover_enrichment_succeeded" : "cover_enrichment_fallback"/)});
+await test('diagnostics bounded and contain no sensitive input',async()=>{const text=JSON.stringify(diagnostics);for(const forbidden of ['PRIVATE_QUERY','TEST_TOKEN','PRIVATE_FAILURE','images.unsplash.com','Authorization','userId'])assert.equal(text.includes(forbidden),false);for(const key of ['query_stage','attempt_index','cache_hit','cached_source','http_status_class','result_count_bucket','candidate_accepted','candidate_rejected','fallback_reason','final_source'])assert.ok(diagnostics.some(d=>key in d),key)});
+console.warn=originalInfo;console.log(`Trip cover recovery: ${count} cases PASS; all network mocked`);

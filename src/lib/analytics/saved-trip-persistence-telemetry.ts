@@ -19,6 +19,7 @@ export const SAVED_TRIP_PERSISTENCE_EVENTS = [
   "saved_trip_navigation_started",
   "cover_enrichment_started",
   "cover_enrichment_succeeded",
+  "cover_enrichment_fallback",
   "cover_enrichment_failed",
 ] as const;
 
@@ -77,6 +78,7 @@ export type SavedTripPersistenceEvent = CorrelationFields &
     | { event: "saved_trip_navigation_started"; savedTripId: string }
     | { event: "cover_enrichment_started"; savedTripId: string }
     | { event: "cover_enrichment_succeeded"; savedTripId: string }
+    | { event: "cover_enrichment_fallback"; savedTripId: string }
     | { event: "cover_enrichment_failed"; savedTripId: string; error: unknown }
   );
 
@@ -92,6 +94,7 @@ const EVENT_STAGE: Record<SavedTripPersistenceEventName, SavedTripPersistenceSta
   saved_trip_navigation_started: "navigation",
   cover_enrichment_started: "cover_enrichment",
   cover_enrichment_succeeded: "cover_enrichment",
+  cover_enrichment_fallback: "cover_enrichment",
   cover_enrichment_failed: "cover_enrichment",
 };
 
@@ -195,6 +198,7 @@ export function buildSavedTripPersistenceRecord(
     input.event === "saved_trip_navigation_started" ||
     input.event === "cover_enrichment_started" ||
     input.event === "cover_enrichment_succeeded" ||
+    input.event === "cover_enrichment_fallback" ||
     input.event === "cover_enrichment_failed"
   ) {
     const savedTripId = sanitizeSavedTripId(input.savedTripId);

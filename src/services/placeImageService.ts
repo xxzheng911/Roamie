@@ -7,6 +7,8 @@ import { extractGooglePlacePhotoName, preferJpegPngImageUrl } from "@/lib/safe-i
 import { pickPlaceSceneFallback } from "@/lib/place-scene-fallback";
 import type { PlaceResult } from "@/lib/place-result";
 import { createRequestCache } from "@/services/requestCache";
+import { createTripCoverCache } from "@/services/trip-cover-cache";
+import { searchUnsplashCoverQueries, type CoverQuery } from "@/services/unsplashService";
 import { searchUnsplashImage, searchUnsplashWithQueries } from "@/services/unsplashService";
 import {
   cachePlaceImages,
@@ -41,6 +43,8 @@ function placeImageCacheKey(input: PlaceImageInput, skipGoogle = false): string 
     .toLowerCase();
 }
 
+const tripCoverCache = createTripCoverCache();
+
 function tripCoverCacheKey(trip: TripCoverInput): string {
   return [
     trip.destination ?? "",
@@ -49,6 +53,7 @@ function tripCoverCacheKey(trip: TripCoverInput): string {
     trip.moodTag ?? "",
     trip.city ?? "",
     trip.category ?? "",
+    trip.canonicalEnglishDestination ?? "",
   ]
     .join("|")
     .trim()
@@ -68,6 +73,8 @@ export type PlaceImageInput = {
 };
 
 export type TripCoverInput = {
+  /** Only a trusted existing canonical name; never inferred or translated here. */
+  canonicalEnglishDestination?: string | null;
   destination?: string | null;
   title?: string | null;
   mood?: string | null;
@@ -191,28 +198,20 @@ export function buildTripCoverQuery(trip: TripCoverInput): string {
   return parts.filter(Boolean).join(" ");
 }
 
-/** 行程封面多 query fallback */
+/** At most three distinct stages. Missing canonical destination is intentionally skipped. */
+export function buildTripCoverQueryStages(trip: TripCoverInput): CoverQuery[] {
+  const native = trip.destination?.trim() || trip.city?.trim();
+  const canonical = trip.canonicalEnglishDestination?.trim();
+  const candidates: CoverQuery[] = [
+    ...(native ? [{ stage: "native" as const, query: `${native} travel` }] : []),
+    ...(canonical ? [{ stage: "canonical" as const, query: `${canonical} travel` }] : []),
+    { stage: "generic", query: "travel landscape" },
+  ];
+  const seen = new Set<string>();
+  return candidates.filter(({ query }) => { const key = query.toLowerCase(); if (seen.has(key)) return false; seen.add(key); return true; }).slice(0, 3);
+}
 export function buildTripCoverQueries(trip: TripCoverInput): string[] {
-  const dest = trip.destination?.trim() || trip.city?.trim() || "";
-  const city = extractCity(dest) || dest.split(/[,，、\s]/)[0]?.trim() || "";
-  const mood = (trip.moodTag ?? trip.mood ?? "").trim();
-  const title = trip.title?.trim() || "";
-
-  const queries: string[] = [];
-  if (city && mood) queries.push(`${city} ${mood} 旅行`);
-  if (city) queries.push(`${city} 旅行`);
-  if (title && title.length <= 12) queries.push(`${title} travel`);
-  if (/咖啡/.test(mood + title + dest)) queries.push(`${city || "taiwan"} coffee travel`);
-  if (/散步|老街/.test(mood + title + dest)) queries.push(`${city || "taiwan"} street walk travel`);
-  if (/夜景|night/i.test(mood + title + dest))
-    queries.push(`${city || "city"} night travel aesthetic`);
-  if (/森林|放空|forest/i.test(mood + title + dest)) queries.push("forest travel soft aesthetic");
-  if (/海|beach/i.test(mood + title + dest)) queries.push("beach travel soft aesthetic");
-
-  const primary = buildTripCoverQuery(trip);
-  if (primary) queries.unshift(primary);
-
-  return [...new Set(queries.filter(Boolean))];
+  return buildTripCoverQueryStages(trip).map(({ query }) => query);
 }
 
 /** Roamie 預設圖（依分類；行程封面不再使用固定溫泉圖） */
@@ -333,9 +332,9 @@ export async function getTripCoverImage(
   trip: TripCoverInput,
 ): Promise<{ url: string; source: ImageSource; query: string | null }> {
   const key = tripCoverCacheKey(trip);
-  return placeImageRequestCache.getOrFetch(`trip:${key}`, async () => {
-    const queries = buildTripCoverQueries(trip);
-    const unsplash = await searchUnsplashWithQueries(queries);
+  return tripCoverCache(key, async () => {
+    const queries = buildTripCoverQueryStages(trip);
+    const unsplash = await searchUnsplashCoverQueries(queries);
     if (unsplash) {
       return { url: unsplash.url, source: "unsplash" as const, query: unsplash.query };
     }
@@ -343,7 +342,7 @@ export async function getTripCoverImage(
     return {
       url: roamieDefaultCover,
       source: "roamie" as const,
-      query: queries[0] ?? null,
+      query: queries[0]?.query ?? null,
     };
   });
 }

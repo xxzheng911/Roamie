@@ -11304,9 +11304,9 @@ function Chat() {
         title: itinerary.title,
       });
       void coverEnrichment.then(
-        () => {
+        (resolvedCover) => {
           emitSavedTripPersistenceEvent({
-            event: "cover_enrichment_succeeded",
+            event: resolvedCover.source === "unsplash" ? "cover_enrichment_succeeded" : "cover_enrichment_fallback",
             generationId,
             source: "chat",
             savedTripId: saved.id,
