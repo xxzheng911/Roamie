@@ -12,6 +12,8 @@ import {
 import {
   AUTH_ACTION_RESUME_EVENT,
   claimPendingAuthAction,
+  clearPendingAuthAction,
+  isOnboardingPlanIntent,
   peekPendingAuthAction,
   resolvePendingAuthReturnPath,
   returnPathsMatch,
@@ -52,6 +54,16 @@ export function AuthActionRuntime() {
       registerAuthRequirementPrompt(null);
     };
   }, [navigate]);
+
+  useEffect(() => {
+    if (loading || user) return;
+    const pending = peekPendingAuthAction();
+    if (!pending || !isOnboardingPlanIntent(pending)) return;
+    const pathname = href.split("?")[0];
+    const onAuthRoute =
+      pathname === "/login" || pathname.startsWith("/login/") || pathname.startsWith("/auth/");
+    if (!onAuthRoute) clearPendingAuthAction();
+  }, [href, loading, user]);
 
   useEffect(() => {
     if (loading || !user) return;

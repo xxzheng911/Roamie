@@ -206,6 +206,81 @@ try {
       console.log(`PASS ${native ? "native" : "web"} ${action} ${path}: completed, original context, resume once`);
     }
   }
+  function button(tree, label) {
+    if (!tree || typeof tree !== "object") return null;
+    if (tree.type === "button" && JSON.stringify(tree.props.children).includes(label)) return tree;
+    for (const child of [tree.props?.children].flat(Infinity)) {
+      const found = button(child, label); if (found) return found;
+    }
+    return null;
+  }
+  for (const native of [false, true]) {
+    for (const plan of ["free", "plus"]) {
+      for (const guest of [false, true]) {
+        let { f, api, local, preferences } = setup(native);
+        await api.loadOnboardingState();
+        const welcome = component(f, api.WelcomeRoute.component);
+        for (const label of ["plusPurchase.start", "plusPurchase.continue", "plusPurchase.continue"]) {
+          button(welcome.render().tree, label).props.onClick();
+        }
+        button(welcome.render().tree, plan === "free" ? "plusPurchase.tryFree" : "plusPurchase.upgrade").props.onClick();
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(window.location.pathname, "/login", "both choices go directly to Login");
+        assert.equal(api.isOnboardingCompletedSync(), true);
+        assert.equal(api.peekPendingAuthAction().metadata.onboardingPlanIntent, plan);
+        assert.equal(api.peekPendingAuthAction().action, plan === "plus" ? "subscription_action" : "account_action");
+        assert.equal(local.has("roamie:companionModeTier"), false, "choice is not persistent plan state");
+        const runtime = component(f, api.AuthActionRuntime);
+        let plus = component(f, () => api.PlusPurchaseProvider({ children: null }));
+        plus.render().commit(); runtime.render().commit(); f.flush();
+        assert.equal(paywall(plus.render().tree), false, "anonymous user never opens paywall");
+        if (guest) {
+          f.navigate({ to: api.consumeGuestAuthReturnPath() });
+          assert.equal(window.location.pathname, "/");
+          assert.equal(api.peekPendingAuthAction(), null);
+          assert.equal(f.user, null);
+          runtime.render().commit(); f.flush();
+          assert.equal(paywall(plus.render().tree), false);
+          // Reload the modules / app, then sign into another account. No pending intent survives.
+          ({ f, api } = setup(native, local, preferences));
+          await api.loadOnboardingState();
+          f.user = { id: "another-account" }; f.navigate({ to: "/login" });
+          await api.navigateOnceAfterLogin(f.navigate, "login-session-restore");
+          plus = component(f, () => api.PlusPurchaseProvider({ children: null }));
+          plus.render().commit(); component(f, api.AuthActionRuntime).render().commit(); f.flush();
+          assert.equal(paywall(plus.render().tree), false);
+          assert.equal(api.peekPendingAuthAction(), null);
+        } else {
+          f.user = { id: "authenticated-without-plus-entitlement" };
+          await api.navigateOnceAfterLogin(f.navigate, "login-session-restore");
+          assert.equal(window.location.pathname, "/");
+          plus.render().commit(); runtime.render().commit(); f.flush();
+          assert.equal(paywall(plus.render().tree), plan === "plus");
+          assert.equal(api.peekPendingAuthAction(), null, "claim clears before handoff");
+          if (plan === "plus") plus.render().tree.props.children.find(c => c?.type === "paywall").props.onOpenChange(false);
+          runtime.render().commit(); f.flush();
+          assert.equal(paywall(plus.render().tree), false);
+          assert.equal(window.location.pathname, "/");
+        }
+        console.log(`PASS onboarding ${native ? "native" : "web"} ${plan} -> ${guest ? "Guest then restart/login" : "Login/Home/one-shot handoff"}`);
+      }
+    }
+    // Explicit navigation cancellation and expiry must not carry intent into unrelated login.
+    const { f, api } = setup(native);
+    api.stashOnboardingPlanIntent("plus"); f.navigate({ to: "/welcome" });
+    component(f, api.AuthActionRuntime).render().commit(); assert.equal(api.peekPendingAuthAction(), null);
+    api.stashOnboardingPlanIntent("plus");
+    const now = Date.now; Date.now = () => now() + 31 * 60 * 1000;
+    try { assert.equal(api.peekPendingAuthAction(), null); } finally { Date.now = now; }
+    for (const tier of ["free", "plus"]) {
+      f.user = { id: `existing-${tier}` }; f.navigate({ to: "/login" }); api.resetPostLoginNavigation();
+      await api.markOnboardingCompleted(); await api.navigateOnceAfterLogin(f.navigate, "login-session-restore");
+      const plus = component(f, () => api.PlusPurchaseProvider({ children: null }));
+      plus.render().commit(); component(f, api.AuthActionRuntime).render().commit(); f.flush();
+      assert.equal(paywall(plus.render().tree), false, "normal login has no onboarding purchase intent");
+    }
+  }
+  assert.match(readFileSync("src/routes/login.tsx", "utf8"), /consumeGuestAuthReturnPath\(\)/);
   const callback = readFileSync("src/routes/auth.callback.tsx", "utf8");
   assert.match(callback, /navigateOnceAfterLogin/);
   assert.match(callback, /search: opts.search/);

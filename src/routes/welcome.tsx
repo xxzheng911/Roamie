@@ -4,21 +4,15 @@ import { useState } from "react";
 import { ArrowRight, Crown, Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { MobileFrame } from "@/components/MobileFrame";
-import { useAccessOptional } from "@/hooks/use-access";
-import { usePlusUpgrade } from "@/hooks/use-plus-upgrade";
 import { useIosInteractiveRoute } from "@/hooks/use-ios-interactive-route";
-import { markIntroCompleted } from "@/lib/plan-tier";
-import { applyLocalMockPlanTier, syncMockPlanTierToProfile } from "@/lib/plan-tier/sync-mock-tier";
+import { stashOnboardingPlanIntent, clearPendingAuthAction } from "@/lib/auth-pending-action";
 import {
+  markOnboardingCompleted,
   loadOnboardingState,
   isOnboardingCompletedSync,
   logShowOnboardingFirstLaunch,
   logSkipOnboarding,
 } from "@/lib/onboarding-storage";
-import { resolveStartupPath } from "@/lib/post-auth-navigation";
-import { guardStartupTarget, logStartupNavigationContext } from "@/lib/startup-navigation";
-import { logNavSkipSameRoute, shouldSkipStartupNavigation } from "@/lib/startup-boot-state";
-import { readBrowserPathname } from "@/lib/startup-path";
 import { resetOnboardingState } from "@/lib/onboarding-storage";
 import { AnalyticsEvents } from "@/constants/analytics-events";
 import { trackEvent } from "@/services/analytics";
@@ -48,8 +42,6 @@ function Welcome() {
   }));
   const navigate = useNavigate();
   useIosInteractiveRoute("welcome");
-  const access = useAccessOptional();
-  const { openRevenueCatPaywall } = usePlusUpgrade();
   // Login can return to the companion selection context after onboarding is done.
   // Remounting that context must not replay the first-launch introduction.
   const [step, setStep] = useState(() =>
@@ -58,42 +50,18 @@ function Welcome() {
   const [finishing, setFinishing] = useState(false);
   const isTierStep = step >= INTRO_STEPS.length;
 
-  const goNextAfterOnboarding = async () => {
-    const next = guardStartupTarget(
-      await resolveStartupPath({ skipLog: true, source: "welcome-complete" }),
-      "welcome-complete",
-    );
-    const current = readBrowserPathname();
-    if (shouldSkipStartupNavigation(current, next)) {
-      logNavSkipSameRoute({ source: "welcome-complete", current, target: next });
-      return;
-    }
-    await logStartupNavigationContext("welcome-complete", next);
-    navigate({ to: next, replace: true });
-  };
-
   const completeSelection = async (tier: "free" | "plus") => {
     if (finishing) return;
     setFinishing(true);
 
     try {
-      if (tier === "plus") {
-        await markIntroCompleted(tier);
-        trackEvent(AnalyticsEvents.INTRO_COMPLETED, { tier_choice: tier });
-        openRevenueCatPaywall();
-        setFinishing(false);
-        return;
-      } else if (access) {
-        access.disablePlusTestMode();
-      } else {
-        applyLocalMockPlanTier("free");
-        void syncMockPlanTierToProfile("free");
-      }
-
-      await markIntroCompleted(tier);
+      // Device onboarding completion is independent of account/subscription state.
+      await markOnboardingCompleted();
+      if (!stashOnboardingPlanIntent(tier)) throw new Error("Unable to preserve login intent");
       trackEvent(AnalyticsEvents.INTRO_COMPLETED, { tier_choice: tier });
-      await goNextAfterOnboarding();
+      await navigate({ to: "/login", replace: true });
     } catch (e) {
+      clearPendingAuthAction();
       console.error("[welcome] companion mode selection failed", e);
       toast.error(t("plusPurchase.setupError"));
       setFinishing(false);

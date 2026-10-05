@@ -140,9 +140,10 @@ assert.equal(
   "stale auth continuations expire instead of opening after an unrelated login",
 );
 
-assert.match(welcome, /usePlusUpgrade/);
-assert.match(welcome, /openRevenueCatPaywall\(\)/);
-assert.match(welcome, /await markIntroCompleted\(tier\)[\s\S]*openRevenueCatPaywall\(\)/);
+assert.match(welcome, /stashOnboardingPlanIntent\(tier\)/);
+assert.match(welcome, /await markOnboardingCompleted\(\)/);
+assert.match(welcome, /navigate\(\{ to: "\/login", replace: true \}\)/);
+assert.doesNotMatch(welcome, /applyLocalMockPlanTier|syncMockPlanTierToProfile|disablePlusTestMode|openRevenueCatPaywall/);
 assert.doesNotMatch(welcome, /openSubscriptionManagement|apps\.apple\.com\/account\/subscriptions/);
 assert.match(home, /usePlusUpgrade/);
 assert.match(profile, /usePlusUpgrade/);

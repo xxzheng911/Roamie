@@ -30,7 +30,7 @@ import {
   setIosSnapshotLiveInteractionForced,
 } from "@/lib/ios-snapshot-bridge";
 import { isPostLoginNavigationCommitted, navigateOnceAfterLogin } from "@/lib/login-navigation";
-import { clearPendingAuthAction, peekPendingAuthAction, splitAppReturnPath } from "@/lib/auth-pending-action";
+import { consumeGuestAuthReturnPath, splitAppReturnPath } from "@/lib/auth-pending-action";
 import { readStashedTripInviteToken } from "@/lib/trip/trip-collab";
 import { tripInvitePathFromToken } from "@/lib/trip/trip-invite-deep-link";
 import { detectPlatform } from "@/services/platform";
@@ -118,18 +118,10 @@ function Login() {
   const oauthBusyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const authAttemptRef = useRef(0);
   const authSucceededRef = useRef(false);
-  const [pendingAction, setPendingAction] = useState(() => peekPendingAuthAction());
 
   const continueBrowsing = () => {
-    const source = pendingAction?.sourcePath;
-    clearPendingAuthAction();
-    setPendingAction(null);
-    if (source && source.startsWith("/") && !source.startsWith("/login")) {
-      const target = splitAppReturnPath(source);
-      void navigate({ to: target.pathname, search: target.search, replace: true });
-      return;
-    }
-    void navigate({ to: "/", replace: true });
+    const target = splitAppReturnPath(consumeGuestAuthReturnPath());
+    void navigate({ to: target.pathname, search: target.search, replace: true });
   };
 
   const clearOAuthBusyTimer = () => {

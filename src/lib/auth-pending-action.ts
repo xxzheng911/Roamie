@@ -189,3 +189,29 @@ export function claimPendingAuthAction(id: string): PendingAuthAction | null {
   clearPendingAuthAction();
   return pending;
 }
+
+/** Transient UI intent only; the subscription resume handler owns the paywall.
+ * Free has no business action to replay. Neither choice grants a plan or writes a profile.
+ */
+export function stashOnboardingPlanIntent(plan: "free" | "plus"): PendingAuthAction | null {
+  return stashPendingAuthAction({
+    action: plan === "plus" ? "subscription_action" : "account_action",
+    sourcePath: "/",
+    metadata: { onboardingPlanIntent: plan },
+  });
+}
+
+export function isOnboardingPlanIntent(pending: PendingAuthAction): boolean {
+  return (
+    pending.metadata.onboardingPlanIntent === "free" ||
+    pending.metadata.onboardingPlanIntent === "plus"
+  );
+}
+
+/** Guest/cancel consumes the intent before navigation, including any Plus intent. */
+export function consumeGuestAuthReturnPath(): string {
+  const pending = peekPendingAuthAction();
+  clearPendingAuthAction();
+  if (!pending || isOnboardingPlanIntent(pending)) return "/";
+  return pending.sourcePath.startsWith("/login") ? "/" : pending.sourcePath;
+}
