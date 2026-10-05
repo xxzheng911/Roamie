@@ -98,6 +98,7 @@ async function execute(
   const request = new Request("https://fixture.invalid/itinerary", { method: "POST" });
   const exports = {};
   const stubs = {
+    "@/lib/itinerary-diagnostics.server": { setGenerationPhase() {}, generationSettlement() {}, generationSettlementResponse() {}, captureGenerationException() {}, emitGenerationDiagnostic() {} },
     "@tanstack/react-start": {
       createMiddleware: () => ({
         middleware() {

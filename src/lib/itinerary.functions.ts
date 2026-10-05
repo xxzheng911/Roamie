@@ -1,3 +1,4 @@
+import { inGenerationPhase, setGenerationPhase, generationSettlement, generationSettlementResponse, creditSettlementException, captureGenerationException, emitGenerationDiagnostic } from "@/lib/itinerary-diagnostics.server";
 import { integrityRuleCodes, sanitizeIntegrityFailureTelemetry } from "@/lib/analytics/itinerary-integrity-failure-telemetry";
 import { PlaceReviewEvidenceSchema } from "@/lib/place-review-evidence";
 import { z } from "zod";
@@ -37,7 +38,7 @@ import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { logAffiliateFactualEvidenceLifecycle } from "@/lib/affiliate/factual-evidence-lifecycle";
 import {
   validateFinalItineraryIntegrity,
-  validateGeneratedItinerary,
+  validateGeneratedItinerary as validateGeneratedItineraryImpl,
   groupStopsByTripDays,
 } from "@/lib/ai/combination-itinerary-integrity";
 import {
@@ -100,6 +101,10 @@ import {
   MAX_ITINERARY_SELECTED_PLACES,
   MIN_ITINERARY_DAYS,
 } from "@/lib/ai/itinerary-days";
+
+// Coverage validation also runs inside the planner before the final validator stage.
+const validateGeneratedItinerary = (...args: Parameters<typeof validateGeneratedItineraryImpl>) =>
+  inGenerationPhase("validator", () => validateGeneratedItineraryImpl(...args));
 
 type GeographicScopeResult = "in_scope" | "out_of_scope" | "unknown";
 
@@ -513,8 +518,12 @@ export type Itinerary = {
 
 export const generateItinerary = createServerFn({ method: "POST" })
   .middleware([requireItineraryCredits])
-  .inputValidator((input) => InputSchema.parse(input))
+  .inputValidator((input) => {
+    setGenerationPhase("input_validation");
+    return InputSchema.parse(input);
+  })
   .handler(async ({ data, context }) => {
+    setGenerationPhase("candidate_assembly");
     const generationId = data.generationId ?? data.generationTimingId ?? "";
     console.info("[ITINERARY_SERVER_REQUEST]", {
       generationId,
@@ -547,14 +556,24 @@ export const generateItinerary = createServerFn({ method: "POST" })
         transport: "tanstack_createServerFn",
       });
       if (!context.itineraryCreditReservation.plusBypass) {
-        const { error: settlementError } = await context.supabase.rpc(
-          result.success ? "credits_commit" : "credits_rollback",
-          {
-            p_ledger_id: context.itineraryCreditReservation.ledgerId,
-            p_idempotency_key: context.itineraryCreditReservation.idempotencyKey,
-          },
-        );
-        if (settlementError) throw new Error("Credit settlement failed");
+        const operation = result.success ? "commit" : "rollback";
+        setGenerationPhase(result.success ? "credits_commit" : "credits_rollback");
+        generationSettlement(operation, "pending");
+        try {
+          const { data: settlementData, error: settlementError } = await context.supabase.rpc(
+            result.success ? "credits_commit" : "credits_rollback",
+            {
+              p_ledger_id: context.itineraryCreditReservation.ledgerId,
+              p_idempotency_key: context.itineraryCreditReservation.idempotencyKey,
+            },
+          );
+          generationSettlementResponse(operation, settlementData, settlementError);
+          if (settlementError) throw creditSettlementException(settlementError);
+          emitGenerationDiagnostic("settled");
+        } catch (error) {
+          generationSettlement(operation, "failed");
+          throw error;
+        }
       }
       return result;
     };
@@ -876,6 +895,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
       endDatePresent: Boolean(data.endDate?.trim()),
       source: "explicit_days",
     });
+    setGenerationPhase("planner");
     logGenerationTiming("route_day_assembly_start");
 
     let ai: RoamiePayloadV2 | null = null;
@@ -1004,6 +1024,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
     }
 
     if (!ai || coalesceItineraryItems(ai.itinerary).length < 1) {
+      setGenerationPhase("planner");
       devVerboseInfo("[AI_ITINERARY_BUILD] building from selectedPlaces", {
         count: selectedPlaces.length,
         days: data.days,
@@ -1397,6 +1418,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
     }
     routeFinalStops("initial");
     logGenerationTiming("route_day_assembly_done");
+    setGenerationPhase("validator");
     const integrity = validateFinalItineraryIntegrity({
       selectedCombinationIds,
       sessionSelectedCombinationIds: selectedCombinationIds,
@@ -2285,6 +2307,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
     const lat = data.location?.lat;
     const lng = data.location?.lng;
 
+    setGenerationPhase("outfit");
     let outfitAdvice: RoamiePayloadV2["outfitAdvice"];
     if (data.placeAuthority !== "selected_only" && lat != null && lng != null) {
       try {
@@ -2300,10 +2323,11 @@ export const generateItinerary = createServerFn({ method: "POST" })
           mood: data.mood || undefined,
         });
       } catch (e) {
-        console.warn("[Roamie] outfit advice skipped", e);
+        captureGenerationException(e, "optional");
       }
     }
 
+    setGenerationPhase("transit");
     let tripSettings: RoamiePayloadV2["tripSettings"];
     try {
       if (data.placeAuthority === "selected_only") {
@@ -2376,10 +2400,11 @@ export const generateItinerary = createServerFn({ method: "POST" })
           "transitLegs=true",
         );
       } else {
-        console.warn("[Roamie] transit legs skipped on generate", e);
+        captureGenerationException(e, "optional");
       }
     }
 
+    setGenerationPhase("response");
     const gated = applyItineraryLocalizationGate(coalesceItineraryItems(ai.itinerary), {
       softPassEnglish: true,
     });

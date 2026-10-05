@@ -1,6 +1,10 @@
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import { sanitizeItineraryFailureTelemetry } from "@/lib/analytics/itinerary-failure-telemetry";
 import type { AnalyticsEventV1 } from "./events";
+import { generationDiagnosticSnapshot } from "@/lib/itinerary-diagnostics.server";
+import { getWorkerScope } from "@/lib/worker-request-scope";
+
+const generationFailureMetadata = new WeakMap<object, Record<string, unknown>>();
 
 export async function recordAnalyticsEventServer(
   event: AnalyticsEventV1,
@@ -30,9 +34,30 @@ export async function recordAnalyticsEventServer(
   if (event.failureDiagnostics) {
     row.metadata = sanitizeItineraryFailureTelemetry(event.failureDiagnostics);
   }
-  const { error } = await analyticsClient.from("analytics_events").upsert(
-    row,
-    { onConflict: "event_id,event_name", ignoreDuplicates: true },
-  );
-  if (error) console.error("[ANALYTICS_EVENT_WRITE]", event.eventName, error.message);
+  // Reuse the existing terminal event write (no new subrequest or schema).
+  // An inner pre-settlement event must not hide the later commit/cleanup result.
+  const diagnostic =
+    event.eventName === "itinerary_generation_failed" ||
+    event.eventName === "itinerary_generation_succeeded"
+      ? generationDiagnosticSnapshot()
+      : undefined;
+  const terminalDiagnostic =
+    diagnostic &&
+    (diagnostic.primary ||
+      ["succeeded", "plus_bypass", "rejected", "unconfirmed"].includes(diagnostic.commit));
+  const scope = getWorkerScope();
+  if (diagnostic && scope && row.metadata) {
+    generationFailureMetadata.set(scope, row.metadata as Record<string, unknown>);
+  }
+  if (terminalDiagnostic) {
+    row.metadata = {
+      ...(scope ? generationFailureMetadata.get(scope) : undefined),
+      ...(row.metadata as Record<string, unknown> | undefined),
+      generationDiagnostic: diagnostic,
+    };
+  }
+  const { error } = await analyticsClient
+    .from("analytics_events")
+    .upsert(row, { onConflict: "event_id,event_name", ignoreDuplicates: !terminalDiagnostic });
+  if (error) console.error("[ANALYTICS_EVENT_WRITE]", event.eventName, "write_failed");
 }

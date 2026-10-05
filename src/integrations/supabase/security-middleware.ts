@@ -1,3 +1,4 @@
+import { setGenerationPhase, generationSettlement, generationSettlementResponse, captureGenerationException, emitGenerationDiagnostic } from "@/lib/itinerary-diagnostics.server";
 import { aiObservation, observeCredit, observeCreditReserveAttempt } from "@/lib/abuse-guard-telemetry.server";
 import { createMiddleware } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
@@ -38,6 +39,7 @@ export const requireItineraryCredits = createMiddleware({ type: "function" })
         throw new Error(fairUse.status === 429 ? "rate_limited" : "ai_unavailable");
       }
     }
+    setGenerationPhase("credits_reserve");
     const { data: entitlement, error: entitlementError } = await context.supabase.rpc(
       "resolve_user_plus_entitlement",
       { p_user_id: context.userId },
@@ -45,6 +47,8 @@ export const requireItineraryCredits = createMiddleware({ type: "function" })
     const hasPlusAccess = !entitlementError && parsePlusEntitlementSnapshot(entitlement).hasPlus;
     const observation = aiObservation("itinerary");
     if (hasPlusAccess) {
+      generationSettlement("reserve", "plus_bypass");
+      generationSettlement("commit", "plus_bypass");
       observeCredit(observation, "plus_credit_skipped");
       return next({
         context: {
@@ -61,6 +65,7 @@ export const requireItineraryCredits = createMiddleware({ type: "function" })
     const requestId = request.headers.get("x-roamie-request-id")?.trim() || crypto.randomUUID();
     const idempotencyKey = `server:${context.userId}:ITINERARY_GENERATION:${requestId}`;
     observeCreditReserveAttempt(observation, hasPlusAccess);
+    generationSettlement("reserve", "pending");
     const { data: reservationData, error: reservationError } = await context.supabase.rpc(
       "credits_reserve",
       {
@@ -77,7 +82,8 @@ export const requireItineraryCredits = createMiddleware({ type: "function" })
       ledger_id?: string;
     } | null;
     if (reservationError) {
-      throw new Error("Credit reservation unavailable");
+      generationSettlement("reserve", "failed");
+      throw new Error("Credit reservation unavailable", { cause: reservationError });
     }
     if (!reservation?.ok) {
       throw new InsufficientCreditsError();
@@ -86,6 +92,7 @@ export const requireItineraryCredits = createMiddleware({ type: "function" })
       throw new Error("Conflict: request already processed");
     }
 
+    generationSettlement("reserve", "succeeded");
     observeCredit(observation, "free_credit_reserve_succeeded");
     try {
       const result = await next({
@@ -100,13 +107,20 @@ export const requireItineraryCredits = createMiddleware({ type: "function" })
       });
       return result;
     } catch (error) {
+      captureGenerationException(error);
+      setGenerationPhase("credits_rollback");
+      generationSettlement("rollback", "pending");
       try {
-        await context.supabase.rpc("credits_rollback", {
+        const { data: rollbackData, error: rollbackError } = await context.supabase.rpc("credits_rollback", {
           p_ledger_id: reservation.ledger_id ?? null,
           p_idempotency_key: reservation.ledger_id ? null : idempotencyKey,
         });
-      } catch {
-        // Preserve the original handler error; stale cleanup remains the final safety net.
+        generationSettlementResponse("rollback", rollbackData, rollbackError);
+        if (rollbackError) captureGenerationException(rollbackError, "cleanup");
+        else emitGenerationDiagnostic("settled");
+      } catch (rollbackError) {
+        generationSettlement("rollback", "failed");
+        captureGenerationException(rollbackError, "cleanup");
       }
       throw error;
     }

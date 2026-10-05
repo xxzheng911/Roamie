@@ -16,6 +16,8 @@ export default defineConfig({
     },
   },
   vite: {
+    // Keep server maps with the release artifact; never publish client source maps.
+    environments: { ssr: { build: { sourcemap: "hidden" } } },
     envPrefix: ["VITE_", "EXPO_PUBLIC_"],
     server: {
       host: "0.0.0.0",
