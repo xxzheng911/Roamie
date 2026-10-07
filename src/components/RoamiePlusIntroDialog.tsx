@@ -45,6 +45,7 @@ export function RoamiePlusIntroDialog({ open, onOpenChange, onUpgraded }: Props)
     disablePlusTestMode,
   } = useAccess();
   const {
+    purchasesSupported,
     packages,
     offeringsLoading,
     offeringsState,
@@ -73,8 +74,8 @@ export function RoamiePlusIntroDialog({ open, onOpenChange, onUpgraded }: Props)
     busy.current = false;
   }, [user?.id]);
   useEffect(() => {
-    if (open && !isPlusUser) void loadOfferings();
-  }, [open, isPlusUser, loadOfferings]);
+    if (open && !isPlusUser && purchasesSupported) void loadOfferings();
+  }, [open, isPlusUser, purchasesSupported, loadOfferings]);
 
   const handlePurchase = async (packageId: string) => {
     if (busy.current) return;
@@ -165,6 +166,7 @@ export function RoamiePlusIntroDialog({ open, onOpenChange, onUpgraded }: Props)
   const buttonClass =
     "h-auto min-h-11 w-full whitespace-normal break-words rounded-full px-4 py-3 text-sm leading-relaxed";
   const offeringMessage =
+    !purchasesSupported ? "purchaseUnsupported" : offeringsLoading ? null :
     offeringsState === "timeout"
       ? "timeout"
       : offeringsState === "empty"
@@ -316,14 +318,14 @@ export function RoamiePlusIntroDialog({ open, onOpenChange, onUpgraded }: Props)
                     <p className="text-sm text-destructive">
                       {t(`plusPurchase.${offeringMessage}`)}
                     </p>
-                    <button
+                    {purchasesSupported && <button
                       type="button"
                       className={`${buttonClass} underline`}
                       disabled={offeringsLoading || busyPackage !== null}
                       onClick={() => void loadOfferings()}
                     >
                       {t("plusPurchase.retry")}
-                    </button>
+                    </button>}
                   </div>
                 )}
                 <button

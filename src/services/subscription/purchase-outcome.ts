@@ -1,3 +1,4 @@
+import { isRevenueCatPlusActive } from "@/lib/subscription/canonical-plus";
 import { isSubscriptionOwnershipErrorCode } from "@/lib/subscription/revenuecat-identity";
 
 /** Capacitor iOS rejects with a string code; userCancelled is not guaranteed. */
@@ -27,6 +28,6 @@ export function resolveRestoreOutcome(result: import("./types").SubscriptionActi
       ? "ownershipMismatch"
       : "ownershipUnconfirmed";
   }
-  if (!result.status.isActive) return "nothingToRestore";
+  if (!isRevenueCatPlusActive(result.status)) return "nothingToRestore";
   return result.canonicalSynced ? "restored" : "restoreSyncPending";
 }

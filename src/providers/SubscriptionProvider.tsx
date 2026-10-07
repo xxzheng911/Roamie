@@ -40,6 +40,7 @@ export type OfferingsState =
   | "error"
   | "retrying";
 type SubscriptionCtx = {
+  purchasesSupported: boolean;
   status: SubscriptionStatus | null;
   packages: SubscriptionPackage[];
   usage: UsageCounters;
@@ -526,6 +527,7 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
   );
   const value = useMemo(
     () => ({
+      purchasesSupported: adapter.id === "revenuecat",
       status: visibleStatus,
       packages: matchesUser ? packages : [],
       usage: matchesUser ? usage : readLocalUsage(),
