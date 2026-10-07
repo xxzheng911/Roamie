@@ -1,5 +1,4 @@
 import type { GeneratedLocaleContract } from "@/lib/generated-locale";
-import { isCurrentGeneratedCopy } from "@/lib/generated-locale";
 import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
 import { translate } from "@/lib/i18n/translate";
 import type { Locale } from "@/lib/i18n/types";
@@ -50,8 +49,9 @@ export type CoreTrip = GeneratedLocaleContract & {
 };
 
 export function resolveCoreTripTitle(trip: CoreTrip, locale: Locale = effectiveAppLocale()): string {
-  if (trip.isTitleCustomized && trip.customTitle) return trip.customTitle;
-  if (isCurrentGeneratedCopy(trip, locale)) return trip.title;
+  if (trip.isTitleCustomized && trip.customTitle?.trim()) return trip.customTitle;
+  // Saved titles remain authoritative even when an offline snapshot omits locale metadata.
+  if (trip.title?.trim()) return trip.title;
   return translate(locale, "destinationEditorial.generated_trip_title", {
     destination: trip.destinationPlace?.name ?? "", days: trip.days,
   }).trim();
