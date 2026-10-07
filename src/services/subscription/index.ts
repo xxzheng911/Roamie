@@ -64,8 +64,9 @@ const configurationAuthority = createSubscriptionConfigurationAuthority(async (u
       : clientEnv.revenueCatGoogleKey;
   if (!apiKey) throw new Error("revenuecat_public_sdk_key_missing");
 
-  const { Purchases } = await purchasesModule();
+  const { Purchases, LOG_LEVEL } = await purchasesModule();
   if (!configured) {
+    await Purchases.setLogLevel({ level: LOG_LEVEL.WARN });
     await Purchases.configure({ apiKey, appUserID: userId });
     configured = true;
   } else if (configuredUserId !== userId) {

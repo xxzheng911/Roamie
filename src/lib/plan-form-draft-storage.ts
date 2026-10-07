@@ -6,7 +6,7 @@ const DRAFT_KEY = "roamie:plan-form-draft";
 export type PlanFormDraft = {
   destination: TripLocation | null;
   origin: TripLocation | null;
-  budgetMode: BudgetMode;
+  budgetMode: BudgetMode | "";
   styles: string[];
   mood: string;
   startDate: string;

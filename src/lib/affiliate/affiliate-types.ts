@@ -16,6 +16,7 @@ export type AffiliateProviderId = "trip" | "agoda" | "booking" | "klook" | "kkda
 export type AffiliateOfferKind = "hotel" | "flight" | "activity_ticket" | "package";
 
 export type AffiliateLinkOffer = {
+  searchIntent?: "related_experiences";
   provider: AffiliateProviderId;
   kind: AffiliateOfferKind;
   label: string;

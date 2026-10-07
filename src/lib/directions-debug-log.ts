@@ -1,3 +1,4 @@
+import { isDevVerboseLog } from "@/lib/dev-verbose-log";
 import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
 
 /** Xcode / Capacitor 需可見；web dev 亦開啟 */
@@ -36,6 +37,10 @@ function eventDedupeKey(event: string, ctx: DirectionsDebugContext): string {
 
 export function logDirectionsDebug(event: string, ctx: DirectionsDebugContext = {}): void {
   if (!shouldLogDirectionsDebug()) return;
+  // Keep failures/fallbacks visible; normal client lifecycle requires explicit opt-in.
+  const important = /failed|failure|fallback|unavailable|error|exception|429|503/i.test(event) ||
+    Boolean(ctx.error) || /invalid|missing|unusable|mismatch/i.test(ctx.skippedReason ?? "");
+  if (typeof window !== "undefined" && !important && !isDevVerboseLog()) return;
 
   const dedupeKey = eventDedupeKey(event, ctx);
   if (loggedEvents.has(dedupeKey)) return;

@@ -98,3 +98,11 @@ export function shouldRefreshExploreFromMap(
 ) {
   return source === "userGesture" && !query.trim();
 }
+
+/** Cancellation is control flow, not a provider failure. */
+export function isExploreSearchCancellation(error: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return true;
+  if (error === "autocomplete_cancelled") return true;
+  return typeof error === "object" && error !== null &&
+    "name" in error && error.name === "AbortError";
+}

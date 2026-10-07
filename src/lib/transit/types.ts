@@ -74,6 +74,8 @@ export type TransitLegAdvice = {
   transportDisplayText?: string;
   /** 對應 buildLegRouteFingerprint，用於 leg_already_covered 判斷 */
   routeCacheFingerprint?: string;
+  /** Persist the existing negative-cache deadline across itinerary reopen. */
+  routeRetryAfter?: number;
   /**
    * transit 無 API 結果時的替代方案。
    * google_maps_deeplink：日本行程，改開 Google Maps 查路線。

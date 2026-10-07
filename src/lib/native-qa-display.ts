@@ -7,6 +7,9 @@ import type { PlaceResult } from "@/lib/place-result";
 const brands = { trip: "Trip.com", agoda: "Agoda", booking: "Booking.com", klook: "Klook", kkday: "KKday" };
 export function affiliateDisplayLabel(offer: AffiliateLinkOffer, locale: Locale): string {
   const brand = brands[offer.provider];
+  if (offer.searchIntent === "related_experiences") {
+    return translate(locale, "nativeQa.relatedExperienceSearch", { brand });
+  }
   if (offer.kind === "activity_ticket") {
     for (const key of ["ticketSearch", "experienceSearch", "transportSearch"]) {
       if (offer.label === translate("zh-TW", `nativeQa.${key}`, { brand })) {

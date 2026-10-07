@@ -1,5 +1,5 @@
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
-import type { ExploreRequestSession } from "@/lib/explore-request-session";
+import { isExploreSearchCancellation, type ExploreRequestSession } from "@/lib/explore-request-session";
 import type { Locale } from "@/lib/i18n/types";
 import type { PlaceResult } from "@/lib/place-result";
 import type { TripStopSuggestion } from "@/lib/trip-stop-search.functions";
@@ -51,13 +51,16 @@ export async function runExploreMapPlaceSearch(
     sessionToken?: string;
     requestSession?: ExploreRequestSession;
   },
-): Promise<{ suggestions: TripStopSuggestion[]; error: string | null }> {
+): Promise<{ suggestions: TripStopSuggestion[]; error: string | null; cancelled?: boolean }> {
   const trimmed = query.trim();
   devVerboseInfo(`[EXPLORE_SEARCH_START] query=${trimmed}`);
   if (!trimmed) {
     return { suggestions: [], error: null };
   }
 
+  const signal = options.requestSession?.controller.signal;
+  const cancelled = { suggestions: [], error: null, cancelled: true } as const;
+  if (signal?.aborted) return { ...cancelled, suggestions: [] };
   try {
     const result = await searchPlaces(trimmed, {
       locale: options.locale,
@@ -66,12 +69,14 @@ export async function runExploreMapPlaceSearch(
       searchFn: options.searchFn,
       requestSession: options.requestSession,
     });
+    if (isExploreSearchCancellation(result.error, signal)) return { ...cancelled, suggestions: [] };
     devVerboseInfo(`[EXPLORE_SEARCH_RESULTS] count=${result.suggestions.length}`);
     if (result.error && result.suggestions.length === 0) {
       console.warn(`[EXPLORE_SEARCH_ERROR] status=search message=${result.error}`);
     }
     return result;
   } catch (e) {
+    if (isExploreSearchCancellation(e, signal)) return { ...cancelled, suggestions: [] };
     const msg = e instanceof Error ? e.message : String(e);
     console.warn(`[EXPLORE_SEARCH_ERROR] status=exception message=${msg}`);
     return { suggestions: [], error: msg };

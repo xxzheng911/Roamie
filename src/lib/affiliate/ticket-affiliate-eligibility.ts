@@ -73,6 +73,8 @@ export type TicketAffiliateTripContext = {
 };
 
 export type TicketAffiliateDecision = {
+  /** Search navigation only; never product availability or commerce evidence. */
+  searchIntent?: "related_experiences";
   show: boolean;
   reason: string;
   searchKeyword: string;
@@ -280,6 +282,7 @@ const FAMOUS_LANDMARK_KEYWORDS = [
 ];
 
 const STRONG_ATTRACTION_TYPES = new Set([
+  "ferris_wheel",
   "amusement_park",
   "theme_park",
   "aquarium",
@@ -412,12 +415,12 @@ function placeDisplayName(place: TicketAffiliatePlaceInput): string {
 
 function resolvePrimaryType(place: TicketAffiliatePlaceInput): string {
   const primary = (place.primaryType ?? "").trim().toLowerCase();
-  if (primary) return primary;
+  if (primary) return mapPlaceLabelToGoogleType(primary) ?? primary;
   const first = (place.types ?? [])
     .find((t) => t?.trim())
     ?.trim()
     .toLowerCase();
-  return first ?? "";
+  return first ? mapPlaceLabelToGoogleType(first) ?? first : "";
 }
 
 function normalizeGoogleTypes(place: TicketAffiliatePlaceInput): string[] {
@@ -425,7 +428,7 @@ function normalizeGoogleTypes(place: TicketAffiliatePlaceInput): string[] {
 
   for (const t of place.types ?? []) {
     const n = (t ?? "").trim().toLowerCase();
-    if (n) out.add(n);
+    if (n) out.add(mapPlaceLabelToGoogleType(n) ?? n);
   }
 
   const primary = resolvePrimaryType(place);
@@ -446,8 +449,8 @@ function normalizeGoogleTypes(place: TicketAffiliatePlaceInput): string[] {
 
   const category = (place.category ?? "").trim();
   if (category) {
-    const mapped = mapPlaceLabelToGoogleType(category);
-    if (mapped) out.add(mapped);
+    const mapped = mapPlaceLabelToGoogleType(category) ?? category.toLowerCase();
+    out.add(mapped);
   }
 
   return [...out];
@@ -721,10 +724,6 @@ export function resolveAffiliateCommerceEligibility(
     return logDecision(false, "excluded_food_retail_lodging");
   }
 
-  if (isGenericLocalPark(name, types)) {
-    return logDecision(false, "excluded_generic_park");
-  }
-
   if (
     hasHardExcludedType(types) &&
     !hasStrongAttractionType(types) &&
@@ -748,6 +747,17 @@ export function resolveAffiliateCommerceEligibility(
     return logDecision(true, "explicit_activity", "activity", "strong", ["activity"]);
   if (explicitTicketEvidence)
     return logDecision(true, "explicit_admission_ticket", "ticket", "strong", ["admission_ticket"]);
+  // Infrastructure can be a landmark without being a ticket/experience venue.
+  // Keep explicit commerce evidence above this gate, including bridge tours.
+  const infrastructure = types.some((type) => ["bridge", "road", "route", "street_address"].includes(type)) ||
+    /(?:橋|桥)$|\b(?:bridge|road|street)\s*$/i.test(name);
+  if (infrastructure && !(place.affiliateProductProviders?.length) &&
+      !types.some((type) => EXPERIENCE_TYPES.has(type))) {
+    return logDecision(false, "infrastructure_commerce_evidence_required");
+  }
+  if (isGenericLocalPark(name, types)) {
+    return logDecision(false, "excluded_generic_park");
+  }
   if (types.some((type) => EXPERIENCE_TYPES.has(type))) {
     return logDecision(true, "experience_type", "experience", "strong", ["experience_type"]);
   }
@@ -811,12 +821,60 @@ export function resolveAffiliateCommerceEligibility(
   return logDecision(false, "not_ticketable");
 }
 
-/** Backward-compatible display gate; all surfaces share the commerce resolver. */
+/** Local search intent uses tourism identity + prominence, never a venue-name list. */
+export function hasRelatedExperienceSearchIntent(place: TicketAffiliatePlaceInput): boolean {
+  const types = normalizeGoogleTypes(place);
+  const scenicRail = types.some(type => ["scenic_railway", "tourist_railway"].includes(type));
+  // High-confidence tourist identity grants search intent only, never commerce evidence.
+  const highConfidenceTouristAttraction = types.includes("tourist_attraction") &&
+    Number.isFinite(place.rating) && (place.rating ?? 0) >= 4.2 &&
+    Number.isFinite(place.userRatingCount) && (place.userRatingCount ?? 0) >= 1000;
+  const exclusionTypes = types.filter(type =>
+    !(scenicRail && ["train_station", "transit_station"].includes(type)) &&
+    !(highConfidenceTouristAttraction && type === "transit_station"));
+  if (!placeDisplayName(place) || isFoodRetailLodgingDominant(place, types) || hasHardExcludedType(exclusionTypes)) return false;
+  if (types.some(type => ["bridge", "road", "route", "street_address", "neighborhood", "sublocality", "point_of_interest_feature"].includes(type))) return false;
+  if (/(?:橋|桥)$|\b(?:bridge|road|street)\s*$/i.test(placeDisplayName(place))) return false;
+  // Specific attraction metadata permits searching, not asserting paid admission.
+  if (highConfidenceTouristAttraction || scenicRail || types.includes("paid_garden")) return true;
+  const ticketCapableType = types.some(type => [
+    "museum", "art_gallery", "botanical_garden", "garden", "historical_site",
+    "historical_landmark", "historical_place", "heritage_site", "monument", "palace",
+    "temple", "place_of_worship", "hindu_temple", "national_park", "amusement_center",
+  ].includes(type));
+  if (ticketCapableType && types.includes("tourist_attraction")) return true;
+  const attractionIdentity = types.some(type => CULTURAL_LANDMARK_TYPES.has(type) || MAJOR_NATURAL_DESTINATION_TYPES.has(type)) ||
+    (types.includes("tourist_attraction") && (types.includes("landmark") || types.includes("park")));
+  return attractionIdentity && (place.rating ?? 0) >= 4.2 && (place.userRatingCount ?? 0) >= 1000;
+}
+
+/** Shared display gate: commerce eligibility and search intent remain separate. */
 export function shouldShowTicketAffiliate(
   place: TicketAffiliatePlaceInput,
   tripContext?: TicketAffiliateTripContext,
 ): TicketAffiliateDecision {
-  return resolveAffiliateCommerceEligibility(place, tripContext);
+  const commerce = resolveAffiliateCommerceEligibility(place, tripContext);
+  // Actual ticket/tour/activity contracts are unchanged.
+  if (commerce.confidence === "strong" || commerce.exactProviderEvidence) return commerce;
+  const legacySearch = commerce.show && (
+    commerce.reason === "major_cultural_experience_discovery" ||
+    commerce.reason === "major_natural_destination_experience_discovery"
+  );
+  if (!legacySearch && !hasRelatedExperienceSearchIntent(place)) return commerce;
+  return {
+    ...commerce,
+    show: true,
+    eligible: true,
+    reason: "related_experience_search_intent",
+    searchIntent: "related_experiences",
+    commerceType: "unknown",
+    confidence: "supported",
+    evidenceTypes: [],
+    supportedProviders: [],
+    exactProviderEvidence: false,
+    providerSearchFallbackAllowed: true,
+    experienceFallbackAllowed: false,
+  };
 }
 
 export function resolveTicketAffiliateTripContext(

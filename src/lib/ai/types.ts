@@ -122,6 +122,12 @@ export const RoamieItineraryItemSchema = z.object({
   rating: z.number().nullable().optional(),
   userRatingCount: z.number().nullable().optional(),
   reviewEvidence: PlaceReviewEvidenceSchema.optional(),
+  admissionRequired: z.boolean().nullable().optional(),
+  ticketingAvailable: z.boolean().nullable().optional(),
+  guidedTourAvailable: z.boolean().nullable().optional(),
+  activityAvailable: z.boolean().nullable().optional(),
+  transportPassAvailable: z.boolean().nullable().optional(),
+  affiliateProductProviders: z.array(z.enum(["klook", "kkday"])).nullable().optional(),
   businessStatus: z.string().nullable().optional(),
   normalizedOpeningStatus: z.enum(["open", "closed", "unknown"]).optional(),
   openStatus: z
@@ -282,6 +288,12 @@ export function normalizeItineraryItem(
     rating: raw.rating,
     userRatingCount: raw.userRatingCount,
     reviewEvidence: reasonPlace.reviewEvidence,
+    admissionRequired: raw.admissionRequired,
+    ticketingAvailable: raw.ticketingAvailable,
+    guidedTourAvailable: raw.guidedTourAvailable,
+    activityAvailable: raw.activityAvailable,
+    transportPassAvailable: raw.transportPassAvailable,
+    affiliateProductProviders: raw.affiliateProductProviders,
     businessStatus: raw.businessStatus,
     ...(raw.normalizedOpeningStatus !== undefined
       ? { normalizedOpeningStatus: raw.normalizedOpeningStatus }

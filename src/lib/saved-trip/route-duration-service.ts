@@ -2,10 +2,6 @@ import type { LatLng } from "@/lib/google-routes-fetch";
 import type { RoutesTravelMode } from "@/lib/routes/types";
 import { logDirectionsDebug } from "@/lib/directions-debug-log";
 import { fetchRouteDurationFromProvider } from "@/lib/saved-trip/route-duration-providers";
-import {
-  AUTO_WALK_MAX_METERS,
-  straightLineDistanceMeters,
-} from "@/lib/saved-trip/route-duration-fallback";
 import type {
   FetchLegDurationInput,
   RouteLegDurationResult,
@@ -130,25 +126,10 @@ export async function fetchScopedLegDuration(
   const allowModeFallback = input.allowModeFallback !== false;
   const cacheKey = buildScopedRouteCacheKey(scope, origin, destination, preferredMode, query);
 
+  const cached = readScopedCache(cacheKey);
+  // Force may refresh a success, but must not bypass a failure cooldown.
+  if (cached && (!force || !cached.ok)) return cached;
   if (!force) {
-    const cached = readScopedCache(cacheKey);
-    if (cached) {
-      const straightM = straightLineDistanceMeters(origin, destination);
-      // Ignore stale walk-only failures on long legs so distance-aware fallback can run.
-      const staleWalkFail =
-        !cached.ok &&
-        preferredMode === "WALK" &&
-        straightM > AUTO_WALK_MAX_METERS &&
-        !cached.usedEstimatedFallback;
-      if (!staleWalkFail) {
-        logDirectionsDebug("skipped", {
-          legKey: scope.legKey,
-          mode: preferredMode.toLowerCase(),
-          skippedReason: "scoped_cache_hit",
-        });
-        return cached;
-      }
-    }
     const pending = scopedInflight.get(cacheKey);
     if (pending) {
       logDirectionsDebug("skipped", {
@@ -168,11 +149,12 @@ export async function fetchScopedLegDuration(
     query,
     cacheKey,
     allowModeFallback,
-  });
+  }).then((result) => result.ok ? result : { ...result, retryAfter: Date.now() + cacheTtl(result) });
   scopedInflight.set(cacheKey, promise);
   try {
     const result = await promise;
-    writeScopedCache(cacheKey, result);
+    // An older request must not overwrite a newer result after invalidation/force.
+    if (scopedInflight.get(cacheKey) === promise) writeScopedCache(cacheKey, result);
     return result;
   } finally {
     if (scopedInflight.get(cacheKey) === promise) {

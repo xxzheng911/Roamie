@@ -40,7 +40,6 @@ import { resolveTripStop } from "@/lib/trip-stop-search.functions";
 import {
   getPreferences,
   readCachedPreferencesSync,
-  resolveBudgetMode,
   type BudgetMode,
 } from "@/lib/preferences-storage";
 import { loadItinerarySource, type ItinerarySourceContext } from "@/lib/itinerary-source";
@@ -92,14 +91,14 @@ function PlanPage() {
   const [sourceCtx, setSourceCtx] = useState<ItinerarySourceContext | null>(null);
   const [sourceLoading, setSourceLoading] = useState(true);
   const [destination, setDestination] = useState<TripLocation | null>(null);
-  const [budgetMode, setBudgetMode] = useState<BudgetMode>("standard");
+  const [budgetMode, setBudgetMode] = useState<BudgetMode | "">("");
   const [styles, setStyles] = useState<string[]>([]);
   const [mood, setMood] = useState<string>(search.mood ?? "");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [origin, setOrigin] = useState<TripLocation | null>(null);
   const [originText, setOriginText] = useState("");
-  const [travelers, setTravelers] = useState(1);
+  const [travelers, setTravelers] = useState(0);
   const [travelersCustom, setTravelersCustom] = useState(false);
   const [transport, setTransport] = useState("");
   const [loading, setLoading] = useState(false);
@@ -222,10 +221,6 @@ function PlanPage() {
     };
   }, [search.recommendationId, search.mood, search.destination]);
 
-  useEffect(() => {
-    getPreferences().then((p) => setBudgetMode(resolveBudgetMode(p)));
-  }, []);
-
   const toggle = (list: string[], v: string, set: (l: string[]) => void) => {
     set(list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
   };
@@ -280,6 +275,7 @@ function PlanPage() {
     dest: TripLocation;
     start: TripLocation | null;
     tripDays: number;
+    budgetMode: BudgetMode;
   };
 
   const resolvePlanFormForSubmit = async (
@@ -309,6 +305,10 @@ function PlanPage() {
     if (resolvedDestination) setDestination(resolvedDestination);
     if (resolvedOrigin) setOrigin(resolvedOrigin);
     if (!validateTripPlaces(resolvedDestination, resolvedOrigin)) return null;
+    if (!budgetMode) {
+      toast.error(t("plan.selectBudget"));
+      return null;
+    }
     if (!isValidTravelers(travelers)) {
       toast.error(t("plan.invalidTravelers"));
       return null;
@@ -322,6 +322,7 @@ function PlanPage() {
       dest: resolvedDestination!,
       start: resolvedOrigin,
       tripDays,
+      budgetMode,
     };
   };
 
@@ -331,7 +332,7 @@ function PlanPage() {
     const resolved = await resolvePlanFormForSubmit();
     if (!resolved) return;
 
-    const { dest, start, tripDays } = resolved;
+    const { dest, start, tripDays, budgetMode } = resolved;
     const budgetLabel = budgetOptions.find((b) => b.value === budgetMode)?.label ?? budgetMode;
     const normalizedStyles = normalizePlanTravelStyles(styles, styleOptions);
 
@@ -407,7 +408,7 @@ function PlanPage() {
       return;
     }
 
-    const { dest, start, tripDays } = resolved;
+    const { dest, start, tripDays, budgetMode } = resolved;
     if (handoffTrace) logPlanningSelectionHandoffStage("form_context_resolved", handoffTrace);
 
     if (!planAiMode) setLoading(true);

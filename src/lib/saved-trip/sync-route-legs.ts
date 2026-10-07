@@ -461,6 +461,7 @@ function buildTransitLeg(
     transportDurationMinutes: route.ok ? durationMinutes : undefined,
     transportDisplayText: buildTransportDisplayText(route, transportLabel),
     routeCacheFingerprint,
+    routeRetryAfter: route.ok ? undefined : route.retryAfter,
     transitUnavailableProvider: route.transitUnavailableProvider ?? null,
     modeSelectionSource,
   };
@@ -518,30 +519,24 @@ export function legRouteIsCovered(
   if (leg.routeCacheFingerprint !== routeCacheFingerprint) return false;
 
   const status = leg.routeStatus ?? leg.transportStatus;
-  if (status === "mode_unavailable" || status === "failed") {
-    // Failed legs for this fingerprint: treat as covered so we don't thrash retries
-    // within the same session (TTL handles refresh). Manual mode change clears the leg.
-    return leg.requestedMode === requestedMode;
-  }
+  if (status !== "ok") return false;
+  const resolved = leg.resolvedMode ?? leg.transportMode;
+  if (!resolved || (leg.modeSelectionSource === "manual" && resolved !== requestedMode)) return false;
+  const duration = resolved === "TRANSIT" ? leg.estimates.transit ?? leg.durationMinutes
+    : resolved === "DRIVE" || resolved === "TWO_WHEELER" ? leg.estimates.drive ?? leg.durationMinutes
+    : leg.estimates.walk ?? leg.durationMinutes;
+  return typeof duration === "number" && Number.isFinite(duration) && duration > 0;
+}
 
-  if (requestedMode === "TRANSIT") {
-    if (status === "ok" && (leg.resolvedMode ?? leg.transportMode) === "TRANSIT") {
-      return (leg.estimates.transit ?? leg.durationMinutes) > 0;
-    }
-    if (status === "transit_unavailable") return true;
-    return false;
-  }
-
-  if (status === "ok") {
-    return (
-      leg.durationMinutes > 0 ||
-      leg.estimates.walk != null ||
-      leg.estimates.drive != null ||
-      leg.estimates.transit != null
-    );
-  }
-
-  return false;
+/** A failed leg is not covered; it may only be temporarily deferred. */
+export function legRouteRetryDeferred(
+  leg: TransitLegAdvice | undefined,
+  fingerprint: string,
+  now = Date.now(),
+): boolean {
+  return Boolean(leg && leg.routeCacheFingerprint === fingerprint &&
+    (leg.routeStatus ?? leg.transportStatus) !== "ok" &&
+    Number.isFinite(leg.routeRetryAfter) && leg.routeRetryAfter! > now);
 }
 
 function legCoverageForSegment(
@@ -591,7 +586,7 @@ function legCoverageForSegment(
     },
   );
 
-  return legRouteIsCovered(leg, mode, fingerprint);
+  return legRouteIsCovered(leg, mode, fingerprint) || legRouteRetryDeferred(leg, fingerprint);
 }
 
 /** 單日路段是否已有可顯示耗時 */
@@ -809,6 +804,11 @@ async function syncOneLeg(
       tripDate: /^\d{4}-\d{2}-\d{2}$/.test(dateKey) ? dateKey : undefined,
     },
   );
+
+  if (legRouteRetryDeferred(existing, routeCacheFingerprint)) {
+    logDirectionsDebug("skipped", { legKey, mode: modeLabel, skippedReason: "leg_retry_cooldown" });
+    return { ...existing!, legKey };
+  }
 
   if (!forceThisLeg && legRouteIsCovered(existing, mode, routeCacheFingerprint)) {
     logDirectionsDebug("skipped", {

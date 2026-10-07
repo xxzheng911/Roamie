@@ -194,7 +194,7 @@ function cacheEntryToFnResult(entry: RouteDurationCacheEntry): RoutesFnResult {
   }
   return {
     ok: false,
-    statusCode: 0,
+    statusCode: entry.statusCode ?? entry.failureTelemetry?.httpStatus ?? 0,
     message: entry.errorMessage ?? entry.status,
     googleStatus: entry.status,
     availableTravelModes: entry.availableTravelModes,
@@ -222,6 +222,7 @@ function fnResultToCacheEntry(
     status: result.googleStatus ?? result.message,
     travelMode,
     errorMessage: result.message,
+    statusCode: result.statusCode,
     availableTravelModes: result.availableTravelModes,
     failureTelemetry: result.failureTelemetry,
   };
@@ -270,12 +271,17 @@ async function fetchRouteDurationUncached(
         );
         return api;
       }
+      // A rate denial is terminal for this request, not a reason to retry via proxy.
+      if (api.statusCode === 429) return api;
       warnRouteOnce(
         `${cacheKey ?? originStr}|server_fail`,
         `[ROUTE_DURATION_FETCH] transport=server_fn mode=${travelMode} ok=false message=${api.message}`,
       );
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      if (msg === "Too Many Requests" || msg === "rate_limited") {
+        return { ok: false, statusCode: 429, message: msg };
+      }
       warnRouteOnce(
         `${cacheKey ?? originStr}|server_exc`,
         `[ROUTE_DURATION_FETCH] transport=server_fn mode=${travelMode} exception=${msg}`,
@@ -328,14 +334,18 @@ async function fetchRouteDurationResult(
     return cacheEntryToFnResult(entry);
   }
 
+  let tracked: Promise<RouteDurationCacheEntry>;
   const promise = fetchRouteDurationUncached(origin, destination, travelMode, queryOptions, cacheKey).then(
     (result) => {
-      setCachedRouteDuration(cacheKey, fnResultToCacheEntry(result, travelMode));
+      if (getRouteDurationInFlight(cacheKey) === tracked) {
+        setCachedRouteDuration(cacheKey, fnResultToCacheEntry(result, travelMode));
+      }
       return fnResultToCacheEntry(result, travelMode);
     },
   );
 
-  return cacheEntryToFnResult(await registerRouteDurationInFlight(cacheKey, promise));
+  tracked = registerRouteDurationInFlight(cacheKey, promise);
+  return cacheEntryToFnResult(await tracked);
 }
 
 /** 取得完整 Routes API 結果（含 status，供 sync-route-legs 記錄與 fallback） */

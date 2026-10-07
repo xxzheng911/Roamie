@@ -1,3 +1,4 @@
+import { isDevVerboseLog } from "@/lib/dev-verbose-log";
 /**
  * Destination-agnostic combination discovery via Places category search.
  * Combinations are built only from resolved real place candidates — never from
@@ -1426,7 +1427,7 @@ function filterPoolByCategoryContract(
     });
     if (resolveCombinationThemeKey(themeKey, title) === "coast") {
       const coast = inspectCoastAuthority(place);
-      console.info("[PLANNING_COMBINATION_CANDIDATE_DECISION]", {
+      if (typeof window === "undefined" || isDevVerboseLog()) console.info("[PLANNING_COMBINATION_CANDIDATE_DECISION]", {
         candidateHash: combinationCandidateHash(place),
         semanticFamily: "coast",
         coastAuthorityPresent: coast.coastAuthorityPresent,
@@ -1617,7 +1618,7 @@ function logAttractionCandidateLifecycle(
   const assignment = inspectCombinationThemeAssignment(candidate);
   if (!assignment.attractionAuthorityPresent) return;
   const score = computeCombinationProminenceScore(candidate, "attraction");
-  console.info("[PLANNING_ATTRACTION_CANDIDATE_LIFECYCLE]", {
+  if (typeof window === "undefined" || isDevVerboseLog()) console.info("[PLANNING_ATTRACTION_CANDIDATE_LIFECYCLE]", {
     candidateHash: combinationCandidateHash(candidate),
     rawPresent: state.rawPresent ?? true,
     sanitizedPresent: state.sanitizedPresent ?? true,
@@ -1722,7 +1723,7 @@ export function enforcePlanningCombinationComposition(
   return combinations.flatMap((combo, groupIndex) => {
     const semanticFamily = resolveCombinationThemeKey(combo.theme, combo.title);
     const input = combo.placeCandidates;
-    console.info("[PLANNING_COMBINATION_BUCKET_BUILD]", {
+    if (typeof window === "undefined" || isDevVerboseLog()) console.info("[PLANNING_COMBINATION_BUCKET_BUILD]", {
       stage: "composition_input",
       semanticFamily,
       compositionInputCount: input.length,
@@ -1802,7 +1803,7 @@ export function enforcePlanningCombinationComposition(
       const decision = decisions.get(candidate)!;
       const score = computeCombinationProminenceScore(candidate, semanticFamily);
       const coast = inspectCoastAuthority(candidate);
-      console.info("[PLANNING_COMBINATION_CANDIDATE_DECISION]", {
+      if (typeof window === "undefined" || isDevVerboseLog()) console.info("[PLANNING_COMBINATION_CANDIDATE_DECISION]", {
         candidateHash: combinationCandidateHash(candidate),
         semanticFamily,
         categoryFamily:
@@ -1840,7 +1841,7 @@ export function enforcePlanningCombinationComposition(
       });
     }
     globallySelected.push(...deliverable);
-    console.info("[PLANNING_COMBINATION_COMPOSITION]", {
+    if (typeof window === "undefined" || isDevVerboseLog()) console.info("[PLANNING_COMBINATION_COMPOSITION]", {
       groupIndex,
       semanticFamily,
       inputCandidateCount: input.length,
@@ -1881,7 +1882,7 @@ export function buildCombinationsFromCandidates(
     const key = assignment.assignedTheme;
     const list = byTheme.get(key) ?? byTheme.get("attraction")!;
     list.push(candidate);
-    console.info("[PLANNING_COMBINATION_BUCKET_BUILD]", {
+    if (typeof window === "undefined" || isDevVerboseLog()) console.info("[PLANNING_COMBINATION_BUCKET_BUILD]", {
       candidateHash: combinationCandidateHash(candidate),
       assignedTheme: assignment.assignedTheme,
       competingThemeSignals: assignment.competingThemeSignals,
@@ -1897,7 +1898,7 @@ export function buildCombinationsFromCandidates(
       previousFirstMatchedTheme: assignment.previousFirstMatchedTheme,
       authorityOverrideApplied: assignment.authorityOverrideApplied,
     });
-    console.info("[PLANNING_GROUNDED_CANDIDATE_POOL]", {
+    if (typeof window === "undefined" || isDevVerboseLog()) console.info("[PLANNING_GROUNDED_CANDIDATE_POOL]", {
       candidateHash: combinationCandidateHash(candidate),
       admissionStage: `${key}_bucket`,
       dropped: false,
@@ -1939,7 +1940,7 @@ export function buildCombinationsFromCandidates(
         dropReason: categoryContractPassed ? "" : "category_contract_rejected",
       });
       if (categoryContractPassed) continue;
-      console.info("[PLANNING_GROUNDED_CANDIDATE_POOL]", {
+      if (typeof window === "undefined" || isDevVerboseLog()) console.info("[PLANNING_GROUNDED_CANDIDATE_POOL]", {
         candidateHash: combinationCandidateHash(candidate),
         admissionStage: "category_contract",
         dropped: true,
@@ -1948,7 +1949,7 @@ export function buildCombinationsFromCandidates(
     }
     const minPlaces = minPlacesForTheme(theme.key, theme.title);
     if (validated.length < minPlaces) {
-      console.info("[PLANNING_COMBINATION_BUCKET_BUILD]", {
+      if (typeof window === "undefined" || isDevVerboseLog()) console.info("[PLANNING_COMBINATION_BUCKET_BUILD]", {
         stage: "pre_shortlist",
         semanticFamily: theme.key,
         rawCandidateCount: candidates.length,
@@ -1962,7 +1963,7 @@ export function buildCombinationsFromCandidates(
     }
     const { primary, fallback, all } = splitPrimaryFallback(validated, theme.key);
     for (const candidate of primary) {
-      console.info("[PLANNING_GROUNDED_CANDIDATE_POOL]", {
+      if (typeof window === "undefined" || isDevVerboseLog()) console.info("[PLANNING_GROUNDED_CANDIDATE_POOL]", {
         candidateHash: combinationCandidateHash(candidate),
         admissionStage: "primary",
         dropped: false,
@@ -1975,7 +1976,7 @@ export function buildCombinationsFromCandidates(
       });
     }
     for (const candidate of fallback) {
-      console.info("[PLANNING_GROUNDED_CANDIDATE_POOL]", {
+      if (typeof window === "undefined" || isDevVerboseLog()) console.info("[PLANNING_GROUNDED_CANDIDATE_POOL]", {
         candidateHash: combinationCandidateHash(candidate),
         admissionStage: "fallback",
         dropped: false,
@@ -1990,7 +1991,7 @@ export function buildCombinationsFromCandidates(
     const shortlisted = new Set(all);
     for (const candidate of validated) {
       if (shortlisted.has(candidate)) continue;
-      console.info("[PLANNING_GROUNDED_CANDIDATE_POOL]", {
+      if (typeof window === "undefined" || isDevVerboseLog()) console.info("[PLANNING_GROUNDED_CANDIDATE_POOL]", {
         candidateHash: combinationCandidateHash(candidate),
         admissionStage: "shortlist",
         dropped: true,
@@ -2002,7 +2003,7 @@ export function buildCombinationsFromCandidates(
         dropReason: "bucket_shortlist_cap",
       });
     }
-    console.info("[PLANNING_COMBINATION_BUCKET_BUILD]", {
+    if (typeof window === "undefined" || isDevVerboseLog()) console.info("[PLANNING_COMBINATION_BUCKET_BUILD]", {
       stage: "pre_shortlist",
       semanticFamily: theme.key,
       rawCandidateCount: candidates.length,
@@ -3432,7 +3433,7 @@ export async function discoverDestinationCombinations(params: {
   const acceptedNameKeys = new Set(
     candidates.map((candidate) => candidate.name.replace(/\s+/g, "").toLowerCase()),
   );
-  console.info("[PLANNING_GROUNDED_CANDIDATE_POOL]", {
+  if (typeof window === "undefined" || isDevVerboseLog()) console.info("[PLANNING_GROUNDED_CANDIDATE_POOL]", {
     destinationScopePresent: Boolean(finalized),
     queryLaneCountAttempted: discoveryQueryLanes.filter((lane) => lane.executed).length,
     queryLaneCountSkipped: discoveryQueryLanes.filter((lane) => !lane.executed).length,
@@ -3462,13 +3463,13 @@ export async function discoverDestinationCombinations(params: {
       ratingPresent: place.rating != null,
       userRatingCountPresent: place.userRatingCount != null,
     };
-    console.info("[PLANNING_GROUNDED_CANDIDATE_POOL]", {
+    if (typeof window === "undefined" || isDevVerboseLog()) console.info("[PLANNING_GROUNDED_CANDIDATE_POOL]", {
       ...candidateDiagnostic,
       admissionStage: "raw",
       dropped: false,
       dropReason: "",
     });
-    console.info("[PLANNING_GROUNDED_CANDIDATE_POOL]", {
+    if (typeof window === "undefined" || isDevVerboseLog()) console.info("[PLANNING_GROUNDED_CANDIDATE_POOL]", {
       ...candidateDiagnostic,
       admissionStage: admitted ? "sanitized" : "sanitization_rejected",
       dropped: !admitted,

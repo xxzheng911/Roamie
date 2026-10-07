@@ -1,7 +1,8 @@
 import type { GeneratedLocaleContract } from "@/lib/generated-locale";
-import { fetchLegDurations } from "@/lib/google-directions.server";
+import { getRouteDuration } from "@/lib/google-routes.server";
+import { distanceMeters } from "@/lib/geo-distance";
 import { enrichTransitLegsWithAI } from "@/lib/transit/transit-ai.server";
-import { recommendLegFromEstimates } from "@/lib/transit/recommend-leg";
+import { getTransitModeLabel, recommendLegFromEstimates } from "@/lib/transit/recommend-leg";
 import { resolveRegionProfile } from "@/lib/transit/region-profiles";
 import type {
   TransitLegAdvice,
@@ -55,20 +56,46 @@ export async function buildTransitLegsForItinerary(args: {
         continue;
       }
 
-      const estimates = await fetchLegDurations(
-        { lat: from.lat, lng: from.lng },
-        { lat: to.lat, lng: to.lng },
-      );
-
-      const leg = recommendLegFromEstimates({
+      const origin = { lat: from.lat, lng: from.lng };
+      const destination = { lat: to.lat, lng: to.lng };
+      // Local rule selection only: no provider durations are needed to pick a mode.
+      const selected = recommendLegFromEstimates({
         fromName: from.placeName || from.title,
         toName: to.placeName || to.title,
-        estimates,
+        estimates: { distanceMeters: distanceMeters(origin, destination) },
         destination: args.destination,
         preferences: args.preferences,
         weather: args.weather,
         time: to.time || from.time || args.time,
       });
+      const mode = selected.recommendedMode === "walk" ? "WALK"
+        : ["subway", "bus", "transit", "hsr", "train"].includes(selected.recommendedMode)
+          ? "TRANSIT" : "DRIVE";
+      // One provider request only. Never reselect from a partial set of durations.
+      const route = await getRouteDuration(origin, destination, mode);
+      const ok = route.ok && route.data.travelMode === mode &&
+        Number.isFinite(route.data.durationMinutes) && route.data.durationMinutes > 0;
+      const minutes = route.ok && ok ? route.data.durationMinutes : 0;
+      const estimateKey = mode === "WALK" ? "walk" : mode === "DRIVE" ? "drive" : "transit";
+      const label = getTransitModeLabel(selected.recommendedMode);
+      const leg: TransitLegAdvice = {
+        ...selected,
+        headline: ok ? `${label}（約 ${minutes} 分鐘）` : `${label}（交通時間無法取得）`,
+        durationMinutes: minutes,
+        reason: ok ? selected.reason : "mode_unavailable",
+        distanceMeters: route.ok && ok ? route.data.distanceMeters : selected.distanceMeters,
+        estimates: ok ? { [estimateKey]: minutes } : {},
+        alternatives: [],
+        requestedMode: mode,
+        resolvedMode: ok ? mode : undefined,
+        transportMode: ok ? mode : undefined,
+        durationSource: ok ? "directions" : "none",
+        routeStatus: ok ? "ok" : "mode_unavailable",
+        transportStatus: ok ? "ok" : "failed",
+        transportDurationMinutes: ok ? minutes : undefined,
+        fallbackReason: ok ? null : "mode_unavailable",
+        modeSelectionSource: "auto",
+      };
 
       legs.push(leg);
     }
@@ -77,10 +104,16 @@ export async function buildTransitLegsForItinerary(args: {
   let finalLegs = legs;
   if (args.useAiReasons !== false && legs.length > 0 && legs.length <= 12) {
     try {
-      finalLegs = await enrichTransitLegsWithAI(legs, {
+      const enriched = await enrichTransitLegsWithAI(legs, {
         destination: args.destination,
         preferences: args.preferences,
       });
+      // AI may refine prose, never the selected mode or provider duration/status.
+      finalLegs = legs.map((leg, index) => ({
+        ...leg,
+        reason: enriched[index]?.reason ?? leg.reason,
+        source: enriched[index]?.source ?? leg.source,
+      }));
     } catch (e) {
       console.warn("[Roamie Transit] AI enrich skipped", e);
     }

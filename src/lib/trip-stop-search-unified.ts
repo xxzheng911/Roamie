@@ -1,3 +1,4 @@
+import { isExploreSearchCancellation } from "@/lib/explore-request-session";
 import { googleRestFetch } from "@/lib/google-rest-transport";
 import {
   notePlacesRateLimited,
@@ -59,10 +60,12 @@ export async function unifiedSearchTripStops(
             requestOwner,
           )
         : await invoke();
-      if (!result) return { suggestions: [], error: "autocomplete_cancelled" };
+      if (!result) return { suggestions: [], error: requestOwner?.exploreSession?.controller.signal.aborted ? "autocomplete_cancelled" : "autocomplete_unavailable" };
       if (result.suggestions.length > 0) return result;
       if (result.error) return { suggestions: [], error: result.error };
     } catch (e) {
+      if (isExploreSearchCancellation(e, requestOwner?.exploreSession?.controller.signal))
+        return { suggestions: [], error: "autocomplete_cancelled" };
       console.warn("[TripStop] server search failed", e);
     }
 
@@ -105,7 +108,7 @@ export async function unifiedSearchTripStops(
           requestOwner,
         )
       : await invoke();
-    if (!response) return { suggestions: [], error: "autocomplete_cancelled" };
+    if (!response) return { suggestions: [], error: requestOwner?.exploreSession?.controller.signal.aborted ? "autocomplete_cancelled" : "autocomplete_unavailable" };
     const res = response.clone();
     if (!res.ok) {
       if (requestOwner && (res.status === 429 || res.status === 503)) notePlacesRateLimited();
@@ -142,6 +145,8 @@ export async function unifiedSearchTripStops(
     }
     return { suggestions, error: suggestions.length ? null : null };
   } catch (e) {
+    if (isExploreSearchCancellation(e, requestOwner?.exploreSession?.controller.signal))
+      return { suggestions: [], error: "autocomplete_cancelled" };
     console.warn("[TripStop] browser autocomplete failed", e);
     return { suggestions: [], error: "autocomplete_failed" };
   }

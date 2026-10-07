@@ -316,6 +316,15 @@ export function canFetchGooglePlaceDetails(placeId: string): boolean {
   return isGooglePlaceId(placeId);
 }
 
+/** Specific-venue resolution only; city/district search retains geographic results. */
+export function isAdministrativeDetailCandidate(types?: string[]): boolean {
+  const values = (types ?? []).map(type => type.trim().toLowerCase());
+  if (values.some(type => /^(?:country|locality|sublocality(?:_.*)?|administrative_area(?:_.*)?|postal_code(?:_.*)?)$/.test(type)))
+    return true;
+  return values.includes("political") && values.every(type =>
+    ["political", "point_of_interest", "establishment", "geocode"].includes(type));
+}
+
 /** 無有效 placeId 時，以名稱 + 地址 (+ 座標 bias) 查 Autocomplete 補回 Google placeId */
 export async function resolveGooglePlaceIdForDetail(
   handoff: PlaceDetailHandoff,
@@ -340,8 +349,11 @@ export async function resolveGooglePlaceIdForDetail(
       const { suggestions } = await searchPlaces(query, { locale, center });
       if (!suggestions.length) continue;
 
+      const venueSuggestions = suggestions.filter(s => !isAdministrativeDetailCandidate(s.types));
+      // Do not issue another query to replace an administrative-only candidate set.
+      if (!venueSuggestions.length) return null;
       const normalizedName = name.toLowerCase();
-      const scored = suggestions
+      const scored = venueSuggestions
         .map((s) => {
           const label = s.label.trim();
           const labelLower = label.toLowerCase();

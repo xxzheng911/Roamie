@@ -38,6 +38,12 @@ export type TripPlaceInput = {
   photoName?: string | null;
   rating?: number | null;
   userRatingCount?: number | null;
+  admissionRequired?: boolean | null;
+  ticketingAvailable?: boolean | null;
+  guidedTourAvailable?: boolean | null;
+  activityAvailable?: boolean | null;
+  transportPassAvailable?: boolean | null;
+  affiliateProductProviders?: Array<"klook" | "kkday"> | null;
   businessStatus?: string | null;
   types?: string[];
   localizedDisplayName?: string;
@@ -165,6 +171,14 @@ export function normalizeTripPlaceInput(value: unknown): TripPlaceInput {
       typeof input.userRatingCount === "number" && Number.isFinite(input.userRatingCount)
         ? input.userRatingCount
         : null,
+    admissionRequired: typeof input.admissionRequired === "boolean" ? input.admissionRequired : undefined,
+    ticketingAvailable: typeof input.ticketingAvailable === "boolean" ? input.ticketingAvailable : undefined,
+    guidedTourAvailable: typeof input.guidedTourAvailable === "boolean" ? input.guidedTourAvailable : undefined,
+    activityAvailable: typeof input.activityAvailable === "boolean" ? input.activityAvailable : undefined,
+    transportPassAvailable: typeof input.transportPassAvailable === "boolean" ? input.transportPassAvailable : undefined,
+    affiliateProductProviders: Array.isArray(input.affiliateProductProviders)
+      ? input.affiliateProductProviders.filter((provider): provider is "klook" | "kkday" => provider === "klook" || provider === "kkday")
+      : undefined,
     businessStatus: normalizedText(input.businessStatus) ?? null,
     types,
     localizedDisplayName: normalizedText(input.localizedDisplayName) ?? name,
@@ -208,6 +222,7 @@ export function logAddToTripInputNormalization(input: {
 
 export function tripPlaceFromRecommendation(rec: RoamieRecommendationItem): TripPlaceInput {
   return normalizeTripPlaceInput({
+    ...rec,
     name: rec.name,
     placeName: rec.placeName ?? rec.name,
     title: rec.placeName ?? rec.name,
@@ -238,6 +253,7 @@ export function tripPlaceFromPlaceResult(place: PlaceResult): TripPlaceInput {
   const typeLabel = identityDisplayLabel(resolvePlaceIdentity(place));
   const displayName = normalizedText(place.localizedDisplayName) ?? normalizedText(place.name);
   return normalizeTripPlaceInput({
+    ...place,
     name: displayName,
     placeName: displayName,
     title: displayName,
@@ -276,6 +292,7 @@ export function tripPlaceFromSavedPlace(place: SavedPlace): TripPlaceInput {
   const meta = readSavedPlaceMetadata(place);
   const canonicalName = resolveSavedPlaceCanonicalName(place);
   return normalizeTripPlaceInput({
+    ...meta,
     name: canonicalName,
     placeName: canonicalName,
     title: canonicalName,
@@ -316,6 +333,12 @@ export function tripPlaceToItineraryItem(
     photoName: place.photoName ?? null,
     rating: place.rating ?? null,
     userRatingCount: place.userRatingCount ?? null,
+    admissionRequired: place.admissionRequired,
+    ticketingAvailable: place.ticketingAvailable,
+    guidedTourAvailable: place.guidedTourAvailable,
+    activityAvailable: place.activityAvailable,
+    transportPassAvailable: place.transportPassAvailable,
+    affiliateProductProviders: place.affiliateProductProviders,
     businessStatus: place.businessStatus ?? null,
     types: place.types,
     notes: opts.notes ?? "",

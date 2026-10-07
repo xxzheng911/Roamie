@@ -1,3 +1,4 @@
+import { isDevVerboseLog } from "@/lib/dev-verbose-log";
 export type PlanningSelectionHandoffStage =
   | "arrange_click"
   | "form_context_resolved"
@@ -37,6 +38,8 @@ export function logPlanningSelectionHandoffBuildStage(
   blockingDependency: string,
   failureReason = "",
 ): void {
+  if (typeof window !== "undefined" && !isDevVerboseLog() &&
+      status !== "error" && status !== "timeout" && !failureReason) return;
   console.info("[PLANNING_SELECTION_HANDOFF_BUILD_STAGE]", {
     stage,
     status,
@@ -65,6 +68,8 @@ export function logPlanningSelectionHandoffStage(
   trace: PlanningSelectionHandoffTrace,
   detail?: { success?: boolean; failureReason?: string; sessionId?: string },
 ): void {
+  if (typeof window !== "undefined" && !isDevVerboseLog() &&
+      detail?.success !== false && !detail?.failureReason) return;
   console.info("[PLANNING_SELECTION_HANDOFF_STAGE]", {
     stage,
     elapsedMs: Date.now() - trace.startedAt,
@@ -85,6 +90,8 @@ export function logPlanningSelectionHandoffLoading(
   reason: string,
   blockingDependency: string | null,
 ): void {
+  if (typeof window !== "undefined" && !isDevVerboseLog() &&
+      !/fail|error|timeout|fallback|unavailable/i.test(reason)) return;
   console.info("[PLANNING_SELECTION_HANDOFF_LOADING]", {
     elapsedMs: Date.now() - trace.startedAt,
     handoffId: trace.handoffId,

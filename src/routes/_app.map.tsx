@@ -2,6 +2,7 @@ import { requireAuthForAction } from "@/lib/auth-action";
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import {
   beginExploreRequestSession,
+  isExploreSearchCancellation,
   canRunExploreBrowse,
   assertExploreSessionActive,
   markExplorePrimaryResult,
@@ -759,7 +760,7 @@ function MapView() {
   useEffect(() => {
     if (!geoReady) return;
     if (!effectiveLocation?.isReadyForPlaces) return;
-    if (searchDropdownOpen) return;
+    if (searchDropdownOpen || searchFocused || isMapDetailOpen(sheetMode)) return;
 
     const center = { lat: recommendCenter.lat, lng: recommendCenter.lng };
     const isFreeText = !!query.trim();
@@ -1337,6 +1338,8 @@ function MapView() {
     locale,
     searchTrigger,
     searchDropdownOpen,
+    searchFocused,
+    sheetMode,
     recommendCenter.lat,
     recommendCenter.lng,
     recommendCenter.source,
@@ -1376,13 +1379,17 @@ function MapView() {
     const handle = window.setTimeout(() => {
       void (async () => {
         const center = { lat: userLocation.lat, lng: userLocation.lng };
-        const { suggestions, error } = await runExploreMapPlaceSearch(trimmed, {
+        const { suggestions, error, cancelled } = await runExploreMapPlaceSearch(trimmed, {
           locale,
           center,
           searchFn: searchTripStopsFn,
           requestSession: session,
         });
-        if (requestId !== exploreSearchRequestRef.current) return;
+        if (requestId !== exploreSearchRequestRef.current || session.controller.signal.aborted) return;
+        if (cancelled) {
+          setSearchingPlaces(false);
+          return;
+        }
 
         setSearchSuggestions(
           suggestions.map((s) => ({
@@ -1401,7 +1408,11 @@ function MapView() {
           setError(error ?? t("uiCoverage.noResults"));
         }
       })().catch((e) => {
-        if (requestId !== exploreSearchRequestRef.current) return;
+        if (requestId !== exploreSearchRequestRef.current || session.controller.signal.aborted) return;
+        if (isExploreSearchCancellation(e)) {
+          setSearchingPlaces(false);
+          return;
+        }
         if (isNetworkFailureError(e)) {
           setNetworkOnline(false);
           setSearchingPlaces(false);
@@ -1705,6 +1716,35 @@ function MapView() {
     });
   }, [sheetMode, applyEffectiveLocationToMap]);
 
+  const finishExploreSearchSelection = useCallback((place: MapPlaceCard, index = 0) => {
+    exploreSearchRequestRef.current += 1;
+    exploreSessionRef.current = beginExploreRequestSession("browse", "");
+    setQuery("");
+    setSearchDropdownOpen(false);
+    setSearchSuggestions([]);
+    setSearchingPlaces(false);
+    setSearchFocused(false);
+    clearExploreMapSearchSession();
+    lastMapSearchSessionRef.current = null;
+    setSelectedPlace(place);
+    setSelectedPlaceIndex(index);
+    setSheetMode("detail");
+    searchBarRef.current?.dismiss();
+    sheetRef.current?.expand();
+  }, []);
+
+  const handleExploreSearchFocus = useCallback((focused: boolean) => {
+    if (focused) {
+      // Detail/navigation and search are mutually exclusive surfaces.
+      setSheetMode("list");
+      setSelectedPlace(null);
+      setSelectedPlaceIndex(null);
+      sheetRef.current?.collapse("min");
+      if (query.trim()) setSearchDropdownOpen(true);
+    }
+    setSearchFocused(focused);
+  }, [query]);
+
   const handlePlaceSelect = useCallback(
     (index: number, analyticsSurface: "explore" | "map" = "explore") => {
       const place = displayResults[index];
@@ -1744,14 +1784,20 @@ function MapView() {
           },
         });
 
-      setSelectedPlace({ ...place, reason });
-      setSelectedPlaceIndex(index);
-      setSheetMode("detail");
-      sheetRef.current?.expand();
+      if (query.trim() || exploreSessionRef.current?.mode === "search") {
+        finishExploreSearchSelection({ ...place, reason }, index);
+      } else {
+        setSelectedPlace({ ...place, reason });
+        setSelectedPlaceIndex(index);
+        setSheetMode("detail");
+        sheetRef.current?.expand();
+      }
       focusMapOnPlace(place.lat, place.lng);
     },
     [
       displayResults,
+      query,
+      finishExploreSearchSelection,
       reliableUserLocation,
       reasonProfile,
       weather,
@@ -2004,13 +2050,6 @@ function MapView() {
         primaryType: resolved.primaryType ?? primaryType,
         placeId: selectedPlaceId,
       });
-      setSearchDropdownOpen(false);
-      setSearchingPlaces(false);
-      setSearchSuggestions([]);
-      setSearchFocused(false);
-      searchBarRef.current?.dismiss();
-
-      setQuery(selectedLabel);
       setLocationLabel(selectedLabel);
 
       setMapCenter({ lat: resolved.lat, lng: resolved.lng });
@@ -2023,10 +2062,7 @@ function MapView() {
         })
         .catch(() => {});
 
-      setSelectedPlace(null);
-      setSelectedPlaceIndex(null);
-      setSheetMode("list");
-      sheetRef.current?.expand();
+      finishExploreSearchSelection(mapCard);
 
       publishExploreResults([mapCard]);
       setLoading(false);
@@ -2042,6 +2078,7 @@ function MapView() {
       focusMapOnPlace,
       fetchWeather,
       fetchExplorePlaceDetailsFn,
+      finishExploreSearchSelection,
       t,
     ],
   );
@@ -2165,10 +2202,7 @@ function MapView() {
             ref={searchBarRef}
             query={query}
             onQueryChange={handleSearchQueryChange}
-            onFocusChange={(focused) => {
-              setSearchFocused(focused);
-              if (focused && query.trim()) setSearchDropdownOpen(true);
-            }}
+            onFocusChange={handleExploreSearchFocus}
             onSubmit={() => {
               void handleExploreSearchSubmit();
             }}

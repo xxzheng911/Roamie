@@ -68,7 +68,8 @@ export function TripAffiliateSection({
   }, [eligible, eligibilityResolved, placeHash, renderedCtaMode, surface, visible.length]);
   if (visible.length === 0) return null;
 
-  const meta = { emoji: SECTION_EMOJI[kind], title: uiT(`nativeQa.${kind}`), subtitle: kind === "ticket" ? undefined : uiT(`nativeQa.${kind}Subtitle`, { brand: "Trip.com" }) };
+  const relatedSearch = kind === "ticket" && visible.some(offer => offer.searchIntent === "related_experiences");
+  const meta = { emoji: SECTION_EMOJI[kind], title: uiT(relatedSearch ? "nativeQa.relatedExperiences" : `nativeQa.${kind}`), subtitle: kind === "ticket" ? undefined : uiT(`nativeQa.${kind}Subtitle`, { brand: "Trip.com" }) };
   const isTripBookingSection = surface === "itinerary" && (kind === "flight" || kind === "hotel");
   const hidesInlineAffiliateDisclosure = kind === "ticket" || isTripBookingSection;
 
@@ -96,7 +97,7 @@ export function TripAffiliateSection({
       <div
         data-affiliate-layout={kind === "ticket" ? "provider-search-grid" : "provider-row"}
         className={cn(
-          LOCALIZED_ACTION_GRID,
+          kind === "ticket" ? "grid min-w-0 grid-cols-2 gap-2" : LOCALIZED_ACTION_GRID,
           compact ? "mt-2" : "mt-3",
         )}
       >
@@ -129,10 +130,10 @@ export function TripAffiliateSection({
                   window.setTimeout(() => setOpeningKey(null), OPEN_RESET_MS);
                 });
               }}
-              className={cn(LOCALIZED_ACTION_BUTTON, "transition active:scale-[0.98] disabled:opacity-60") }
+              className={cn(LOCALIZED_ACTION_BUTTON, kind === "ticket" && "gap-1 px-2 text-xs", "transition active:scale-[0.98] disabled:opacity-60") }
             >
               <span className="min-w-0 text-center whitespace-normal">
-                {affiliateDisplayLabel(offer, locale)}
+                {affiliateDisplayLabel(offer, locale).replace(/^在 (?=(?:Klook|KKday))/, "")}
               </span>
               <ExternalLink
                 className={cn("shrink-0 opacity-60", compact ? "h-3 w-3" : "h-3.5 w-3.5")}

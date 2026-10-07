@@ -143,11 +143,13 @@ function offer(
     checkOut?: string;
     adults?: number;
     disabledReason?: string;
+    searchIntent?: "related_experiences";
   },
 ): AffiliateLinkOffer {
   return {
     provider,
     kind,
+    searchIntent: meta?.searchIntent,
     label,
     url: url ?? "",
     enabled: Boolean(url),
@@ -318,17 +320,19 @@ export function buildTicketAffiliateOffers(
   const kkdayMode = resolveTicketAffiliateProviderMode(decision, "kkday");
 
   const offers = [
-    offer("klook", "activity_ticket", resolveTicketAffiliateOfferLabel("klook", klookMode, decision.commerceType), buildKlookUrl(q, env, ctx?.locale), {
+    offer("klook", "activity_ticket", decision.searchIntent ? "Klook 搜尋相關體驗" : resolveTicketAffiliateOfferLabel("klook", klookMode, decision.commerceType), buildKlookUrl(q, env, ctx?.locale), {
       destination,
       placeName: placeDisplayName(evidence),
       keyword: q,
       disabledReason: "missing_klook_env",
+      searchIntent: decision.searchIntent,
     }),
-    offer("kkday", "activity_ticket", resolveTicketAffiliateOfferLabel("kkday", kkdayMode, decision.commerceType), buildKkdayUrl(kkdayInput, env), {
+    offer("kkday", "activity_ticket", decision.searchIntent ? "KKday 搜尋相關體驗" : resolveTicketAffiliateOfferLabel("kkday", kkdayMode, decision.commerceType), buildKkdayUrl(kkdayInput, env), {
       destination,
       placeName: placeDisplayName(evidence),
       keyword: q,
       disabledReason: "missing_kkday_env",
+      searchIntent: decision.searchIntent,
     }),
   ].filter((o) => {
     if (!o.enabled) return false;
@@ -432,7 +436,7 @@ function placeDisplayName(place: TicketAffiliatePlaceInput): string {
 }
 
 export function buildPlaceTicketOffers(
-  item: Parameters<typeof isTicketEligiblePlace>[0],
+  item: Parameters<typeof isTicketEligiblePlace>[0] & TicketAffiliatePlaceInput,
   ctx?: PlaceTicketAffiliateContext,
 ): AffiliateLinkOffer[] {
   const place = buildAffiliatePlaceEvidence({
@@ -447,6 +451,12 @@ export function buildPlaceTicketOffers(
     rating: item.rating,
     userRatingCount: item.userRatingCount,
     businessStatus: item.businessStatus,
+    admissionRequired: item.admissionRequired,
+    ticketingAvailable: item.ticketingAvailable,
+    guidedTourAvailable: item.guidedTourAvailable,
+    activityAvailable: item.activityAvailable,
+    transportPassAvailable: item.transportPassAvailable,
+    affiliateProductProviders: item.affiliateProductProviders,
   });
   const decision = shouldShowTicketAffiliate(place, {
     destinationLabel: ctx?.destinationLabel,

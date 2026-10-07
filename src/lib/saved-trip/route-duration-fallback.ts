@@ -518,6 +518,8 @@ export async function fetchRouteWithDirectionFallbacks(
       destinationName,
       telemetry: failureTelemetry,
     });
+    // Switching modes cannot resolve a shared rate/budget denial.
+    if (result.statusCode === 429 || failureTelemetry.httpStatus === 429) break;
     if (result.availableTravelModes?.length) {
       lastAvailable = result.availableTravelModes;
     }

@@ -1,3 +1,4 @@
+import { isDevVerboseLog } from "@/lib/dev-verbose-log";
 import type { RoutesTravelMode } from "@/lib/routes/types";
 import type { LatLng } from "@/lib/google-routes-fetch";
 import type { RouteApiFailureTelemetry } from "@/lib/route-failure-telemetry";
@@ -9,6 +10,7 @@ export type RouteDurationCacheEntry = {
   status: string;
   travelMode: RoutesTravelMode;
   errorMessage?: string;
+  statusCode?: number;
   availableTravelModes?: string[];
   failureTelemetry?: RouteApiFailureTelemetry;
 };
@@ -88,6 +90,8 @@ export function logRouteDurationOnce(
   message: string,
 ): void {
   if (!shouldLogDirectionsDebug()) return;
+  if (typeof window !== "undefined" && !isDevVerboseLog() &&
+      !/429|503|failed|unavailable|error|exception|denied|fallback|zero_results|not_found|invalid/i.test(message)) return;
   const logKey = `${tag}|${key}|${message.slice(0, 80)}`;
   if (loggedKeys.has(logKey)) return;
   loggedKeys.add(logKey);

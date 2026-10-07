@@ -12,6 +12,7 @@ export type RouteLegScope = {
 
 export type RouteLegDurationResult = {
   ok: boolean;
+  retryAfter?: number;
   durationMinutes: number;
   distanceMeters: number;
   mode: RoutesTravelMode;
