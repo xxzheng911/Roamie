@@ -1,3 +1,4 @@
+import { CHAT_PLACES_SEARCH_TIMEOUT_MS, withAbortableSearchTimeout } from "@/lib/search-timeout";
 import { requireGoogleProviderRate } from "@/lib/google-rate-limit.server";
 import { googleRestFetch } from "@/lib/google-rest-transport";
 import {
@@ -321,111 +322,128 @@ async function postPlaces(
     guarded = await runPlacesApiDeduped(
       httpKey,
       callType,
-      async (signal, attemptIndex = 0) => {
-        recordPlacesHttpCall(callType, {
-          functionName: "postPlaces",
-          requestKey: httpKey,
-          caller: stats?.caller,
-          screen: stats?.screen,
-          category: stats?.category,
-        });
-        devVerboseInfo("[PLACES_PROVIDER_REQUEST]", {
-          requestId: `places_${ownerRequestId}`,
-          recommendationRequestId: stats?.recommendationRequestId ?? "",
-          round: stats?.round ?? 0,
-          lane: stats?.lane ?? callType,
-          requestType: callType === "nearby" ? "searchNearby" : "searchText",
-          query: typeof body.textQuery === "string" ? body.textQuery : "",
-          scopeSource: stats?.scopeSource ?? "unknown",
-          centerLat: circle?.center?.latitude ?? null,
-          centerLng: circle?.center?.longitude ?? null,
-          radius: circle?.radius ?? null,
-          locationBias: body.locationBias ? "circle" : "none",
-          locationRestriction: body.locationRestriction ? "circle" : "none",
-          includedTypes: Array.isArray(body.includedTypes) ? body.includedTypes : [],
-          language: typeof body.languageCode === "string" ? body.languageCode : "",
-          region: typeof body.regionCode === "string" ? body.regionCode : "",
-        });
-
-        let res: Response;
-        try {
-          res = await googleRestFetch(url, {
-            signal,
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-Goog-Api-Key": apiKey,
-              "X-Goog-FieldMask": PLACES_FIELD_MASK,
-            },
-            body: JSON.stringify(body),
-          }, { kind: attemptIndex > 0 ? "retry" : stats?.attemptKind ?? "unknown" });
-        } catch (error) {
-          devVerboseInfo("[PLACES_PROVIDER_RESULT]", {
+      async (parentSignal, attemptIndex = 0) => {
+        const bounded = ["home", "explore", "chat"].includes(stats?.screen ?? "");
+        const remainingMs = CHAT_PLACES_SEARCH_TIMEOUT_MS - (Date.now() - providerStartedAt);
+        if (bounded && remainingMs <= 0) {
+          return { places: [] as RawPlace[], error: "places_search_attempt_timeout" };
+        }
+        const run = async (signal?: AbortSignal) => {
+          recordPlacesHttpCall(callType, {
+            functionName: "postPlaces",
+            requestKey: httpKey,
+            caller: stats?.caller,
+            screen: stats?.screen,
+            category: stats?.category,
+          });
+          devVerboseInfo("[PLACES_PROVIDER_REQUEST]", {
             requestId: `places_${ownerRequestId}`,
             recommendationRequestId: stats?.recommendationRequestId ?? "",
+            round: stats?.round ?? 0,
             lane: stats?.lane ?? callType,
-            httpStatus: 0,
-            providerStatus: "FETCH_ERROR",
-            providerRawCount: 0,
-            elapsedMs: Date.now() - providerStartedAt,
-            failureReason:
-              error instanceof DOMException && error.name === "AbortError"
-                ? "provider_timeout"
-                : "provider_http_error",
+            requestType: callType === "nearby" ? "searchNearby" : "searchText",
+            query: typeof body.textQuery === "string" ? body.textQuery : "",
+            scopeSource: stats?.scopeSource ?? "unknown",
+            centerLat: circle?.center?.latitude ?? null,
+            centerLng: circle?.center?.longitude ?? null,
+            radius: circle?.radius ?? null,
+            locationBias: body.locationBias ? "circle" : "none",
+            locationRestriction: body.locationRestriction ? "circle" : "none",
+            includedTypes: Array.isArray(body.includedTypes) ? body.includedTypes : [],
+            language: typeof body.languageCode === "string" ? body.languageCode : "",
+            region: typeof body.regionCode === "string" ? body.regionCode : "",
           });
-          throw error;
-        }
 
-        if (!res.ok) {
-          const text = await res.text();
-          const detail = parseGoogleError(text);
+          let res: Response;
+          try {
+            res = await googleRestFetch(url, {
+              signal,
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-Goog-Api-Key": apiKey,
+                "X-Goog-FieldMask": PLACES_FIELD_MASK,
+              },
+              body: JSON.stringify(body),
+            }, { kind: attemptIndex > 0 ? "retry" : stats?.attemptKind ?? "unknown" });
+          } catch (error) {
+            devVerboseInfo("[PLACES_PROVIDER_RESULT]", {
+              requestId: `places_${ownerRequestId}`,
+              recommendationRequestId: stats?.recommendationRequestId ?? "",
+              lane: stats?.lane ?? callType,
+              httpStatus: 0,
+              providerStatus: "FETCH_ERROR",
+              providerRawCount: 0,
+              elapsedMs: Date.now() - providerStartedAt,
+              failureReason:
+                error instanceof DOMException && error.name === "AbortError"
+                  ? "provider_timeout"
+                  : "provider_http_error",
+            });
+            throw error;
+          }
+
+          if (!res.ok) {
+            const text = await res.text();
+            const detail = parseGoogleError(text);
+            devVerboseInfo("[PLACES_PROVIDER_RESULT]", {
+              requestId: `places_${ownerRequestId}`,
+              recommendationRequestId: stats?.recommendationRequestId ?? "",
+              lane: stats?.lane ?? callType,
+              httpStatus: res.status,
+              providerStatus: detail.split(":", 1)[0] || "http_error",
+              providerRawCount: 0,
+              mappedCount: 0,
+              elapsedMs: Date.now() - providerStartedAt,
+              failureReason:
+                res.status === 400
+                  ? "provider_invalid_request"
+                  : res.status === 408
+                    ? "provider_timeout"
+                    : "provider_http_error",
+            });
+            console.error("[Roamie Places] request failed", res.status, url, detail);
+            if (res.status === 429 || res.status === 503) {
+              // Let the shared Places queue retry with exponential backoff.
+              throw new Error(`places_http_${res.status}:${detail}`);
+            }
+            if (stats?.screen === "chat") {
+              console.warn("[CHAT_NEARBY_ERROR]", {
+                message: `Google Places API ${res.status}: ${detail}`,
+                rawResponse: text.slice(0, 500),
+              });
+            }
+            return { places: [] as RawPlace[], error: `Google Places API ${res.status}: ${detail}` };
+          }
+
+          const json = (await res.json()) as { places?: RawPlace[]; nextPageToken?: string };
           devVerboseInfo("[PLACES_PROVIDER_RESULT]", {
             requestId: `places_${ownerRequestId}`,
             recommendationRequestId: stats?.recommendationRequestId ?? "",
             lane: stats?.lane ?? callType,
             httpStatus: res.status,
-            providerStatus: detail.split(":", 1)[0] || "http_error",
-            providerRawCount: 0,
-            mappedCount: 0,
+            providerStatus: "OK",
+            providerRawCount: json.places?.length ?? 0,
+            mappedCount: "pending_mapping",
             elapsedMs: Date.now() - providerStartedAt,
-            failureReason:
-              res.status === 400
-                ? "provider_invalid_request"
-                : res.status === 408
-                  ? "provider_timeout"
-                  : "provider_http_error",
+            failureReason: json.places?.length ? "none" : "provider_zero_results",
           });
-          console.error("[Roamie Places] request failed", res.status, url, detail);
-          if (res.status === 429 || res.status === 503) {
-            // Let the shared Places queue retry with exponential backoff.
-            throw new Error(`places_http_${res.status}:${detail}`);
-          }
-          if (stats?.screen === "chat") {
-            console.warn("[CHAT_NEARBY_ERROR]", {
-              message: `Google Places API ${res.status}: ${detail}`,
-              rawResponse: text.slice(0, 500),
-            });
-          }
-          return { places: [] as RawPlace[], error: `Google Places API ${res.status}: ${detail}` };
-        }
-
-        const json = (await res.json()) as { places?: RawPlace[]; nextPageToken?: string };
-        devVerboseInfo("[PLACES_PROVIDER_RESULT]", {
-          requestId: `places_${ownerRequestId}`,
-          recommendationRequestId: stats?.recommendationRequestId ?? "",
-          lane: stats?.lane ?? callType,
-          httpStatus: res.status,
-          providerStatus: "OK",
-          providerRawCount: json.places?.length ?? 0,
-          mappedCount: "pending_mapping",
-          elapsedMs: Date.now() - providerStartedAt,
-          failureReason: json.places?.length ? "none" : "provider_zero_results",
-        });
-        return {
-          places: json.places ?? [],
-          error: null as string | null,
-          nextPageToken: json.nextPageToken,
+          return {
+            places: json.places ?? [],
+            error: null as string | null,
+            nextPageToken: json.nextPageToken,
+          };
         };
+        if (!bounded) return run(parentSignal);
+        try {
+          return await withAbortableSearchTimeout(run, remainingMs, parentSignal);
+        } catch (error) {
+          // A deadline is terminal for this attempt, never a new Guard retry.
+          if (error instanceof Error && error.name === "TimeoutError") {
+            return { places: [] as RawPlace[], error: "places_search_attempt_timeout" };
+          }
+          throw error;
+        }
       },
       {
         requestId: `places_${ownerRequestId}`,
@@ -729,7 +747,10 @@ async function searchMultiNearby(
     });
   }
 
-  return { places: merged.slice(0, mergedMax), error: null };
+  return {
+    places: merged.slice(0, mergedMax),
+    error: stats?.screen === "explore" && merged.length === 0 ? errors[0] ?? null : null,
+  };
 }
 
 type PlaceHoursLookupResult = { hours: PlaceHoursData; placeId: string | null };
@@ -952,13 +973,20 @@ async function runExploreSearch(
   }
 
   if (data.placesScreen === "explore") {
-    return { places: distanceFiltered, error: null };
+    return { places: distanceFiltered, error: result.error };
   }
 
   return {
     places: [],
     error: "附近找不到符合的地點，請確認定位權限或稍後再試。",
   };
+}
+
+/** Safe display-boundary codes; raw provider details remain in existing diagnostics. */
+function classifyExplorePlacesError(error: string): string {
+  return /timeout|timed.?out|逾時|超時|408|504/i.test(error)
+    ? "places_timeout"
+    : "places_provider_unavailable";
 }
 
 export async function executeExploreSearch(
@@ -969,11 +997,30 @@ export async function executeExploreSearch(
   pushPlacesCallContext(stats);
   try {
     const apiKey = options?.apiKey?.trim() || (await getServerMapsKey());
-    return await runExploreSearch(data, apiKey);
+    const result = await runExploreSearch(data, apiKey);
+    if (
+      data.placesScreen === "explore" &&
+      getExploreRequestSession(data.placesExploreSessionId)?.controller.signal.aborted
+    ) {
+      throw new DOMException("Search superseded", "AbortError");
+    }
+    return data.placesScreen === "explore" && result.error
+      ? { ...result, error: classifyExplorePlacesError(result.error) }
+      : result;
   } catch (e) {
+    if (
+      data.placesScreen === "explore" &&
+      (getExploreRequestSession(data.placesExploreSessionId)?.controller.signal.aborted ||
+        (e instanceof Error && e.name === "AbortError"))
+    ) {
+      throw new DOMException("Search superseded", "AbortError");
+    }
     const msg = e instanceof Error ? e.message : "request failed";
     console.error("[Roamie Places] search threw", msg);
-    return { places: [], error: msg };
+    return {
+      places: [],
+      error: data.placesScreen === "explore" ? classifyExplorePlacesError(msg) : msg,
+    };
   } finally {
     popPlacesCallContext();
   }

@@ -1,3 +1,4 @@
+import { withSearchTimeout } from "@/lib/search-timeout";
 import type { SearchPlacesInput } from "@/lib/explore-category-search";
 import { normalizedLocationKey } from "@/lib/location-key";
 import {
@@ -104,6 +105,7 @@ export function getPlacesSearchCachedOrRun(
   runner: () => Promise<PlacesSearchResult>,
   options?: {
     forceRefresh?: boolean;
+    timeoutMs?: number;
     signal?: AbortSignal;
     /** Caller-scoped session validity; unrelated requests do not revoke this authority. */
     isCurrent?: () => boolean;
@@ -155,7 +157,10 @@ export function getPlacesSearchCachedOrRun(
     if (inFlightMap.get(key) !== promise)
       throw new DOMException("Search cache owner superseded", "AbortError");
   };
-  const promise = runner()
+  const operation = Promise.resolve().then(runner);
+  const promise = (options?.timeoutMs == null
+    ? operation
+    : withSearchTimeout(operation, options.timeoutMs, "places_search_attempt_timeout"))
     .then((result) => {
       assertCommitAuthority();
       const normalized = normalizePlacesSearchResult(result);

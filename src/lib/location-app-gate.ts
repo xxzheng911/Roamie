@@ -4,6 +4,7 @@ import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
 
 let appIsActive = !isCapacitorNativeShell();
 let gateRegistered = false;
+let appStateVersion = 0;
 const foregroundListeners = new Set<() => void>();
 
 export function isAppActiveForLocation(): boolean {
@@ -54,12 +55,14 @@ async function syncInitialAppState(): Promise<void> {
     appIsActive = true;
     return;
   }
+  const version = appStateVersion;
   try {
     const state = await App.getState();
+    if (version !== appStateVersion) return;
     appIsActive = state.isActive;
     console.info("[LOCATION_APP_STATE]", `isActive=${state.isActive}`, "source=initial");
   } catch {
-    appIsActive = true;
+    if (version === appStateVersion) appIsActive = true;
   }
 }
 
@@ -76,6 +79,7 @@ export function registerLocationAppGate(): void {
   void syncInitialAppState();
 
   void registerAppStateChangeListener((isActive) => {
+    appStateVersion += 1;
     appIsActive = isActive;
     console.info("[LOCATION_APP_STATE]", `isActive=${isActive}`, "source=appStateChange");
     if (isActive) notifyForegroundListeners();

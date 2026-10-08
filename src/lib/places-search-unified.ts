@@ -1,3 +1,4 @@
+import { CHAT_PLACES_SEARCH_TIMEOUT_MS } from "@/lib/search-timeout";
 import {
   getExploreRequestSession,
   assertExploreSessionActive,
@@ -104,6 +105,9 @@ export function createUnifiedSearchPlacesFn(serverFn: SearchPlacesFn): SearchPla
         }
 
         if (session) assertExploreSessionActive(session, args.data.categoryId);
+        if (serverResult.error && /places_(?:search_attempt_)?timeout/.test(serverResult.error)) {
+          return serverResult;
+        }
         if (isPlacesRateLimited()) {
           return serverResult.places.length > 0
             ? serverResult
@@ -113,6 +117,9 @@ export function createUnifiedSearchPlacesFn(serverFn: SearchPlacesFn): SearchPla
         return runClientSearch(args, key, "fallback");
       },
       {
+        timeoutMs: ["home", "explore", "chat"].includes(args.data.placesScreen ?? "")
+          ? CHAT_PLACES_SEARCH_TIMEOUT_MS
+          : undefined,
         signal: session?.controller.signal,
         isCurrent: session
           ? () =>
@@ -132,6 +139,12 @@ export function createUnifiedSearchPlacesFn(serverFn: SearchPlacesFn): SearchPla
           lng: args.data.lng,
         },
       },
-    );
+    ).then((result) => {
+      // Deadline is terminal: do not turn it into another feature fallback search.
+      if (result.error && /places_(?:search_attempt_)?timeout/.test(result.error)) {
+        throw new Error("places_search_attempt_timeout");
+      }
+      return result;
+    });
   };
 }

@@ -208,6 +208,7 @@ const HOME_FIRST_BATCH_MIN = 3;
 export type HomeNearbyPartialPhase = "first_batch" | "enriched";
 
 export type LoadHomeNearbyPicksOptions = {
+  isCurrent?: () => boolean;
   forceRefresh?: boolean;
   /** 第一批有效地點就緒時先回報，供漸進式渲染 */
   onPartialPicks?: (picks: HomeNearbyPick[], phase: HomeNearbyPartialPhase) => void;
@@ -727,6 +728,22 @@ async function loadHomeNearbyPicksInner(
   timeZone: string,
   options?: LoadHomeNearbyPicksOptions,
 ): Promise<HomeNearbyPick[]> {
+  // Retain failures across existing fallback waves without changing their call policy.
+  let providerFailure: unknown = null;
+  const searchPlacesFn = ctx.searchPlacesFn;
+  ctx = {
+    ...ctx,
+    searchPlacesFn: async (args) => {
+      try {
+        const result = await withSearchTimeout(searchPlacesFn(args));
+        if (result.error) providerFailure = new Error(result.error);
+        return result;
+      } catch (error) {
+        providerFailure = error;
+        throw error;
+      }
+    },
+  };
   const waves = wavesForPeriod(period, ctx.weather);
   const pickOptions = {
     origin: ctx.userLocation,
@@ -777,11 +794,12 @@ async function loadHomeNearbyPicksInner(
       }
     }
 
+    if (apiPlaces.length === 0 && providerFailure) throw providerFailure;
     const rawCount = apiPlaces.length;
 
     const sorted = finalizeHomeNearbyPicks(apiPlaces, ctx, period, at, timeZone, pickOptions);
 
-    writeHomeNearbyResultsCache(cacheKey, sorted);
+    if (options?.isCurrent?.() !== false) writeHomeNearbyResultsCache(cacheKey, sorted);
     logHomeNearbyRequestSuccess(rawCount, sorted.length);
 
     if (sorted.length > 0) {

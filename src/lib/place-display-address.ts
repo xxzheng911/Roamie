@@ -62,13 +62,27 @@ export function normalizeAddressScriptForLocale(text: string, locale?: Locale): 
   return s;
 }
 
+// Valid short/full Plus Code alphabet; do not consume alphanumeric street names or 門牌.
+const PLUS_CODE = /(?<![a-z0-9])(?:[23456789CFGHJMPQRVWX]{2}){1,4}\+[23456789CFGHJMPQRVWX]{2,3}(?![a-z0-9]|號|巷|弄)/gi;
+
+function stripDisplayPlusCode(text: string): string {
+  const withoutCode = text.replace(PLUS_CODE, "");
+  if (withoutCode === text) return text;
+  return withoutCode
+    // Only remove a Taiwan postal prefix when an explicit city/county follows.
+    .replace(/^\s*\d{3}(?:\d{2,3})?\s*(?=(?:台灣|臺灣|台湾)?[\u4e00-\u9fff]{2,3}[市縣县])/, "")
+    .replace(/^[\s,，]+|[\s,，]+$/g, "")
+    .replace(/\s*[,，]\s*[,，]\s*/g, ", ")
+    .trim();
+}
+
 /**
  * 修正 Google formattedAddress 常見異常（不自行拼接 postal/city/street）。
  * - 號號 → 號
  * - 尾端多餘「前」（非地址本體）
  */
 export function sanitizeGooglePlaceAddress(text: string, locale?: Locale): string {
-  let s = text.trim().replace(/\s+/g, " ");
+  let s = stripDisplayPlusCode(text).replace(/\s+/g, " ");
   s = s.replace(/號{2,}/g, "號");
   if (/[號\d]\s*前$/u.test(s)) {
     s = s.replace(/\s*前$/u, "");
@@ -105,10 +119,16 @@ export function resolvePlaceDisplayAddress(
     ordered.push(fields.address);
   }
 
+  let codeAreaFallback: string | null = null;
   for (const candidate of ordered) {
     const normalized = normalizePlaceAddressText(candidate);
-    if (normalized) return sanitizeGooglePlaceAddress(normalized, locale);
+    if (!normalized) continue;
+    const display = sanitizeGooglePlaceAddress(normalized, locale);
+    if (!display) continue;
+    if (stripDisplayPlusCode(normalized) === normalized) return display;
+    codeAreaFallback ??= display;
   }
+  if (codeAreaFallback) return codeAreaFallback;
 
   if (options?.googleFieldsOnly) {
     if (options.hasCoords) {
@@ -124,7 +144,10 @@ export function resolvePlaceDisplayAddress(
   }
 
   const city = normalizePlaceAddressText(options?.fallbackCity);
-  if (city && city !== "目前位置") return sanitizeGooglePlaceAddress(city, locale);
+  if (city && city !== "目前位置") {
+    const display = sanitizeGooglePlaceAddress(city, locale);
+    if (display) return display;
+  }
 
   if (options?.hasCoords) {
     return options?.locale === "en"

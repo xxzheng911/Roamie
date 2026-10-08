@@ -730,7 +730,9 @@ async function searchExploreAllPlacesMerged(ctx: {
         cityPlaceId: ctx.cityPlaceId,
         onProgress: undefined,
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof Error &&
+          (error.name === "AbortError" || error.message.includes("places_search_attempt_timeout"))) throw error;
       failedSubIds.push(subId);
       cardsByCategory[subId] = [];
     }
@@ -901,6 +903,25 @@ export async function searchExploreCategoryPlaces(
       ctx.requestSession.controller.signal.aborted)
   )
     return [];
+  let providerFailure: unknown = null;
+  const providerSearch = ctx.searchPlacesFn;
+  ctx = {
+    ...ctx,
+    searchPlacesFn: async (args) => {
+      try {
+        const result = await providerSearch(args);
+        if (result.error) providerFailure = new Error(result.error);
+        return result;
+      } catch (error) {
+        providerFailure = error;
+        throw error;
+      }
+    },
+  };
+  const settle = (cards: ExplorePlaceCard[]) => {
+    if (!ctx.forHome && cards.length === 0 && providerFailure) throw providerFailure;
+    return cards;
+  };
   const { userLocation, weather, locale, reasonProfile, saved, searchPlacesFn } = ctx;
   const forHome = ctx.forHome === true;
   const recommendMode = forHome ? "nearby" : (ctx.recommendMode ?? "nearby");
@@ -942,7 +963,7 @@ export async function searchExploreCategoryPlaces(
       cityPlaceId: ctx.cityPlaceId,
       requestSession: ctx.requestSession,
       onProgress: ctx.onProgress,
-    }).finally(() => {
+    }).then(settle).finally(() => {
       categorySearchInFlight.delete(flightKey);
     });
     categorySearchInFlight.set(flightKey, promise);
@@ -979,7 +1000,7 @@ export async function searchExploreCategoryPlaces(
       cityLabel: ctx.cityLabel,
       cityPlaceId: ctx.cityPlaceId,
     });
-  })().finally(() => {
+  })().then(settle).finally(() => {
     categorySearchInFlight.delete(flightKey);
   });
 

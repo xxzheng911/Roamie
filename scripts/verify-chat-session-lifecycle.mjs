@@ -22,7 +22,13 @@ function makeStorage() {
   };
 }
 
+// Session persistence fixtures are local-only; never contact a configured backend.
+globalThis.fetch = async () => { throw new TypeError("test_network_disabled"); };
 globalThis.window = globalThis;
+const events = new EventTarget();
+globalThis.addEventListener = events.addEventListener.bind(events);
+globalThis.removeEventListener = events.removeEventListener.bind(events);
+globalThis.dispatchEvent = events.dispatchEvent.bind(events);
 globalThis.localStorage = makeStorage();
 globalThis.sessionStorage = makeStorage();
 

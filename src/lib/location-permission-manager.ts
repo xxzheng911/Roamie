@@ -16,6 +16,7 @@ type CapPermissionStatus = Awaited<ReturnType<CapGeolocation["checkPermissions"]
 let memoryCache: LocationPermissionState | null = null;
 let inflight: Promise<LocationPermissionState> | null = null;
 let sessionRequestLogged = false;
+let inflightCanRequest = false;
 
 function isNativeShell(): boolean {
   return isCapacitorNativeShell();
@@ -107,8 +108,15 @@ export async function ensureLocationPermission(options?: {
     return memoryCache;
   }
 
-  if (inflight) return inflight;
+  if (inflight) {
+    if (shouldRequest && !inflightCanRequest) {
+      await inflight;
+      return ensureLocationPermission({ request: true });
+    }
+    return inflight;
+  }
 
+  inflightCanRequest = shouldRequest;
   inflight = resolvePermission(shouldRequest)
     .then((state) => {
       memoryCache = state;

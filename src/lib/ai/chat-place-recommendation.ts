@@ -1110,10 +1110,12 @@ async function runPlaceSearchUncached(
   };
   const cacheKey = buildPlacesSearchKey(requestData);
   const searchPromise = searchPlaces({ data: requestData });
-  const result =
-    extras?.timeoutMs == null
-      ? await searchPromise
-      : await withSearchTimeout(searchPromise, extras.timeoutMs, "places_search_attempt_timeout");
+  const result = await withSearchTimeout(
+    searchPromise,
+    extras?.timeoutMs ?? CHAT_PLACES_SEARCH_TIMEOUT_MS,
+    "places_search_attempt_timeout",
+  );
+  if (result.error?.includes("places_search_attempt_timeout")) throw new Error(result.error);
   const cacheStatus = readPlacesSearchCacheStatus(cacheKey);
   const skipRetail =
     extras?.skipExcludedRetailFilter === true || extras?.intentCategory === "shopping";
@@ -1178,6 +1180,7 @@ export async function fetchPlacesWithSearchAttempts(
         return places;
       }
     } catch (error) {
+      if (error instanceof Error && error.message.includes("places_search_attempt_timeout")) throw error;
       logChatPlacesError(error, `query=${attempt.query}`);
     }
   }
@@ -1253,6 +1256,7 @@ export async function fetchPlacesWithSearchAttemptsMerged(
       if (merged.length >= maxResults) break;
       if (merged.length >= minResults && attempt === attempts[attempts.length - 1]) break;
     } catch (error) {
+      if (error instanceof Error && error.message.includes("places_search_attempt_timeout")) throw error;
       logChatPlacesError(error, `query=${attempt.query}`);
     }
   }
@@ -1956,6 +1960,7 @@ async function fetchNearbyPlacesForIntentInner(
         if (!homeSpecialProfile && !explicitCapacityAttempts && places.length >= poolTarget) break;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        if (message.includes("places_search_attempt_timeout")) throw error;
         lastError = message;
         if (isShortcutContinuation) {
           logShortcutRuntime("[RT_CONTINUATION_SEARCH_ATTEMPT]", {

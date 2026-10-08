@@ -18,6 +18,7 @@ import { HomeNearbyPlaceCards } from "@/components/home/HomeNearbyPlaceCards";
 import { HomeWeatherCard } from "@/components/home/HomeWeatherCard";
 import { HomePersonalizationCard } from "@/components/home/HomePersonalizationCard";
 import { ProfileAvatar } from "@/components/profile/ProfileAvatar";
+import { withSearchTimeout } from "@/lib/search-timeout";
 import { sanitizeHomeNearbyPicksForDisplay } from "@/lib/home-nearby-display";
 import { useHomeWeather } from "@/hooks/use-home-weather";
 import { useEffectiveLocation } from "@/hooks/use-effective-location";
@@ -440,6 +441,10 @@ function Home() {
   ]);
 
   const nearbyRetryInflightRef = useRef(false);
+  const nearbyRequestVersionRef = useRef(0);
+  useLayoutEffect(() => {
+    return () => { nearbyRequestVersionRef.current += 1; };
+  }, []);
   const firstCardLoggedRef = useRef(false);
 
   const locationSourceForPerf = useCallback(
@@ -551,6 +556,11 @@ function Home() {
         return;
       }
 
+      const requestVersion = ++nearbyRequestVersionRef.current;
+      nearbyRetryInflightRef.current = false;
+      const isCurrent = () =>
+        nearbyRequestVersionRef.current === requestVersion &&
+        effectiveLocationRef.current?.locationKey === eff.locationKey;
       const loc = { lat: eff.lat, lng: eff.lng };
       const periodKey = homeNearbyLoadPeriodKey();
       const loadKey = homeNearbyLoadKey(loc.lat, loc.lng, periodKey, locale);
@@ -597,17 +607,25 @@ function Home() {
           logPlacesApiSkipDuplicate("nearby_in_flight", { key: loadKey, caller: caller ?? null });
           logHomeNearbyRequestSkipped("in_flight");
           try {
-            const inflightPicks = sanitizeHomeNearbyPicksForDisplay(await inflight, {
-              logDrop: false,
-            });
+            const inflightPicks = sanitizeHomeNearbyPicksForDisplay(
+              await withSearchTimeout(inflight),
+              { logDrop: false },
+            );
+            if (!isCurrent()) return;
             if (inflightPicks.length > 0) {
               applyNearbyPicksIfChanged(inflightPicks);
               hasNearbyPicksRef.current = true;
               publishHomeNearbyFresh(inflightPicks, loadKey, loc);
               setNearbyRenderStateLogged(hadPicksBeforeFetch ? "cached" : "fresh");
               logHomeNearbyFirstCardRendered(inflightPicks.length);
+            } else if (!hasNearbyPicksRef.current) {
+              setNearbyRenderStateLogged("empty");
+              markHomeNearbyEmpty();
             }
           } catch (e) {
+            if (!isCurrent()) return;
+            if (!hasNearbyPicksRef.current) setNearbyRenderStateLogged("error");
+            markHomeNearbyRefreshFailed();
             logHomeNearbyRequestError(
               "inflight_failed",
               e instanceof Error ? e.message : String(e),
@@ -617,8 +635,10 @@ function Home() {
               hasNearbyPicksRef.current,
             );
           } finally {
-            setNearbyLoading(false);
-            markHomeNearbyRefreshDone();
+            if (isCurrent()) {
+              setNearbyLoading(false);
+              markHomeNearbyRefreshDone();
+            }
           }
           return;
         }
@@ -634,8 +654,9 @@ function Home() {
 
       const applyPicks = (picks: HomeNearbyPick[], phase: "first_batch" | "enriched" | "final") => {
         const apply = () => {
+          if (!isCurrent()) return;
           if (picks.length === 0) {
-            if (!hasNearbyPicksRef.current && !background) {
+            if (!hasNearbyPicksRef.current) {
               setNearbyRenderStateLogged("empty");
               markHomeNearbyEmpty();
             }
@@ -691,6 +712,7 @@ function Home() {
       };
 
       const runFetch = async () => {
+        if (!isCurrent()) return;
         if (forceRefresh) nearbyRetryInflightRef.current = true;
         firstCardLoggedRef.current = false;
         logHomeNearbyRequestStart({
@@ -739,7 +761,7 @@ function Home() {
             }),
           ])
             .then(([prefs, saved]) => {
-              if (background) return;
+              if (background || !isCurrent()) return;
               const mergedPrefs = mergePreferencesWithTravelPrefStatus(prefs);
               setPrefs(mergedPrefs);
               setSavedPlaces(saved);
@@ -762,6 +784,7 @@ function Home() {
               },
               {
                 forceRefresh,
+                isCurrent,
                 onPartialPicks: (partial, phase) => {
                   const clean = sanitizeHomeNearbyPicksForDisplay(partial, { logDrop: false });
                   if (clean.length === 0) return;
@@ -771,10 +794,11 @@ function Home() {
             ),
             { logDrop: false },
           );
+          if (!isCurrent()) return;
           resultCount = picks.length;
           if (picks.length > 0) {
             applyPicks(picks, "final");
-          } else if (!hasNearbyPicksRef.current && !background) {
+          } else if (!hasNearbyPicksRef.current) {
             setNearbyRenderStateLogged("empty");
             markHomeNearbyEmpty();
           } else if (picks.length === 0 && hasNearbyPicksRef.current) {
@@ -783,6 +807,7 @@ function Home() {
             markHomeNearbyRefreshFailed();
           }
         } catch (e) {
+          if (!isCurrent()) return;
           console.warn("[Roamie Home] nearby picks failed", e);
           const reason = e instanceof Error ? e.message : String(e);
           logHomeNearbyRequestError("home_load_failed", reason);
@@ -795,14 +820,14 @@ function Home() {
           logHomeNearbyRefreshFailed(reason, hasNearbyPicksRef.current);
           markHomeNearbyRefreshFailed();
           // 有舊資料絕不清空；僅從未成功過才進 error
-          if (!hasNearbyPicksRef.current && !background) {
+          if (!hasNearbyPicksRef.current) {
             setNearbyRenderStateLogged("error");
           }
         } finally {
-          markHomeNearbyLoadComplete(loadKey, resultCount);
-          markHomeNearbyRefreshDone();
-          nearbyRetryInflightRef.current = false;
-          if (!background || hasNearbyPicksRef.current) {
+          if (isCurrent()) {
+            markHomeNearbyLoadComplete(loadKey, resultCount);
+            markHomeNearbyRefreshDone();
+            nearbyRetryInflightRef.current = false;
             setNearbyLoading(false);
             console.info("[HOME_NEARBY_LOADING_CLEAR]", {
               requestId: perfSession.requestId,
@@ -810,15 +835,15 @@ function Home() {
               reason: "request_settled",
               elapsedMs: Date.now() - perfSession.startedAt,
             });
+            console.info("[HOME_NEARBY_REQUEST_DONE]", {
+              timestamp: new Date().toISOString(),
+              elapsedMs: Date.now() - perfSession.startedAt,
+              requestId: perfSession.requestId,
+              geographicScope: loadKey,
+              candidateCount: resultCount,
+              finalCardCount: hasNearbyPicksRef.current ? nearbyPicksRef.current.length : 0,
+            });
           }
-          console.info("[HOME_NEARBY_REQUEST_DONE]", {
-            timestamp: new Date().toISOString(),
-            elapsedMs: Date.now() - perfSession.startedAt,
-            requestId: perfSession.requestId,
-            geographicScope: loadKey,
-            candidateCount: resultCount,
-            finalCardCount: hasNearbyPicksRef.current ? nearbyPicksRef.current.length : 0,
-          });
         }
       };
 
