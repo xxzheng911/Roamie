@@ -35,9 +35,9 @@ export type PlanTripFormInput = {
   startDate: string;
   endDate: string;
   departureTime: string;
-  travelers: number;
+  travelers?: number;
   transport: string;
-  budgetMode: string;
+  budgetMode?: string;
   selectedPlaces?: RoamieRecommendationItem[];
 };
 
@@ -76,11 +76,11 @@ export function buildPlanTripInitialContext(
     form.origin ? `tripOrigin：${formatTripLocationLabel(form.origin)}` : "",
     `travelDates：${dateLine}`,
     form.departureTime ? `departureTime：${form.departureTime}` : "",
-    `travelers：${form.travelers}`,
+    form.travelers != null && form.travelers > 0 ? `travelers：${form.travelers}` : "travelers：未指定；不得假設人數或計算團體總費用",
     form.transport ? `transport：${form.transport}` : "",
     form.styles.length ? `travelStyles：${form.styles.join("、")}` : "",
     form.mood ? `mood：${form.mood}` : "",
-    `budgetMode：${form.budgetMode}`,
+    form.budgetMode ? `budgetMode：${form.budgetMode}` : "budgetMode：未指定；不設定預算上限或固定金額",
     `destinationWeather：${weatherLine}`,
     form.destination.timezone ? `timezone：${form.destination.timezone}` : "",
     styleContext,

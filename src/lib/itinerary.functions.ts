@@ -328,7 +328,7 @@ const PlaceSchema = z
 export const InputSchema = z.object({
   destination: z.string().min(1).max(100),
   days: z.number().int().min(MIN_ITINERARY_DAYS).max(MAX_ITINERARY_DAYS),
-  budget: z.enum(["low", "medium", "high"]).default("medium"),
+  budget: z.enum(["low", "medium", "high"]).optional(),
   style: z.string().max(120).optional().default(""),
   mood: z.string().max(120).optional().default(""),
   interests: z.string().max(4000).optional().default(""),
@@ -944,7 +944,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
           time: data.time,
           planningHints: {
             transportation: data.transport,
-            budget: data.budget === "low" ? "省錢" : data.budget === "high" ? "舒適" : "適中",
+            budget: data.budget == null ? undefined : data.budget === "low" ? "省錢" : data.budget === "high" ? "舒適" : "適中",
             conversationSummary: data.conversationSummary,
           },
           itineraryRequest: {

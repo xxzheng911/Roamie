@@ -230,6 +230,8 @@ export type RoamiePayloadV2 = RoamieResponse &
     /** 出發地 */
     originLocation?: TripLocation | null;
     days?: number;
+    /** Omitted when the traveler count was not supplied. */
+    travelers?: number;
     generatedAt?: string;
     tripSettings?: TripPlanSettings;
     /** AI 每日穿搭建議（整合天氣預報） */

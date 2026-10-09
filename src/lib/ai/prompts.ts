@@ -260,7 +260,7 @@ ${context}`;
 
   const req = ctx.itineraryRequest!;
   const budget =
-    req.budget === "low" ? "省錢" : req.budget === "high" ? "舒適" : "適中";
+    req.budget == null ? "未指定，不設定預算上限或固定金額" : req.budget === "low" ? "省錢" : req.budget === "high" ? "舒適" : "適中";
   const placesBlock = formatSelectedPlaces(req.selectedPlaces);
   const hintsBlock = formatPlanningHints(ctx.planningHints);
 
@@ -272,7 +272,7 @@ ${context}`;
 - 目的地：${req.destination}，${req.days} 天
 - 預算：${budget}
 - 出發地：${req.origin || "（未指定）"}
-- 旅伴人數：${req.travelers ?? "（未指定）"} 人
+- 旅伴人數：${req.travelers ?? "（未指定，不得假設人數或計算團體總費用）"} 人
 - 交通方式：${req.transport || "（未指定）"}
 - 旅遊風格：${req.style || "（未指定）"}
 - 心情：${req.mood || ctx.mood || "（未指定）"}

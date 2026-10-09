@@ -122,7 +122,7 @@ export const RequestSchema = z.object({
     .object({
       destination: z.string().min(1).max(100),
       days: z.number().int().min(MIN_ITINERARY_DAYS).max(MAX_ITINERARY_DAYS),
-      budget: z.enum(["low", "medium", "high"]),
+      budget: z.enum(["low", "medium", "high"]).optional(),
       style: z.string().max(120).optional(),
       mood: z.string().max(120).optional(),
       startDate: z.string().max(40).optional(),

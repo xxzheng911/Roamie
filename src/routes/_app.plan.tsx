@@ -275,7 +275,7 @@ function PlanPage() {
     dest: TripLocation;
     start: TripLocation | null;
     tripDays: number;
-    budgetMode: BudgetMode;
+    budgetMode: BudgetMode | undefined;
   };
 
   const resolvePlanFormForSubmit = async (
@@ -305,11 +305,7 @@ function PlanPage() {
     if (resolvedDestination) setDestination(resolvedDestination);
     if (resolvedOrigin) setOrigin(resolvedOrigin);
     if (!validateTripPlaces(resolvedDestination, resolvedOrigin)) return null;
-    if (!budgetMode) {
-      toast.error(t("plan.selectBudget"));
-      return null;
-    }
-    if (!isValidTravelers(travelers)) {
+    if (travelers !== 0 && !isValidTravelers(travelers)) {
       toast.error(t("plan.invalidTravelers"));
       return null;
     }
@@ -322,7 +318,7 @@ function PlanPage() {
       dest: resolvedDestination!,
       start: resolvedOrigin,
       tripDays,
-      budgetMode,
+      budgetMode: budgetMode || undefined,
     };
   };
 
@@ -348,7 +344,7 @@ function PlanPage() {
         startDate,
         endDate,
         departureTime: "",
-        travelers,
+        travelers: travelers || undefined,
         transport: transport.trim(),
         budgetMode,
         budgetLabel,
@@ -503,7 +499,7 @@ function PlanPage() {
           startDate,
           endDate,
           departureTime: "",
-          travelers,
+          travelers: travelers || undefined,
           transport: transport.trim(),
           budgetMode: effectiveBudgetMode,
           selectedPlaces: mergedPlaces,
@@ -673,7 +669,7 @@ function PlanPage() {
                   disabled={loading}
                   onClick={() => {
                     setTravelersCustom(false);
-                    setTravelers(n);
+                    setTravelers(travelers === n && !travelersCustom ? 0 : n);
                   }}
                   className={`max-w-full whitespace-normal rounded-full border px-3.5 py-1.5 text-xs leading-snug transition ${
                     !travelersCustom && travelers === n
@@ -702,7 +698,7 @@ function PlanPage() {
                 type="text"
                 inputMode="numeric"
                 pattern="[0-9]*"
-                value={String(travelers)}
+                value={travelers ? String(travelers) : ""}
                 onChange={(e) => {
                   const raw = e.target.value.replace(/\D/g, "");
                   if (!raw) {
@@ -725,7 +721,7 @@ function PlanPage() {
                 <button
                   key={b.value}
                   type="button"
-                  onClick={() => setBudgetMode(b.value)}
+                  onClick={() => setBudgetMode(budgetMode === b.value ? "" : b.value)}
                   disabled={loading}
                   className={`flex min-h-11 w-full min-w-0 flex-col items-center justify-center rounded-2xl border px-2.5 py-2 text-center transition ${
                     budgetMode === b.value

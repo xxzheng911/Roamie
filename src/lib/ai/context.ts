@@ -79,7 +79,7 @@ export type ChatPlanningHints = {
 export type RoamieItineraryRequest = {
   destination: string;
   days: number;
-  budget: "low" | "medium" | "high";
+  budget?: "low" | "medium" | "high";
   style?: string;
   mood?: string;
   interests?: string;

@@ -6,7 +6,7 @@ import { useServerFn } from "@tanstack/react-start";
 import type { RoamieItineraryItem, TripPlanSettings } from "@/lib/ai/types";
 import type { TripLocation } from "@/lib/location/types";
 import { generateTripOutfitSuggestion } from "@/lib/outfit/outfit.functions";
-import { buildLocalTripOutfitFallback } from "@/lib/outfit/local-trip-outfit-fallback";
+import { buildLocalTripOutfitFallback, resolveLocalTripOutfit } from "@/lib/outfit/local-trip-outfit-fallback";
 import { buildOutfitInputKey } from "@/lib/outfit/trip-outfit-context";
 import type { TripOutfitSuggestionFields } from "@/lib/outfit/types";
 
@@ -118,19 +118,25 @@ export function useTripOutfitSuggestion({
 
   const [loading, setLoading] = useState(false);
 
-  const isCached =
+  const localOutfit = resolveLocalTripOutfit({
+    locale, destination: resolvedDestination, startDate: dateRange.start, endDate: dateRange.end,
+    lat: destinationLocation?.lat, lng: destinationLocation?.lng,
+    timezone: destinationLocation?.timezone, utcOffsetMinutes: destinationLocation?.utcOffsetMinutes,
+    items, transport: settings.transport, inputKey,
+  });
+  const isCached = Boolean(localOutfit) || (
     isCurrentGeneratedCopy(outfitFields.outfitCopy ?? {}, locale) &&
-    isFreshTripOutfit(outfitFields, inputKey);
+    isFreshTripOutfit(outfitFields, inputKey));
 
   const hasDates = tripCalendarDates(dateRange.start, dateRange.end).length > 0;
   const pendingRegeneration = enabled && !isCached && hasDates;
 
-  const displayFields: TripOutfitSuggestionFields = isCached ? outfitFields : {
+  const displayFields: TripOutfitSuggestionFields = localOutfit ?? (isCached ? outfitFields : {
     outfitSuggestion: hasDates && enabled ? "" : unavailableTripWeatherCopy(locale),
     weatherSummary: "", weatherSource: "unavailable",
-  };
+  });
 
-  const showLoading = enabled && hasDates && (loading || (pendingRegeneration && !displayFields.outfitSuggestion));
+  const showLoading = !localOutfit && enabled && hasDates && (loading || (pendingRegeneration && !displayFields.outfitSuggestion));
 
   useEffect(() => {
     if (!enabled || isCached) return;

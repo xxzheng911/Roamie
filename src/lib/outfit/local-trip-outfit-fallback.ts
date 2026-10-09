@@ -1,5 +1,5 @@
 import type { Locale } from "@/lib/i18n/types";
-import { unavailableTripWeatherCopy, tripCalendarDates, validWeatherCoords } from "./trip-weather-policy";
+import { unavailableTripWeatherCopy, tripCalendarDates, validWeatherCoords, destinationDate } from "./trip-weather-policy";
 import type { RoamieItineraryItem, TripTransportMode } from "@/lib/ai/types";
 import type { TripOutfitSuggestionFields, TripWeatherSource } from "@/lib/outfit/types";
 
@@ -76,4 +76,25 @@ export function buildLocalTripOutfitFallback(params: {
     outfitSuggestionUpdatedAt: new Date().toISOString(),
     outfitSuggestionInputKey: params.inputKey,
   };
+}
+
+
+/** Resolve outside the provider horizon BEFORE saved-cache/server results can override it. */
+export function resolveLocalTripOutfit(
+  params: Parameters<typeof buildLocalTripOutfitFallback>[0] & {
+    timezone?: string; utcOffsetMinutes?: number | null;
+  },
+  now = Date.now(),
+): TripOutfitSuggestionFields | null {
+  const dates = tripCalendarDates(params.startDate, params.endDate);
+  if (!dates.length) return null;
+  const today = destinationDate(now, params.timezone,
+    params.utcOffsetMinutes == null ? undefined : params.utcOffsetMinutes * 60);
+  const day = Date.parse(today ?? new Date(now).toISOString().slice(0, 10));
+  const last = Date.parse(dates[dates.length - 1]);
+  const first = Date.parse(dates[0]);
+  if (last > day + (today ? 7 : 8) * 86_400_000 || first < day - (today ? 0 : 1) * 86_400_000) {
+    return buildLocalTripOutfitFallback(params);
+  }
+  return null;
 }

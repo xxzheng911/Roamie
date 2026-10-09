@@ -694,7 +694,7 @@ import {
   generateLocalRecommendationFallback,
 } from "@/lib/ai/local-recommendation-fallback";
 import { getTripLegsWithDurations, travelLabelToRoutesMode } from "@/services/routesService";
-import { generateOutfitSuggestion, normalizeWeather } from "@/services/weatherService";
+import { applyPlanTripDetails } from "@/lib/plan-form-trip-payload";
 import { attachCoreTripToPayload, toCoreTrip, type CoreTrip } from "@/lib/trip/core-trip";
 import { getImmediateTripCoverImage, getTripCoverImage } from "@/services/placeImageService";
 import {
@@ -2835,7 +2835,7 @@ function Chat() {
           startDate: syncedHandoff.tripStartDate ?? "",
           endDate: syncedHandoff.tripEndDate ?? "",
           departureTime: syncedHandoff.startTime ?? "",
-          travelers: syncedHandoff.tripCompanionCount ?? 1,
+          travelers: syncedHandoff.tripCompanionCount,
           transport: syncedHandoff.transportation ?? "",
           budgetMode: syncedHandoff.budget ?? "",
         };
@@ -10733,7 +10733,9 @@ function Chat() {
         explicit: parseExplicitBudgetConstraint(lastUserText),
         requestScope: "trip",
       });
-      const budget = budgetModeToItineraryTier(budgetContext.effectiveMode ?? "standard");
+      const budget = workingSession.fromPlanForm && !workingSession.budget &&
+        !parseExplicitBudgetConstraint(lastUserText)
+        ? undefined : budgetModeToItineraryTier(budgetContext.effectiveMode ?? "standard");
 
       let createResult: Awaited<ReturnType<typeof createItineraryFromSession>>;
 
@@ -10923,7 +10925,7 @@ function Chat() {
           origin: workingSession.tripOrigin
             ? formatTripLocationLabel(workingSession.tripOrigin)
             : (bundle.location.city ?? ""),
-          travelers: workingSession.tripCompanionCount ?? 1,
+          travelers: workingSession.tripCompanionCount,
           transport: workingSession.transportation ?? "",
           placeAuthority: selectionMode ? ("selected_only" as const) : undefined,
           // InputSchema's transform keeps `types` as an explicit (possibly
@@ -11079,20 +11081,6 @@ function Chat() {
       // Directions and remote cover are recoverable enrichment. Persist the
       // authoritative itinerary first, then enrich the same saved row in background.
       const routeLegs: Awaited<ReturnType<typeof getTripLegsWithDurations>> = [];
-      const weatherSummary = bundle.weather
-        ? `${bundle.weather.city} ${bundle.weather.condition} ${bundle.weather.tempC ?? ""}C`
-        : uiT("productionUi.p30edb219d6");
-      const outfitSuggestion = tripDates.hasExplicitDates
-        ? generateOutfitSuggestion(
-            {
-              destinationPlace: { name: destination },
-              startDate,
-              endDate,
-              transportMode: workingSession.transportation ?? "walk",
-            },
-            normalizeWeather(bundle.weather),
-          )
-        : "";
       const cover = getImmediateTripCoverImage();
 
       logSelectionTiming("stored_itinerary_start");
@@ -11100,8 +11088,6 @@ function Chat() {
         ...itinerary,
         itinerary: itineraryStops,
         userSaved: false,
-        weatherSummary,
-        outfitSuggestion,
         aiGeneratedCoverImageUrl: cover.url,
         tripSettings: {
           ...itinerary.tripSettings,
@@ -11126,6 +11112,10 @@ function Chat() {
           ),
         },
       };
+      draftPayload = applyPlanTripDetails(draftPayload, {
+        locale, destinationLocation: workingSession.tripDestination ?? undefined,
+        originLocation: workingSession.tripOrigin ?? undefined, travelers: workingSession.tripCompanionCount,
+      });
       const coreDraft: CoreTrip = toCoreTrip({
         id: "draft",
         title: draftPayload.title,
