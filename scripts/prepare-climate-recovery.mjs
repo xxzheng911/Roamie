@@ -21,14 +21,14 @@ assert.deepEqual(config.durable_objects.bindings,[
 ]);
 assert.deepEqual(config.vars,{});assert.ok(!config.secrets);
 const entry=readFileSync(join(root,'dist/server/index.js'),'utf8');
-assert.match(entry,/as AbuseGuard/);assert.match(entry,/as VisualCrossingClimate/);
+assert.match(entry,/as AbuseGuard/);assert.match(entry,/as VisualCrossingClimate/);assert.match(entry,/as ClimateHealth/);
 const hash=sha(JSON.stringify(receipt));
 const output=resolve(process.argv[2]??`/tmp/roamie-climate-recovery-${hash.slice(0,12)}`);
 assert.ok(!existsSync(output),'Refuse to overwrite an existing recovery snapshot');
 assert.ok(!output.startsWith(root+'/'),'Recovery snapshot must be outside working tree');
 mkdirSync(join(output,'scripts'),{recursive:true});
 cpSync(join(root,'dist'),join(output,'dist'),{recursive:true});
-for(const file of ['release-worker-upload.mjs','verify-release-artifacts.mjs']) cpSync(join(root,'scripts',file),join(output,'scripts',file));
+for(const file of ['release-worker-upload.mjs','verify-release-artifacts.mjs','check-climate-health.mjs']) cpSync(join(root,'scripts',file),join(output,'scripts',file));
 for(const file of ['package.json','package-lock.json']) cpSync(join(root,file),join(output,file));
 // Local tooling dependency only, never part of dist/assets. Recreate with npm ci when moved.
 symlinkSync(join(root,'node_modules'),join(output,'node_modules'),'dir');
@@ -39,7 +39,7 @@ const manifest={
  uncommittedSourcePatchSha256:sha(execFileSync('git',['diff','--','src'],{cwd:root})),
  receiptSha256:hash,requiredProductionVars:{VISUAL_CROSSING_ENABLED:'false',ABUSE_GUARD_ENFORCEMENT:'true',GOOGLE_GLOBAL_DAILY_UNITS:'100000'},
  migrations:config.migrations,bindings:config.durable_objects.bindings,
- scripts:Object.fromEntries(['release-worker-upload.mjs','verify-release-artifacts.mjs'].map(f=>[f,sha(readFileSync(join(output,'scripts',f)))])),
+ scripts:Object.fromEntries(['release-worker-upload.mjs','verify-release-artifacts.mjs','check-climate-health.mjs'].map(f=>[f,sha(readFileSync(join(output,'scripts',f)))])),
 };
 writeFileSync(join(output,'recovery-manifest.json'),JSON.stringify(manifest,null,2)+'\n');
 writeFileSync(join(output,'RECOVERY.txt'),`Compatible forward repair; not a pre-migration rollback.\nKeep both DO classes, namespaces, v1/v2 migrations, global-v1 ledger and feature OFF.\nUse the copied safe uploader from this snapshot only AFTER live v2 exists.\nRun node scripts/release-worker-upload.mjs --preflight-only first.\nOnly after explicit approval, use its normal upload flow and separately verified traffic switch.\nDo not run first-migration mode again. Never delete namespaces or reset state.\nIf moved, install the pinned package-lock dependencies (npm ci); node_modules here is a local symlink.\nManifest records uncommitted application source separately from base commit.\n`);

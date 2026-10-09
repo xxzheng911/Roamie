@@ -15,8 +15,8 @@ const config=JSON.parse(readFileSync(join(snapshot,'dist/server/wrangler.json'),
 assert.deepEqual(config.migrations,manifest.migrations);assert.deepEqual(config.durable_objects.bindings,manifest.bindings);
 assert.equal(manifest.requiredProductionVars.VISUAL_CROSSING_ENABLED,'false');
 // Compile only a local fixture around the actual built class. No source replacement.
-const entry=`import {VisualCrossingClimate as ProductionClimate,AbuseGuard} from ${JSON.stringify(join(snapshot,'dist/server/index.js'))};
-export {AbuseGuard};
+const entry=`import {VisualCrossingClimate as ProductionClimate,AbuseGuard,ClimateHealth} from ${JSON.stringify(join(snapshot,'dist/server/index.js'))};
+export {AbuseGuard,ClimateHealth};
 export class VisualCrossingClimate extends ProductionClimate {
  constructor(ctx,env){super(ctx,env);this.fixtureStorage=ctx.storage;}
  async fetch(request){
@@ -29,21 +29,21 @@ export default {fetch(){return new Response(null,{status:404});}};`;
 const bundle=await build({stdin:{contents:entry,resolveDir:process.cwd(),loader:'js'},bundle:true,write:false,format:'esm',platform:'node',external:['cloudflare:*','node:*'],logLevel:'silent'});
 const persistence=mkdtempSync(join(tmpdir(),'climate-recovery-sqlite-'));
 let outbound=0,mf;
-const start=()=>new Miniflare(convertV4MiniflareOptions({name:'roamie-recovery-fixture',modules:true,script:bundle.outputFiles[0].text,
+const start=()=>new Miniflare(convertV4MiniflareOptions({resourcePersistencePath:persistence,workers:[{name:'operator',modules:true,compatibilityDate:config.compatibility_date,script:'export default {fetch(r,e){return e.HEALTH.fetch(r)}}',serviceBindings:{HEALTH:{name:'roamie-recovery-fixture',entrypoint:'ClimateHealth'}}},{name:'roamie-recovery-fixture',modules:true,script:bundle.outputFiles[0].text,
  compatibilityDate:config.compatibility_date,compatibilityFlags:config.compatibility_flags,
- bindings:{VISUAL_CROSSING_ENABLED:'false'},resourcePersistencePath:persistence,
+ bindings:{VISUAL_CROSSING_ENABLED:'false'},
  durableObjects:{VISUAL_CROSSING_CLIMATE:{className:'VisualCrossingClimate',useSQLite:true},ABUSE_GUARD:{className:'AbuseGuard',useSQLite:true}},
  outboundService:()=>{outbound++;throw Error('Recovery health must not call upstream');},
-}));
-const stub=async()=>{const ns=await mf.getDurableObjectNamespace('VISUAL_CROSSING_CLIMATE');return ns.get(ns.idFromName('global-v1'));};
+}]}));
+const stub=async()=>{const ns=await mf.getDurableObjectNamespace('VISUAL_CROSSING_CLIMATE','roamie-recovery-fixture');return ns.get(ns.idFromName('global-v1'));};
 try {
  mf=start();let doStub=await stub();
- assert.equal((await (await doStub.fetch('https://internal/__health')).json()).budget,'uninitialized');
+ assert.equal((await (await mf.dispatchFetch('https://climate-health.internal/__health')).json()).budget,'uninitialized');
  const state={charges:[{at:Date.now(),records:42}],leaseUntil:0,blocked:false,cache:{}};
  assert.equal(await (await doStub.fetch('https://internal/fixture-seed',{method:'POST',body:JSON.stringify(state)})).json(),true);
  assert.deepEqual(await (await doStub.fetch('https://internal/fixture-read')).json(),state);
  await mf.dispose();mf=start();doStub=await stub();
- const health=await (await doStub.fetch('https://internal/__health')).json();
+ const health=await (await mf.dispatchFetch('https://climate-health.internal/__health')).json();
  assert.equal(health.usedRecords,42);assert.equal(health.sqlite,'readable');
  assert.deepEqual(await (await doStub.fetch('https://internal/fixture-read')).json(),state);
  assert.equal(outbound,0);

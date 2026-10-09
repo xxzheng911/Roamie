@@ -207,3 +207,40 @@ config parser accepts the canonical generated config. After the user corrected t
 passed against c26d2177-1c32-4dc9-b32b-f104725c8f81. Following the health change,
 canonical production build and secret scan passed; typecheck remained 327 with
 no added/removed diagnostics. Actual migration/production recovery were not run.
+
+## Production health bridge (named entrypoint)
+
+`ClimateHealth` is now exported from src/server.ts as a WorkerEntrypoint, not a
+Durable Object. The public default fetch handler is unchanged. There is no
+public management route, no new DO binding and no new migration. Cloudflare
+service-binding possession is the authorization boundary; this is independent
+of end-user login. The bridge accepts only GET
+`https://climate-health.internal/__health` without query/body, and always creates
+a fresh GET to `global-v1` on VISUAL_CROSSING_CLIMATE. It forwards no caller
+headers/path/identity. Output is reconstructed from an allowlist; errors are
+sanitized 503. Empty ledger remains uninitialized, not persisted zero.
+
+After an explicitly approved migration deployment, an authorized operator can
+run the following from the checkout (or copied recovery snapshot):
+
+```
+node scripts/check-climate-health.mjs --remote --expected-active <new-active-UUID>
+```
+
+The tool first checks live version/100% traffic, the v2 migration, class/binding,
+exported ClimateHealth handler, OFF flag and unchanged Google safety values.
+It then uses Wrangler getPlatformProxy with a remote SERVICE binding:
+`{ binding: "CLIMATE_HEALTH", service: "roamie", entrypoint: "ClimateHealth", remote: true }`.
+The local caller config has no public routes and is temporary; Cloudflare
+credentials authorize the proxy session. No local env files or provider keys
+are loaded. The probe calls only the fixed health GET, then disposes the proxy.
+It does not use an unsupported remote DO binding or deploy a public helper.
+This live operator command has NOT been executed during local preparation.
+
+Local tests use actual named service bindings and SQLite, plus mocked operator
+metadata/proxy calls. Recovery verification exercises the compiled named
+entrypoint after a SQLite restart and preserves ledger contents. Recovery
+preparation requires the entrypoint export and copies the operator script.
+A scoped type-check annotation is needed for the runtime-only cloudflare:workers
+import because the project lacks its type package; the bridge Env is explicitly
+typed without changing existing global declarations or Google guard diagnostics.

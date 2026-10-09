@@ -122,6 +122,7 @@ async function normalizeCatastrophicSsrResponse(response: Response): Promise<Res
 
 export { AbuseGuard } from "./lib/abuse-guard-do";
 export { VisualCrossingClimate } from "./lib/weather/visual-crossing-do";
+export { ClimateHealth } from "./lib/weather/climate-health-entrypoint";
 
 export default {
   async fetch(request: Request, env: CloudflareRuntimeEnv, ctx: CloudflareExecutionContext) {
