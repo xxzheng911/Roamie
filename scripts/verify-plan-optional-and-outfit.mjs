@@ -72,8 +72,8 @@ assert.ok(!chat.includes('tripCompanionCount ?? 1'));
 assert.ok(!chat.includes('normalizeWeather(bundle.weather)'));
 assert.ok(chat.includes('workingSession.fromPlanForm && !workingSession.budget'));
 const hook=fs.readFileSync('src/hooks/use-trip-outfit-suggestion.ts','utf8');
-assert.ok(hook.includes('localOutfit ?? (isCached ? outfitFields'));
-assert.ok(hook.includes('Boolean(localOutfit) ||'));
+assert.ok(hook.includes('isCached ? outfitFields : localOutfit ??'));
+assert.ok(!hook.includes('Boolean(localOutfit) ||'),'seasonal placeholder must allow a historical climate request');
 for(const locale of ['zh-TW','en','ja','ko']) {
  const params={locale,destination:'東京都',startDate:form.startDate,endDate:form.endDate,lat:35.68,lng:139.69,timezone:'Asia/Tokyo',items:[],inputKey:'stale'};
  const local=resolveLocalTripOutfit(params,now);

@@ -53,6 +53,22 @@ const seasonalCopy: Record<Locale, Record<Season | "disclaimer", string>> = {
   },
 };
 
+export const climateCopy = {
+  "zh-TW": { label: "歷史氣候參考", meaning: "同期日低溫／高溫平均", disclaimer: "歷史同期氣候參考，非實際天氣預報。", source: "天氣資料來源：Visual Crossing" },
+  en: { label: "Historical climate reference", meaning: "Period mean daily lows / highs", disclaimer: "Historical climate for this time of year, not an actual weather forecast.", source: "Weather data provided by Visual Crossing" },
+  ja: { label: "過去の気候の参考", meaning: "同時期の日最低・最高気温の平均", disclaimer: "同時期の過去の気候に基づく参考情報であり、実際の天気予報ではありません。", source: "気象データ提供：Visual Crossing" },
+  ko: { label: "과거 기후 참고", meaning: "동기간 일 최저 / 최고 기온 평균", disclaimer: "같은 시기의 과거 기후 참고이며 실제 일기 예보가 아닙니다.", source: "날씨 데이터 제공: Visual Crossing" },
+} satisfies Record<Locale, { label: string; meaning: string; disclaimer: string; source: string }>;
+
+/** Temperature-informed local rules only: never call AI or infer rain from statistics. */
+export function climateOutfitCopy(locale: Locale, low: number, high: number) {
+  const season = high < 18 ? "cool" : high >= 28 && low >= 18 ? "warm" : "transition";
+  return {
+    weatherSummary: `${climateCopy[locale].label} · ${Math.round(low)}–${Math.round(high)}°C · ${climateCopy[locale].meaning}`,
+    outfitSuggestion: `${seasonalCopy[locale][season]}\n\n${climateCopy[locale].disclaimer}`,
+  };
+}
+
 /** 無天氣 API 時的本地穿搭建議（僅顯示，不寫回 trip） */
 export function buildLocalTripOutfitFallback(params: {
   locale: Locale;

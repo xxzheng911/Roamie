@@ -1,6 +1,7 @@
 import { useI18n } from "@/hooks/use-i18n";
 import { CloudSun, Loader2, Moon, Shirt, Sun, Umbrella } from "lucide-react";
 import { unavailableTripWeatherCopy } from "@/lib/outfit/trip-weather-policy";
+import { climateCopy } from "@/lib/outfit/local-trip-outfit-fallback";
 import { formatTripDateRangeLabel } from "@/lib/outfit/trip-outfit-context";
 import type { TripWeatherSource } from "@/lib/outfit/types";
 import { cn } from "@/lib/utils";
@@ -99,7 +100,7 @@ export function TripOutfitCard({
             <p
               className={cn(
                 "text-sm leading-relaxed text-foreground/90",
-                unavailable && "whitespace-pre-line",
+                (unavailable || weatherSource === "visual-crossing-stats") && "whitespace-pre-line",
                 showWeatherSummary ? "mt-3" : "mt-4",
               )}
             >
@@ -110,6 +111,11 @@ export function TripOutfitCard({
               {uiT("productionUi.p7ec3554264")}
             </p>
           )}
+          {weatherSource === "visual-crossing-stats" ? (
+            <a className="mt-2 block text-xs text-muted-foreground underline" href="https://www.visualcrossing.com/" target="_blank" rel="noopener noreferrer">
+              {climateCopy[locale].source}
+            </a>
+          ) : null}
         </>
       )}
     </div>

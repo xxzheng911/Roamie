@@ -1,5 +1,6 @@
-import { buildLocalTripOutfitFallback } from "./local-trip-outfit-fallback";
-import { tripCalendarDates, validWeatherCoords, forecastFacts, tripForecastSummary } from "./trip-weather-policy";
+import { buildLocalTripOutfitFallback, climateOutfitCopy } from "./local-trip-outfit-fallback";
+import { tripCalendarDates, validWeatherCoords, forecastFacts, tripForecastSummary, tripWeatherMode } from "./trip-weather-policy";
+import { visualCrossingTripClimate } from "../weather/visual-crossing.server";
 import { aiObservation, observeProviderAttempt } from "@/lib/abuse-guard-telemetry.server";
 import type { Locale } from "@/lib/i18n/types";
 import { localizedOutfitCopy } from "./localized-outfit-copy";
@@ -213,6 +214,23 @@ export async function generateOutfitSuggestion(
       outfitCopy,
       weatherSummary: "",
       weatherSource: "unavailable",
+      outfitSuggestionUpdatedAt: new Date().toISOString(),
+    };
+  }
+
+  const weatherInput = {
+    destination, lat, lng, startDate: input.startDate, endDate: input.endDate,
+    timezone: input.destinationLocation?.timezone ?? input.timezone,
+    utcOffsetMinutes: input.destinationLocation?.utcOffsetMinutes ?? input.utcOffsetMinutes,
+  };
+  if (tripWeatherMode(weatherInput) === "climate") {
+    const climate = await visualCrossingTripClimate(weatherInput);
+    return climate ? {
+      ...climateOutfitCopy(locale, climate.low, climate.high), outfitCopy,
+      weatherSource: "visual-crossing-stats",
+      outfitSuggestionUpdatedAt: new Date(climate.fetchedAt).toISOString(),
+    } : {
+      outfitSuggestion: fallbackSuggestion, outfitCopy, weatherSummary: "", weatherSource: "unavailable",
       outfitSuggestionUpdatedAt: new Date().toISOString(),
     };
   }

@@ -6,7 +6,7 @@ import * as policy from '../src/lib/outfit/trip-weather-policy.ts';
 import * as context from '../src/lib/outfit/trip-outfit-context.ts';
 import * as parser from '../src/lib/weather/parse-openweather.ts';
 import { createServerRequestCache } from '../src/lib/server-request-cache.ts';
-import { buildLocalTripOutfitFallback, tripPackingSeason } from '../src/lib/outfit/local-trip-outfit-fallback.ts';
+import { buildLocalTripOutfitFallback, tripPackingSeason, climateOutfitCopy } from '../src/lib/outfit/local-trip-outfit-fallback.ts';
 
 let now = Date.parse('2026-10-09T03:00:00Z');
 class Clock extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } }
@@ -84,20 +84,23 @@ assert.ok(!fs.readFileSync('src/components/saved/SavedTripItineraryEditor.tsx','
 console.log('PASS A–J adjusted scope: far/partial dates unavailable; exact forecast dates; calendar/leap/timezone; cache; empty/error/null; locale/platform contract. No live API/AI calls.');
 let aiCalls=0;
 let selectedRows=rows;
+let selectedClimate=null, climateCalls=0, forecastCalls=0;
 const generator=load('src/lib/outfit/generate-trip-outfit.server.ts', {
   './trip-weather-policy':policy,
-  './local-trip-outfit-fallback':{buildLocalTripOutfitFallback},
+  './local-trip-outfit-fallback':{buildLocalTripOutfitFallback,climateOutfitCopy},
+  '../weather/visual-crossing.server':{visualCrossingTripClimate:async()=>{climateCalls++;return selectedClimate;}},
   '@/lib/abuse-guard-telemetry.server':{aiObservation:()=>({}),observeProviderAttempt:()=>()=>{}},
   './localized-outfit-copy':{localizedOutfitCopy:()=> 'rule fallback'},
   '@/lib/i18n/ai-instructions':{aiLanguageInstruction:()=>''},
   '@/lib/abuse-guard.server':{assertAiUse:async()=>{}},
   '@/lib/env.server':{getOpenAIKey:()=> 'fixture'},
   '@/lib/ai/errors':{mapOpenAIError:()=>new Error('mock AI error')},
-  '@/lib/weather/openweather.server':{openWeatherGetTripForecast:async()=>selectedRows},
+  '@/lib/weather/openweather.server':{openWeatherGetTripForecast:async()=>{forecastCalls++;return selectedRows;}},
   '@/lib/outfit/trip-outfit-context':context,
 },async()=>{aiCalls++;return Response.json({choices:[{message:{content:JSON.stringify({suggestion:'依預報分層穿著。'})}}]});});
 let result=await generator.generateOutfitSuggestion({...base,endDate:'2026-10-11',items:[],dayCount:1});
 assert.equal(result.weatherSource,'openweather');assert.ok(result.weatherSummary.includes('天氣預報'));assert.ok(result.weatherSummary.includes('降雨資料不足'));assert.equal(aiCalls,1);
+assert.equal(climateCalls,0,'recent forecast does not call climate provider');
 selectedRows=[];
 result=await generator.generateOutfitSuggestion({...base,items:[],dayCount:3});
 assert.equal(result.weatherSource,'unavailable');assert.equal(result.weatherSummary,'');assert.equal(aiCalls,1,'no AI calls without weather');
@@ -131,3 +134,14 @@ assert.ok(result.outfitSuggestion.includes('保暖外套'));
 assert.ok(result.outfitSuggestion.includes('並非實際天氣預報'));
 assert.equal(aiCalls,noAiBefore);
 console.log('PASS seasonal A–H: hemispheres, tropical/unknown neutral, cross-month, 4 locales, disclaimer, no extra AI calls.');
+selectedClimate={low:8.916666666666666,high:13.616666666666667,fetchedAt:now};
+const forecastBefore=forecastCalls;
+for(const locale of ['zh-TW','en','ja','ko']) {
+ result=await generator.generateOutfitSuggestion({...base,locale,startDate:'2026-11-25',endDate:'2026-11-30',items:[],dayCount:6});
+ assert.equal(result.weatherSource,'visual-crossing-stats');
+ assert.ok(result.weatherSummary.includes('9–14°C'));
+ assert.ok(!result.weatherSummary.includes('%'));
+ assert.equal(aiCalls,noAiBefore);
+ assert.equal(forecastCalls,forecastBefore,'far trip never calls OpenWeather');
+}
+console.log('PASS integrated historical branch: four locales, actual mean values, no additional AI/OpenWeather calls.');

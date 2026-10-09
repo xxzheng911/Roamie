@@ -60,7 +60,7 @@ export type OutfitAdvicePayload = GeneratedLocaleContract & {
 };
 
 /** 整趟行程穿搭建議 — 存入 RoamiePayloadV2 */
-export type TripWeatherSource = "openweather" | "unavailable" | "fallback";
+export type TripWeatherSource = "openweather" | "visual-crossing-stats" | "unavailable" | "fallback";
 
 export type TripOutfitSuggestionFields = {
   /** Provenance for outfitSuggestion and weatherSummary, independent of the trip narrative. */

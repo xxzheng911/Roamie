@@ -14,7 +14,13 @@
     },
   ],
   "durable_objects": {
-    "bindings": [{ "name": "ABUSE_GUARD", "class_name": "AbuseGuard" }],
+    "bindings": [
+      { "name": "ABUSE_GUARD", "class_name": "AbuseGuard" },
+      { "name": "VISUAL_CROSSING_CLIMATE", "class_name": "VisualCrossingClimate" },
+    ],
   },
-  "migrations": [{ "tag": "v1-abuse-guard", "new_sqlite_classes": ["AbuseGuard"] }],
+  "migrations": [
+    { "tag": "v1-abuse-guard", "new_sqlite_classes": ["AbuseGuard"] },
+    { "tag": "v2-visual-crossing-climate", "new_sqlite_classes": ["VisualCrossingClimate"] },
+  ],
 }

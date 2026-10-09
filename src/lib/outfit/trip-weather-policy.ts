@@ -2,10 +2,21 @@ import type { DailyForecast } from "@/lib/weather-types";
 import type { Locale } from "@/lib/i18n/types";
 import type { TripOutfitSuggestionFields } from "./types";
 
-export const TRIP_WEATHER_VERSION = "trip-weather-v3";
+export const TRIP_WEATHER_VERSION = "trip-weather-v4";
 export const FORECAST_TTL_MS = 45 * 60_000;
 export const UNAVAILABLE_TTL_MS = 15 * 60_000;
 const DAY_MS = 86_400_000;
+
+/** A whole-trip authority; partial model coverage never becomes a blended forecast. */
+export function tripWeatherMode(input: { startDate: string; endDate: string; timezone?: string; utcOffsetMinutes?: number | null }, now = Date.now()): "forecast" | "climate" | "unavailable" {
+  const dates = tripCalendarDates(input.startDate, input.endDate);
+  if (!dates.length) return "unavailable";
+  const today = destinationDate(now, input.timezone,
+    input.utcOffsetMinutes == null ? undefined : input.utcOffsetMinutes * 60);
+  const day = Date.parse(today ?? new Date(now).toISOString().slice(0, 10));
+  if (Date.parse(dates[0]) < day - (today ? 0 : DAY_MS)) return "unavailable";
+  return Date.parse(dates[dates.length - 1]) > day + (today ? 7 : 8) * DAY_MS ? "climate" : "forecast";
+}
 
 /** Calendar arithmetic only: never substitute today's date for missing trip dates. */
 export function tripCalendarDates(start: string, end: string): string[] {
@@ -76,7 +87,10 @@ export function tripForecastSummary(locale: Locale, destination: string, start: 
 
 export function isFreshTripOutfit(fields: TripOutfitSuggestionFields, key: string, now = Date.now()): boolean {
   const age = now - Date.parse(fields.outfitSuggestionUpdatedAt ?? "");
-  const ttl = fields.weatherSource === "openweather" ? FORECAST_TTL_MS : UNAVAILABLE_TTL_MS;
+  const ttl = fields.weatherSource === "openweather" ? FORECAST_TTL_MS
+    : fields.weatherSource === "visual-crossing-stats" ? 6 * 60 * 60_000 : UNAVAILABLE_TTL_MS;
+  if (fields.weatherSource === "visual-crossing-stats" && !key.includes("|climate|")) return false;
+  if (fields.weatherSource === "openweather" && !key.includes("|forecast|")) return false;
   return fields.outfitSuggestionInputKey === key && key.includes(TRIP_WEATHER_VERSION) &&
     Boolean(fields.outfitSuggestion) && Number.isFinite(age) && age >= 0 && age < ttl;
 }

@@ -1,4 +1,4 @@
-import { isFreshTripOutfit, tripCalendarDates, unavailableTripWeatherCopy } from "@/lib/outfit/trip-weather-policy";
+import { isFreshTripOutfit, tripCalendarDates, unavailableTripWeatherCopy, tripWeatherMode } from "@/lib/outfit/trip-weather-policy";
 import { useI18n } from "@/hooks/use-i18n";
 import { isCurrentGeneratedCopy } from "@/lib/generated-locale";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -92,6 +92,22 @@ export function useTripOutfitSuggestion({
   const resolvedDestination =
     destination !== "尚未設定" ? destination : fallbackDestination ?? "";
 
+  const [weatherClock, setWeatherClock] = useState(Date.now);
+  useEffect(() => {
+    const input = { startDate: dateRange.start, endDate: dateRange.end,
+      timezone: destinationLocation?.timezone, utcOffsetMinutes: destinationLocation?.utcOffsetMinutes };
+    const updateMode = () => setWeatherClock(previous => {
+      const next = Date.now();
+      // Wake only for a source transition; do not turn cache expiry into a retry timer.
+      return tripWeatherMode(input, previous) === tripWeatherMode(input, next) ? previous : next;
+    });
+    updateMode();
+    const timer = setInterval(updateMode, 60_000);
+    return () => clearInterval(timer);
+  }, [dateRange.start, dateRange.end, destinationLocation?.timezone, destinationLocation?.utcOffsetMinutes]);
+  const weatherMode = tripWeatherMode({ startDate: dateRange.start, endDate: dateRange.end,
+    timezone: destinationLocation?.timezone, utcOffsetMinutes: destinationLocation?.utcOffsetMinutes }, weatherClock);
+
   const inputKey = useMemo(
     () =>
       `${locale}|${buildOutfitInputKey({
@@ -101,8 +117,9 @@ export function useTripOutfitSuggestion({
         dayCount,
         lat: destinationLocation?.lat, lng: destinationLocation?.lng,
         timezone: destinationLocation?.timezone, utcOffsetMinutes: destinationLocation?.utcOffsetMinutes,
+        now: weatherClock,
       })}`,
-    [locale, resolvedDestination, dateRange.start, dateRange.end, dayCount, destinationLocation?.lat, destinationLocation?.lng, destinationLocation?.timezone, destinationLocation?.utcOffsetMinutes],
+    [locale, resolvedDestination, dateRange.start, dateRange.end, dayCount, destinationLocation?.lat, destinationLocation?.lng, destinationLocation?.timezone, destinationLocation?.utcOffsetMinutes, weatherMode],
   );
 
   const itemsSignature = useMemo(() => itemsOutfitSignature(items), [items]);
@@ -124,17 +141,17 @@ export function useTripOutfitSuggestion({
     timezone: destinationLocation?.timezone, utcOffsetMinutes: destinationLocation?.utcOffsetMinutes,
     items, transport: settings.transport, inputKey,
   });
-  const isCached = Boolean(localOutfit) || (
+  const isCached = (
     isCurrentGeneratedCopy(outfitFields.outfitCopy ?? {}, locale) &&
     isFreshTripOutfit(outfitFields, inputKey));
 
   const hasDates = tripCalendarDates(dateRange.start, dateRange.end).length > 0;
   const pendingRegeneration = enabled && !isCached && hasDates;
 
-  const displayFields: TripOutfitSuggestionFields = localOutfit ?? (isCached ? outfitFields : {
+  const displayFields: TripOutfitSuggestionFields = isCached ? outfitFields : localOutfit ?? {
     outfitSuggestion: hasDates && enabled ? "" : unavailableTripWeatherCopy(locale),
     weatherSummary: "", weatherSource: "unavailable",
-  });
+  };
 
   const showLoading = !localOutfit && enabled && hasDates && (loading || (pendingRegeneration && !displayFields.outfitSuggestion));
 
