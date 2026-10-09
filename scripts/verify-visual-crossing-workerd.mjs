@@ -11,6 +11,7 @@ export class VisualCrossingClimate extends RealClimate {
  constructor(ctx,env) {super(ctx,env);this.storage=ctx.storage;}
  async fetch(request) {
   if(new URL(request.url).pathname==='/state') return Response.json(await this.storage.get('state')??null);
+  if(new URL(request.url).pathname==='/corrupt') {await this.storage.put('state',{charges:null});return Response.json(null);}
   if(new URL(request.url).pathname==='/exhaust') {const state=await this.storage.get('state');state.charges[0].records=900;state.cache={};await this.storage.put('state',state);return Response.json(null);}
   return super.fetch(request);
  }
@@ -40,6 +41,13 @@ const mf=new Miniflare(convertV4MiniflareOptions({
 try {
  const input={destination:'東京都',lat:35.6762,lng:139.6503,timezone:'Asia/Tokyo',startDate:'2026-11-25',endDate:'2026-11-30'};
  const invoke=async value=>(await mf.dispatchFetch('https://test',{method:'POST',body:JSON.stringify(value)})).json();
+ const initialNs=await mf.getDurableObjectNamespace('VISUAL_CROSSING_CLIMATE');
+ const healthStub=initialNs.get(initialNs.idFromName('global-v1'));
+ const initialHealth=await (await healthStub.fetch('https://internal/__health')).json();
+ assert.equal(initialHealth.kind,'visual-crossing-health-v1');
+ assert.equal(initialHealth.sqlite,'readable');assert.equal(initialHealth.budget,'uninitialized');
+ assert.equal(await (await healthStub.fetch('https://internal/state')).json(),null);
+ assert.equal(calls,0);
  const results=await Promise.all(Array.from({length:8},()=>invoke(input)));
  const ns=await mf.getDurableObjectNamespace('VISUAL_CROSSING_CLIMATE');
  const stub=ns.get(ns.idFromName('global-v1'));
@@ -49,8 +57,18 @@ try {
  assert.equal(state.charges.reduce((sum,c)=>sum+c.records,0),6);
  assert.equal(Object.keys(state.cache).length,1);
  assert.ok(!JSON.stringify(state).includes('synthetic-not-a-real-secret'));
+ const health=await (await stub.fetch('https://internal/__health')).json();
+ assert.equal(health.usedRecords,6);assert.equal(health.budget,'readable');assert.equal(calls,1);
+ assert.deepEqual(await (await stub.fetch('https://internal/state')).json(),state);
  await invoke(input);assert.equal(calls,1);
  await stub.fetch('https://internal/exhaust');
  assert.equal(await invoke({...input,destination:'budget-denied'}),null);assert.equal(calls,1);
+ const exhausted=await (await stub.fetch('https://internal/state')).json();
+ assert.equal((await (await stub.fetch('https://internal/__health')).json()).usedRecords,900);
+ assert.deepEqual(await (await stub.fetch('https://internal/state')).json(),exhausted);
+ await stub.fetch('https://internal/corrupt');
+ assert.equal((await stub.fetch('https://internal/__health')).status,503);assert.equal(calls,1);
+ assert.deepEqual(await (await stub.fetch('https://internal/state')).json(),{charges:null});
+ console.log('PASS SQLite health: empty/readable/exhausted/corrupt; health made zero upstream calls and no state changes.');
  console.log('PASS real workerd + SQLite DO: concurrent dedup, persisted billing/cache, 900-record admission denial, no secret in stored/returned data. Outbound traffic mocked.');
 } finally {await mf.dispose();}

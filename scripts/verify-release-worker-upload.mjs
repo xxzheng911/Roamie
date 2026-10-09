@@ -29,6 +29,7 @@ const bindings = [
 ];
 function run(args = [], options = {}) {
   const calls = [], logs = [];
+  let deployed = false;
   const process = { argv: ["node", "script", ...args], env: {}, exitCode: 0 };
   vm.runInNewContext(source, {
     process, resolve, isDeepStrictEqual, console: { info: x => logs.push(x), error: x => logs.push(x) },
@@ -36,11 +37,15 @@ function run(args = [], options = {}) {
     verifyReleaseArtifacts: () => { if (options.invalidArtifact) throw Error("bad receipt"); },
     spawnSync: (_bin, argv, opts) => {
       calls.push({ argv, opts });
-      if (argv[1] === "upload") return { status: 0 };
+      if (argv[1] === "upload" || argv[0] === "deploy") {
+        if (!argv.includes("--dry-run") && !options.deployFailure) deployed = true;
+        return { status: options.deployFailure ? 1 : 0, stdout: "SECRET_MUST_NOT_BE_LOGGED" };
+      }
+      const after = deployed && options.after;
       if (options.failedRead) return { status: 1, stderr: "SECRET_MUST_NOT_BE_LOGGED" };
-      const data = argv[0] === "deployments" ? [{ created_on: "2026-10-10", versions: [{ version_id: "active", percentage: options.percentage ?? 100 }] }]
-        : argv[1] === "list" ? [{ id: options.newest ?? "active", metadata: { created_on: "2026-10-10" } }]
-        : { resources: { bindings: options.bindings ?? bindings } };
+      const data = argv[0] === "deployments" ? [{ created_on: "2026-10-10", versions: [{ version_id: after?.active ?? options.active ?? "active", percentage: options.percentage ?? 100 }] }]
+        : argv[1] === "list" ? [{ id: options.newest ?? after?.active ?? options.active ?? "active", metadata: { created_on: "2026-10-10" } }]
+        : { resources: { script_runtime: { migration_tag: after?.migrationTag ?? options.migrationTag ?? "v1-abuse-guard" }, bindings: after?.bindings ?? options.bindings ?? bindings } };
       return { status: 0, stdout: JSON.stringify(data) };
     },
   });
@@ -59,7 +64,7 @@ const readonly = run(["--preflight-only"]); assert.equal(readonly.code, 0);
 assert.ok(readonly.calls.every(c => c.argv[1] !== "upload"));
 const fail = (args, options) => {
   const r = run(args, options); assert.equal(r.code, 1);
-  assert.ok(r.calls.every(c => c.argv[1] !== "upload"));
+  assert.ok(r.calls.every(c => c.argv[1] !== "upload" && c.argv[0] !== "deploy"));
   assert.ok(!r.logs.join().includes("SECRET_MUST_NOT_BE_LOGGED"));
 };
 fail(["--enforcement"]); fail(["--keep-vars=false"]); fail(["--config", "other"]);
@@ -80,3 +85,47 @@ fail([], { config: { ...config, migrations: [...config.migrations, { tag: "v3", 
 fail([], { config: { ...config, migrations: [...config.migrations, { tag: "v3", new_sqlite_classes: ["UnboundNewClass"] }] } });
 fail([], { bindings: [...bindings, { name: "UNREVIEWED_RESOURCE", type: "kv_namespace" }] });
 console.log("PASS uploader: mandatory vars preservation, no overrides, read-only preflight, secret-safe errors, existing bindings, disabled feature, unapplied migrations blocked. No Cloudflare writes.");
+
+const active = "77b8401e-9dc7-493c-bf45-ecdc0d15a193";
+const first = ["--first-climate-migration", "--expected-active", active];
+const unprovisioned = { active, bindings: bindings.filter(b => b.name !== "VISUAL_CROSSING_CLIMATE") };
+const dry = run([...first, "--dry-run"], unprovisioned);
+assert.equal(dry.code, 0, dry.logs.join());
+assert.equal(dry.calls.at(-1).argv[0], "deploy");
+assert.ok(dry.calls.at(-1).argv.includes("--dry-run"));
+assert.ok(dry.calls.at(-1).argv.includes("--keep-vars=true"));
+assert.equal(dry.calls.at(-1).opts.stdio, "pipe");
+assert.equal(dry.calls.at(-1).opts.env.CLOUDFLARE_ACCOUNT_ID, "cb1835ce26e88097148685b0b1569bc3");
+assert.ok(!dry.logs.join().includes("SECRET_MUST_NOT_BE_LOGGED"));
+assert.equal(run([...first, "--preflight-only"], unprovisioned).code, 0);
+fail(["--first-climate-migration"], unprovisioned);
+fail([...first, "--verify-only"], unprovisioned);
+fail(first, { ...unprovisioned, active: "changed" });
+fail(first, { ...unprovisioned, migrationTag: "v0" });
+fail(first, { active }); // Already provisioned.
+fail(first, { ...unprovisioned, config: { ...config, migrations: config.migrations.slice(1) } });
+fail(first, { ...unprovisioned, config: { ...config, account_id: "wrong-account" } });
+fail(first, { ...unprovisioned, config: { ...config, durable_objects: { bindings: config.durable_objects.bindings.slice(1) } } });
+fail(first, { ...unprovisioned, bindings: unprovisioned.bindings.map(b => b.name === "VISUAL_CROSSING_ENABLED" ? { name: b.name, type: "secret_text" } : b) });
+fail(first, { ...unprovisioned, config: { ...config, migrations: [...config.migrations, { tag: "extra", new_sqlite_classes: ["Other"] }] } });
+const failedDeploy = run(first, { ...unprovisioned, deployFailure: true });
+assert.equal(failedDeploy.code, 1);
+assert.equal(failedDeploy.calls.filter(c => c.argv[0] === "deploy").length, 1);
+assert.ok(!failedDeploy.logs.join().includes("SECRET_MUST_NOT_BE_LOGGED"));
+console.log("PASS first migration: exact additive history, active-version/account pinning, OFF plaintext gate, existing resources, dry-run deploy selection, sanitized failures, no retry. All subprocesses mocked.");
+
+const after = { active: "new-version", migrationTag: "v2-visual-crossing-climate", bindings };
+const migrated = run(first, { ...unprovisioned, after });
+assert.equal(migrated.code, 0, migrated.logs.join());
+assert.equal(migrated.calls.filter(c => c.argv[0] === "deploy").length, 1);
+for (const changed of [
+  { ...after, migrationTag: "wrong" },
+  { ...after, bindings: bindings.map(b => b.name === "ABUSE_GUARD" ? { ...b, namespace_id: "replaced" } : b) },
+  { ...after, bindings: bindings.filter(b => b.name !== "EXISTING_SECRET") },
+  { ...after, bindings: bindings.map(b => b.name === "GOOGLE_GLOBAL_DAILY_UNITS" ? { ...b, text: "200000" } : b) },
+]) {
+  const r = run(first, { ...unprovisioned, after: changed });
+  assert.equal(r.code, 1);
+  assert.equal(r.calls.filter(c => c.argv[0] === "deploy").length, 1); // Never retry/rollback automatically.
+}
+console.log("PASS migration postconditions: tag, active version, unchanged namespace IDs/secrets/budgets; failures stop without retry or automatic rollback.");
