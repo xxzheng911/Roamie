@@ -11,13 +11,13 @@ const now=Date.parse('2026-10-10T00:00:00Z');
 const input={destination:'東京都',startDate:'2026-11-25',endDate:'2026-11-30',dayCount:6,lat:35.68,lng:139.69,timezone:'Asia/Tokyo',now};
 const key=buildOutfitInputKey(input);
 let doCalls=0;
-const env={VISUAL_CROSSING_ENABLED:'false',VISUAL_CROSSING_API_KEY:'fixture-only',VISUAL_CROSSING_CLIMATE:{idFromName:name=>{assert.equal(name,'global-v1');return name},get:()=>({fetch:async req=>{doCalls++;const data=await req.json();assert.equal(data.input.timezone,'Asia/Tokyo');return Response.json({low:9,high:14,timezone:'Asia/Tokyo',dates:[],fetchedAt:now});}})}};
+const env={VISUAL_CROSSING_ENABLED:'false',VISUAL_CROSSING_API_KEY:'fixture-only',VISUAL_CROSSING_CLIMATE:{idFromName:name=>{assert.equal(name,'global-v1');return name},get:()=>({fetch:async req=>{doCalls++;const data=await req.json();assert.ok(data.input.timezone === undefined || data.input.timezone === 'Asia/Tokyo');return Response.json({low:9,high:14,timezone:'Asia/Tokyo',dates:[],fetchedAt:now});}})}};
 const available=()=>runWithWorkerRequest({env},()=>getWeatherSourceAvailability());
 assert.equal(await available(),OFF);assert.equal(doCalls,0);
 const fallback={...buildLocalTripOutfitFallback({...input,locale:'zh-TW',items:[],inputKey:key}),outfitSuggestionUpdatedAt:new Date(now).toISOString(),weatherSourceAvailability:OFF};
 assert.ok(isFreshTripOutfit(fallback,key,now,OFF));
 env.VISUAL_CROSSING_ENABLED='true';assert.equal(await available(),ON);assert.equal(doCalls,0);
-for(const old of [fallback,{...fallback,weatherSourceAvailability:undefined}]){
+for(const old of [fallback,{...fallback,weatherSourceAvailability:undefined},{...fallback,weatherSourceAvailability:'climate-source-v1:on'}]){
  assert.equal(isFreshTripOutfit(old,key,now,ON),false,'OFF/legacy fallback invalidated');
 }
 if(!isFreshTripOutfit(fallback,key,now,await available())) assert.ok(await runWithWorkerRequest({env},()=>visualCrossingTripClimate(input)));
@@ -31,10 +31,10 @@ assert.equal(canonicalWeatherTimezone('asia/tokyo'),'Asia/Tokyo');
 assert.equal(canonicalWeatherTimezone('UTC+9','Asia/Tokyo'),'Asia/Tokyo','trusted alternate metadata preferred');
 for(const timezone of ['UTC+9','GMT+9',undefined,'not-a-zone','Etc/GMT-9']){
  assert.equal(canonicalWeatherTimezone(timezone),undefined);
- assert.equal(validClimateInput({...input,timezone}),false);
- assert.equal(await runWithWorkerRequest({env},()=>visualCrossingTripClimate({...input,timezone,utcOffsetMinutes:540})),null);
+ assert.equal(validClimateInput({...input,timezone}),true);
+ assert.ok(await runWithWorkerRequest({env},()=>visualCrossingTripClimate({...input,timezone,utcOffsetMinutes:540})));
 }
-assert.equal(doCalls,1,'E/F/G no provider/DO for unknown or offset-only zone');
+assert.equal(doCalls,6,'legacy timezone reaches DO without guessing IANA');
 for(const change of [{destination:'大阪'},{lat:34.69,lng:135.5},{startDate:'2026-11-26'}]) assert.notEqual(buildOutfitInputKey({...input,...change}),key);
 for(const unavailableEnv of [{},{...env,VISUAL_CROSSING_API_KEY:''},{...env,VISUAL_CROSSING_CLIMATE:undefined}]) assert.equal(await runWithWorkerRequest({env:unavailableEnv},()=>getWeatherSourceAvailability()),OFF);
 let checks=0;const read=async()=>{checks++;return ON};
@@ -50,4 +50,4 @@ assert.ok(fs.readFileSync('src/components/saved/SavedTripItineraryEditor.tsx','u
 const functions=fs.readFileSync('src/lib/outfit/outfit.functions.ts','utf8');
 const capability=functions.slice(functions.indexOf('export const getTripWeatherSourceAvailability'));
 assert.ok(!capability.includes('generateOutfitSuggestion('));assert.ok(!capability.includes('visualCrossingTripClimate('));
-console.log('PASS A–J: OFF→ON targeted invalidation, retained success/TTL, IANA/offset/legacy fallback, isolated keys, capability dedup/reopen/failure, metadata propagation. Fake DO only; no AI/provider/Google calls.');
+console.log('PASS A–J: OFF→ON targeted invalidation, retained success/TTL, provider-authoritative timezone/legacy eligibility, isolated keys, capability dedup/reopen/failure, metadata propagation. Fake DO only; no AI/provider/Google calls.');

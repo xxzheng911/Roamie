@@ -20,6 +20,7 @@ assert.ok(Math.abs(facts.low - 8.916666666666666)<1e-9);
 assert.ok(Math.abs(facts.high - 13.616666666666667)<1e-9);
 assert.equal(Math.round(facts.low),9); assert.equal(Math.round(facts.high),14);
 for (const modify of [
+  d=>delete d.timezone,d=>d.timezone='UTC+9',d=>d.timezone='Invalid/Zone',d=>d.latitude=NaN,d=>d.longitude=Infinity,
   d=>d.days.pop(),d=>d.days.push(d.days[0]),d=>d.days[0].source='fcst',
   d=>d.days[0].normal.tempmin=[-50,null,60],d=>d.days[0].normal.tempmin=[-50,99,100],
   d=>d.days[0].tempmin=NaN,d=>d.latitude=0,d=>d.timezone='Europe/London',
@@ -64,6 +65,7 @@ const provider=async(url,options)=>{
   calls++;active++;maxActive=Math.max(maxActive,active);
   assert.equal(new URL(url).searchParams.get('include'),'stats');
   assert.equal(new URL(url).searchParams.get('unitGroup'),'metric');
+  assert.equal(new URL(url).searchParams.has('timezone'),false);
   assert.equal(options.redirect,'manual');
   await new Promise(r=>setTimeout(r,2));active--;
   return Response.json(tokyo);
@@ -76,7 +78,19 @@ assert.equal(calls,1,'cache survives DO recreation');
 assert.equal(store.peek().charges[0].records,6);
 await guard.request({...base,lat:35.677});assert.equal(calls,2,'different coordinates miss');
 await guard.request({...base,destination:'other'});assert.equal(calls,3,'different city misses');
+for (const timezone of ['UTC+9','GMT+9',undefined,'Asia/Tokyo']) {
+  const legacy={...base,timezone};
+  assert.equal(parseClimateStats(tokyo,legacy,now)?.timezone,'Asia/Tokyo');
+  const oldCalls=calls;
+  assert.ok(await new VisualCrossingGuard(storage(),'fixture',provider,()=>now).request(legacy));
+  assert.equal(calls,oldCalls+1);
+}
 const before=calls;
+for(const invalid of [{...base,lat:undefined},{...base,endDate:''}]) {
+ assert.equal(await new VisualCrossingGuard(storage(),'fixture',provider,()=>now).request(invalid),null);
+ assert.equal(calls,before);
+}
+
 await new VisualCrossingGuard(storage(),'',provider,()=>now).request(base);assert.equal(calls,before);
 await new VisualCrossingGuard(storage(), 'fixture', provider,()=>recentNow).request(base);assert.equal(calls,before,'recent forecast never calls VC');
 const full=storage({charges:[{at:now,records:VC_RECORD_LIMIT}],leaseUntil:0,blocked:false,cache:{}});
@@ -114,12 +128,31 @@ assert.equal(timeoutStore.peek().charges[0].records,6,'uncertain timed out billi
 
 // Shared server boundary, no browser/native branch, no key returned or direct-fetch fallback.
 let bindingCalls=0;
-const env={VISUAL_CROSSING_ENABLED:'true',VISUAL_CROSSING_CLIMATE:{
+const env={VISUAL_CROSSING_ENABLED:'true',VISUAL_CROSSING_API_KEY:'fixture',VISUAL_CROSSING_CLIMATE:{
   idFromName:name=>{assert.equal(name,'global-v1');return name;},
   get:()=>({fetch:async()=>{bindingCalls++;return Response.json(facts);}}),
 }};
 assert.deepEqual(await runWithWorkerRequest({env},()=>visualCrossingTripClimate(base)),facts);
 assert.equal(bindingCalls,1);
+// Exercise the adapter → DO contract → durable guard → provider fixture together.
+for (const timezone of ['UTC+9','GMT+9',undefined,'Asia/Tokyo']) {
+ const integratedGuard=new VisualCrossingGuard(storage(),'fixture',provider,()=>now);
+ const integratedEnv={...env,VISUAL_CROSSING_CLIMATE:{
+  idFromName:name=>{assert.equal(name,'global-v1');return name},
+  get:()=>({fetch:async req=>{
+   const {input}=await req.json();
+   assert.equal(input.timezone,timezone==='Asia/Tokyo'?'Asia/Tokyo':undefined);
+   return Response.json(await integratedGuard.request(input));
+  }}),
+ }};
+ assert.equal((await runWithWorkerRequest({env:integratedEnv},()=>visualCrossingTripClimate({...base,timezone})))?.timezone,'Asia/Tokyo');
+}
+for (const invalid of [{...base,lat:undefined},{...base,endDate:''}])
+ assert.equal(await runWithWorkerRequest({env},()=>visualCrossingTripClimate(invalid)),null);
+assert.equal(bindingCalls,1,'invalid coordinates/dates rejected before DO');
+assert.equal(await runWithWorkerRequest({env:{...env,VISUAL_CROSSING_API_KEY:''}},()=>visualCrossingTripClimate(base)),null);
+assert.equal(bindingCalls,1,'missing secret rejected before DO');
+
 assert.equal(await runWithWorkerRequest({env:{}},()=>visualCrossingTripClimate(base)),null);
 const doWithoutKey=new VisualCrossingClimate({storage:storage()},{});
 assert.equal(await (await doWithoutKey.fetch(new Request('https://internal',{method:'POST',body:JSON.stringify({input:base,deadline:Date.now()+1000})}))).json(),null);

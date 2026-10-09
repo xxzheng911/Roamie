@@ -16,8 +16,7 @@ export function validClimateInput(input: ClimateInput): boolean {
   return Boolean(input && typeof input.destination === "string" && input.destination.trim() &&
     input.destination.length <= 200 && validWeatherCoords(input.lat, input.lng) &&
     typeof input.startDate === "string" && typeof input.endDate === "string" &&
-    tripCalendarDates(input.startDate, input.endDate).length &&
-    Boolean(canonicalWeatherTimezone(input.timezone)));
+    tripCalendarDates(input.startDate, input.endDate).length);
 }
 
 export function climateCacheKey(input: ClimateInput): string {
@@ -31,11 +30,12 @@ export function parseClimateStats(raw: unknown, input: ClimateInput, now = Date.
   if (!validClimateInput(input) || !raw || typeof raw !== "object") return null;
   const data = raw as Record<string, unknown>;
   const dates = tripCalendarDates(input.startDate, input.endDate);
-  if (typeof data.latitude !== "number" || typeof data.longitude !== "number" ||
-    Math.abs(data.latitude - input.lat) > 0.01 || Math.abs(data.longitude - input.lng) > 0.01 ||
-    typeof data.timezone !== "string" || !destinationDate(now, data.timezone) ||
-    (input.timezone && new Intl.DateTimeFormat("en", { timeZone: input.timezone }).resolvedOptions().timeZone !==
-      new Intl.DateTimeFormat("en", { timeZone: data.timezone }).resolvedOptions().timeZone) ||
+  const timezone = typeof data.timezone === "string" ? canonicalWeatherTimezone(data.timezone) : undefined;
+  const callerTimezone = canonicalWeatherTimezone(input.timezone);
+  if (!validWeatherCoords(data.latitude, data.longitude) ||
+    Math.abs((data.latitude as number) - input.lat) > 0.01 || Math.abs((data.longitude as number) - input.lng) > 0.01 ||
+    !timezone || !destinationDate(now, timezone) ||
+    (callerTimezone && callerTimezone !== timezone) ||
     !Array.isArray(data.days) || data.days.length !== dates.length) return null;
   let low = 0, high = 0;
   const mean = (value: unknown): number | null => {
@@ -55,5 +55,5 @@ export function parseClimateStats(raw: unknown, input: ClimateInput, now = Date.
       Math.abs(row.tempmin - lo) > 0.11 || Math.abs(row.tempmax - hi) > 0.11) return null;
     low += lo; high += hi;
   }
-  return { low: low / dates.length, high: high / dates.length, timezone: data.timezone, dates, fetchedAt: now };
+  return { low: low / dates.length, high: high / dates.length, timezone, dates, fetchedAt: now };
 }

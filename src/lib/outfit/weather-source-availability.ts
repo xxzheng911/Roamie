@@ -1,6 +1,6 @@
 /** Public, non-secret capability revision; never contains credentials or budget state. */
-export const CLIMATE_AVAILABLE = "climate-source-v1:on";
-export const CLIMATE_UNAVAILABLE = "climate-source-v1:off";
+export const CLIMATE_AVAILABLE = "climate-source-v2:on";
+export const CLIMATE_UNAVAILABLE = "climate-source-v2:off";
 export type WeatherSourceAvailability = typeof CLIMATE_AVAILABLE | typeof CLIMATE_UNAVAILABLE;
 
 let pending: Promise<WeatherSourceAvailability> | undefined;
