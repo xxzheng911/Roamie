@@ -39,19 +39,28 @@ function productionPreflight(config, { firstMigration = false, expectedActive } 
   if (!Array.isArray(bindings)) throw new Error("Production bindings unavailable");
   const byName = new Map(bindings.map(b => [b.name, b]));
   const failures = [];
-  if (firstMigration) {
+  {
     const history = (config.migrations ?? []).map(m => Object.fromEntries(Object.entries(m).filter(([, v]) => v != null && (!Array.isArray(v) || v.length))));
     const expected = [
       { tag: "v1-abuse-guard", new_sqlite_classes: ["AbuseGuard"] },
       { tag: "v2-visual-crossing-climate", new_sqlite_classes: ["VisualCrossingClimate"] },
     ];
-    if (!isDeepStrictEqual(history, expected)) failures.push("First migration requires the exact additive climate migration history");
+    if (!isDeepStrictEqual(history, expected)) failures.push("Release requires the exact additive climate migration history");
+  }
+  if (firstMigration) {
     if (live.resources?.script_runtime?.migration_tag !== "v1-abuse-guard") failures.push("Unexpected production migration tag");
     if (byName.has("VISUAL_CROSSING_CLIMATE")) failures.push("Climate binding already exists; use normal release flow");
     const climate = config.durable_objects?.bindings?.filter(b => b.name === "VISUAL_CROSSING_CLIMATE");
     if (climate?.length !== 1 || climate[0].class_name !== "VisualCrossingClimate" || climate[0].script_name || climate[0].environment) failures.push("Invalid local climate binding");
   }
-  const expectedVars = { ABUSE_GUARD_ENFORCEMENT: "true", GOOGLE_GLOBAL_DAILY_UNITS: "100000", VISUAL_CROSSING_ENABLED: "false" };
+  if (!firstMigration && live.resources?.script_runtime?.migration_tag !== "v2-visual-crossing-climate") failures.push("Normal upload requires existing v2 migration");
+  const climateFlag = byName.get("VISUAL_CROSSING_ENABLED");
+  if (climateFlag?.type !== "plain_text" || !["true", "false"].includes(climateFlag.text)) {
+    failures.push("Production climate flag must be Text true or false");
+  } else if (firstMigration && climateFlag.text !== "false") {
+    failures.push("First climate migration requires feature OFF");
+  }
+  const expectedVars = { ABUSE_GUARD_ENFORCEMENT: "true", GOOGLE_GLOBAL_DAILY_UNITS: "100000" };
   for (const [name, value] of Object.entries(expectedVars)) {
     const binding = byName.get(name);
     if (binding?.type !== "plain_text" || binding.text !== value) failures.push(`Required production var does not match: ${name}`);
@@ -106,7 +115,7 @@ function productionPreflight(config, { firstMigration = false, expectedActive } 
     failures.push("Unsupported DO lifecycle change; use a separately approved migration release");
   }
   if (failures.length) throw new Error(failures.join("; "));
-  console.info(`[worker-release] PASS: production preflight, active=${activeId}, bindings=${bindings.length}; Visual Crossing disabled`);
+  console.info(`[worker-release] PASS: production preflight, active=${activeId}, bindings=${bindings.length}; Visual Crossing=${climateFlag.text} (preserved)`);
   return { activeId, bindings };
 }
 
@@ -149,10 +158,31 @@ try {
       const result = spawnSync(
         wrangler,
         [...(firstMigration ? ["deploy"] : ["versions", "upload"]), "--config", configPath, "--keep-vars=true", ...options],
-        { cwd: root, stdio: firstMigration ? "pipe" : "inherit", encoding: "utf8", env: commandEnv },
+        { cwd: root, stdio: "pipe", encoding: "utf8", env: commandEnv },
       );
       if (result.error) throw new Error("Wrangler could not start");
       process.exitCode = result.status ?? 1;
+      if (!firstMigration) {
+        // Upload output can contain plaintext binding values; never echo it.
+        if (result.status !== 0) throw new Error("Worker upload failed; inspect versions before retry; raw output suppressed");
+        if (!options.includes("--dry-run")) {
+          const versions = readRemote(["versions", "list"]);
+          const newest = [...versions].sort((a, b) => String(b.metadata?.created_on).localeCompare(String(a.metadata?.created_on)))[0];
+          if (!newest?.id || newest.id === before.activeId) throw new Error("New uploaded version not found; do not switch traffic");
+          const uploaded = readRemote(["versions", "view", newest.id]);
+          if (uploaded.resources?.script_runtime?.migration_tag !== "v2-visual-crossing-climate") throw new Error("Uploaded migration tag changed; do not switch traffic");
+          const current = new Map((uploaded.resources?.bindings ?? []).map(b => [b.name, b]));
+          if (current.size !== before.bindings.length || before.bindings.some(b => !isDeepStrictEqual(current.get(b.name), b))) {
+            throw new Error("Uploaded bindings/vars/secrets changed; do not switch traffic");
+          }
+          const active = readRemote(["deployments", "list"]);
+          const latest = [...active].sort((a, b) => String(b.created_on).localeCompare(String(a.created_on)))[0];
+          if (latest?.versions?.length !== 1 || latest.versions[0].version_id !== before.activeId || latest.versions[0].percentage !== 100) {
+            throw new Error("Active production version changed during upload; do not switch traffic");
+          }
+          console.info(`[worker-release] PASS: uploaded=${newest.id}; all bindings and climate flag preserved; traffic unchanged`);
+        }
+      }
       if (firstMigration) {
         // Deploy output can include plaintext vars. Never echo it or automatically retry.
         if (result.status !== 0) throw new Error("Migration deploy failed; inspect live migration/version state before recovery; raw output suppressed");

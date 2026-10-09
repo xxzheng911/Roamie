@@ -41,11 +41,11 @@ function run(args = [], options = {}) {
         if (!argv.includes("--dry-run") && !options.deployFailure) deployed = true;
         return { status: options.deployFailure ? 1 : 0, stdout: "SECRET_MUST_NOT_BE_LOGGED" };
       }
-      const after = deployed && options.after;
+      const after = deployed && (options.after ?? { active: options.active ?? "active", bindings: options.bindings ?? bindings });
       if (options.failedRead) return { status: 1, stderr: "SECRET_MUST_NOT_BE_LOGGED" };
       const data = argv[0] === "deployments" ? [{ created_on: "2026-10-10", versions: [{ version_id: after?.active ?? options.active ?? "active", percentage: options.percentage ?? 100 }] }]
-        : argv[1] === "list" ? [{ id: options.newest ?? after?.active ?? options.active ?? "active", metadata: { created_on: "2026-10-10" } }]
-        : { resources: { script_runtime: { migration_tag: after?.migrationTag ?? options.migrationTag ?? "v1-abuse-guard" }, bindings: after?.bindings ?? options.bindings ?? bindings } };
+        : argv[1] === "list" ? [{ id: deployed && !args.includes("--first-climate-migration") ? "uploaded-version" : options.newest ?? after?.active ?? options.active ?? "active", metadata: { created_on: "2026-10-10" } }]
+        : { resources: { script_runtime: { migration_tag: after?.migrationTag ?? options.migrationTag ?? (args.includes("--first-climate-migration") ? "v1-abuse-guard" : "v2-visual-crossing-climate") }, bindings: after?.bindings ?? options.bindings ?? bindings } };
       return { status: 0, stdout: JSON.stringify(data) };
     },
   });
@@ -53,7 +53,7 @@ function run(args = [], options = {}) {
 }
 for (const args of [[], ["--preserve-vars"], ["--tag", "candidate", "--message", "reviewed"]]) {
   const r = run(args); assert.equal(r.code, 0);
-  const upload = r.calls.at(-1);
+  const upload = r.calls.find(c => c.argv[1] === "upload");
   assert.ok(upload.argv.includes("--keep-vars=true"));
   assert.ok(!upload.argv.includes("--var"));
   assert.equal(upload.opts.env.CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV, "false");
@@ -84,7 +84,7 @@ fail([], { config: { ...config, analytics_engine_datasets: [...config.analytics_
 fail([], { config: { ...config, migrations: [...config.migrations, { tag: "v3", deleted_classes: ["AbuseGuard"] }] } });
 fail([], { config: { ...config, migrations: [...config.migrations, { tag: "v3", new_sqlite_classes: ["UnboundNewClass"] }] } });
 fail([], { bindings: [...bindings, { name: "UNREVIEWED_RESOURCE", type: "kv_namespace" }] });
-console.log("PASS uploader: mandatory vars preservation, no overrides, read-only preflight, secret-safe errors, existing bindings, disabled feature, unapplied migrations blocked. No Cloudflare writes.");
+console.log("PASS uploader: mandatory vars preservation, no overrides, read-only preflight, secret-safe errors, existing bindings, preserved feature, unapplied migrations blocked. No Cloudflare writes.");
 
 const active = "77b8401e-9dc7-493c-bf45-ecdc0d15a193";
 const first = ["--first-climate-migration", "--expected-active", active];
@@ -129,3 +129,28 @@ for (const changed of [
   assert.equal(r.calls.filter(c => c.argv[0] === "deploy").length, 1); // Never retry/rollback automatically.
 }
 console.log("PASS migration postconditions: tag, active version, unchanged namespace IDs/secrets/budgets; failures stop without retry or automatic rollback.");
+
+// Ordinary uploads preserve the exact active flag; first migration remains OFF-only.
+for (const value of ["false", "true"]) {
+  const live = bindings.map(b => b.name === "VISUAL_CROSSING_ENABLED" ? { ...b, text: value } : b);
+  const normal = run([], { bindings: live });
+  assert.equal(normal.code, 0, normal.logs.join());
+  assert.ok(normal.calls.some(c => c.argv[1] === "view" && c.argv[2] === "uploaded-version"));
+  assert.equal(normal.calls.find(c => c.argv[1] === "upload").opts.stdio, "pipe");
+  assert.ok(!normal.logs.join().includes("SECRET_MUST_NOT_BE_LOGGED"));
+  const drift = run([], { bindings: live, after: { bindings: live.map(b => b.name === "VISUAL_CROSSING_ENABLED" ? { ...b, text: value === "true" ? "false" : "true" } : b) } });
+  assert.equal(drift.code, 1, 'flag drift must stop before traffic switch');
+}
+fail(first, { ...unprovisioned, bindings: unprovisioned.bindings.map(b => b.name === "VISUAL_CROSSING_ENABLED" ? { ...b, text: "true" } : b) });
+for (const value of ["TRUE", "False", "1", " true ", "", true, null]) fail([], { bindings: bindings.map(b => b.name === "VISUAL_CROSSING_ENABLED" ? { ...b, text: value } : b) });
+fail([], { bindings: bindings.map(b => b.name === "VISUAL_CROSSING_ENABLED" ? { ...b, type: "secret_text" } : b) });
+for (const name of ["EXISTING_SECRET", "VISUAL_CROSSING_CLIMATE", "ABUSE_GUARD_ENFORCEMENT", "GOOGLE_GLOBAL_DAILY_UNITS"]) {
+  const drift = run([], { after: { bindings: bindings.filter(b => b.name !== name) } });
+  assert.equal(drift.code, 1);assert.ok(!drift.logs.join().includes("SECRET_MUST_NOT_BE_LOGGED"));
+}
+const failedUpload = run([], { deployFailure: true });assert.equal(failedUpload.code, 1);assert.ok(!failedUpload.logs.join().includes("SECRET_MUST_NOT_BE_LOGGED"));
+console.log("PASS A–H: migration OFF-only; ordinary ON/OFF preservation and post-upload metadata equality; missing/malformed flags rejected; no overrides, no secret output or traffic switch.");
+
+fail([], { config: { ...config, migrations: config.migrations.map(m => ({ ...m, tag: "changed" })) } });
+fail([], { migrationTag: "v1-abuse-guard" });
+assert.equal(run([], { after: { bindings, migrationTag: "changed" } }).code, 1);
