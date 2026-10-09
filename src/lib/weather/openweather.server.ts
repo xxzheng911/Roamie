@@ -1,3 +1,4 @@
+import { destinationDate, tripCalendarDates, selectTripForecast, validWeatherCoords, TRIP_WEATHER_VERSION } from "@/lib/outfit/trip-weather-policy";
 import { requireOpenWeatherApiKey } from "@/lib/openweather-key-resolve.server";
 import {
   logOpenWeatherRequest,
@@ -43,7 +44,8 @@ async function fetchWithTimeout(url: string, label: string): Promise<Response> {
       });
       return new Response(body, { status: res.status, statusText: res.statusText });
     }
-    return res;
+    // Consume the body before clearing the deadline (headers alone are not completion).
+    return new Response(await res.text(), { status: res.status, statusText: res.statusText, headers: res.headers });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error(`[OpenWeather] ${label} failed`, msg);
@@ -134,10 +136,10 @@ async function fetchForecast25(lat: number, lng: number): Promise<{
   }
   const json = (await res.json()) as {
     list: Parameters<typeof aggregateForecast25ToDaily>[0];
-    city?: { name?: string };
-    timezone?: number;
+    city?: { name?: string; timezone?: number };
   };
-  return { list: json.list ?? [], tz: json.timezone ?? 0 };
+  if (!Number.isFinite(json.city?.timezone)) throw new Error("Forecast timezone unavailable");
+  return { list: json.list ?? [], tz: json.city!.timezone! };
 }
 
 /** 取得即時天氣（OpenWeather One Call → 2.5 fallback） */
@@ -183,3 +185,37 @@ export async function openWeatherGetForecast(
     return aggregateForecast25ToDaily(list, tz, d);
   });
 }
+
+
+/** Trip-only boundary: exact local calendar coverage; never relabel the first N days. */
+export async function openWeatherGetTripForecast(input: {
+  destination: string; lat: number; lng: number; startDate: string; endDate: string;
+  timezone?: string; utcOffsetMinutes?: number | null;
+}): Promise<DailyForecast[]> {
+  const dates = tripCalendarDates(input.startDate, input.endDate);
+  if (!dates.length || !validWeatherCoords(input.lat, input.lng)) return [];
+  const today = destinationDate(Date.now(), input.timezone,
+    input.utcOffsetMinutes == null ? undefined : input.utcOffsetMinutes * 60);
+  // Without a known zone, use a conservative UTC +/- one-day envelope only to skip
+  // impossible requests. Actual selection always uses provider-local calendar dates.
+  const nowDay = Date.parse(today ?? new Date().toISOString().slice(0, 10));
+  const first = Date.parse(dates[0]);
+  const last = Date.parse(dates[dates.length - 1]);
+  if (first < nowDay - (today ? 0 : 86_400_000) || last > nowDay + (today ? 7 : 8) * 86_400_000) return [];
+  const key = JSON.stringify([TRIP_WEATHER_VERSION, "openweather", input]);
+  return tripForecastCache.getOrFetch(key, async () => {
+    try {
+      const one = await fetchOneCall(input.lat, input.lng);
+      const zone = input.timezone ?? one.timezone;
+      if (!zone && !Number.isFinite(one.timezone_offset)) return [];
+      // A valid provider response with missing dates is not a reason for more calls.
+      return selectTripForecast(parseOneCallDailyForecast(one, 8, zone), dates);
+    } catch {
+      try {
+        const { list, tz } = await fetchForecast25(input.lat, input.lng);
+        return selectTripForecast(aggregateForecast25ToDaily(list, tz, 8, input.timezone, true), dates);
+      } catch { return []; }
+    }
+  });
+}
+const tripForecastCache = createServerRequestCache(API_CACHE_TTL_MS.weather);

@@ -1,3 +1,4 @@
+import { destinationDate } from "@/lib/outfit/trip-weather-policy";
 import { buildWeatherRecommendation } from "@/lib/weather-scene";
 import type { DailyForecast, WeatherSummary } from "@/lib/weather-types";
 
@@ -15,6 +16,7 @@ function conditionFromWeatherArray(
 
 export type OneCallResponse = {
   timezone_offset?: number;
+  timezone?: string;
   current?: {
     dt: number;
     sunrise?: number;
@@ -92,16 +94,17 @@ export function parseOneCallCurrent(data: OneCallResponse, city: string): Weathe
 export function parseOneCallDailyForecast(
   data: OneCallResponse,
   maxDays: number,
+  timezone?: string,
 ): DailyForecast[] {
   const tz = data.timezone_offset ?? 0;
   return (data.daily ?? []).slice(0, maxDays).map((d) => {
-    const date = new Date((d.dt + tz) * 1000).toISOString().slice(0, 10);
+    const date = destinationDate(d.dt * 1000, timezone ?? data.timezone, tz) ?? "";
     return {
       date,
-      tempHighC: Math.round(d.temp.max * 10) / 10,
-      tempLowC: Math.round(d.temp.min * 10) / 10,
-      precipProbability: Math.round(d.pop * 100),
-      condition: conditionFromWeatherArray(d.weather),
+      tempHighC: d.temp?.max != null && Number.isFinite(d.temp.max) ? Math.round(d.temp.max * 10) / 10 : null,
+      tempLowC: d.temp?.min != null && Number.isFinite(d.temp.min) ? Math.round(d.temp.min * 10) / 10 : null,
+      precipProbability: d.pop != null && Number.isFinite(d.pop) && d.pop >= 0 && d.pop <= 1 ? Math.round(d.pop * 100) : null,
+      condition: d.weather?.length ? conditionFromWeatherArray(d.weather) : "",
       iconType: String(d.weather?.[0]?.id ?? 0),
       cloudCoverPercent: d.clouds,
       uvi: d.uvi,
@@ -125,10 +128,13 @@ export function aggregateForecast25ToDaily(
   }>,
   tzOffsetSec: number,
   maxDays: number,
+  timezone?: string,
+  requireCompleteDays = false,
 ): DailyForecast[] {
   const byDate = new Map<
     string,
     {
+      timestamps: number[];
       highs: number[];
       lows: number[];
       pops: number[];
@@ -143,30 +149,34 @@ export function aggregateForecast25ToDaily(
   >();
 
   for (const item of list) {
-    const date = new Date((item.dt + tzOffsetSec) * 1000).toISOString().slice(0, 10);
+    const date = destinationDate(item.dt * 1000, timezone, tzOffsetSec);
+    if (!date) continue;
     let bucket = byDate.get(date);
     if (!bucket) {
-      bucket = { highs: [], lows: [], pops: [], clouds: [], conditions: [], icons: [], humidity: [], wind: [] };
+      bucket = { timestamps: [], highs: [], lows: [], pops: [], clouds: [], conditions: [], icons: [], humidity: [], wind: [] };
       byDate.set(date, bucket);
     }
-    bucket.highs.push(item.main.temp_max);
-    bucket.lows.push(item.main.temp_min);
-    bucket.pops.push((item.pop ?? 0) * 100);
+    bucket.timestamps.push(item.dt);
+    bucket.highs.push(item.main?.temp_max ?? NaN);
+    bucket.lows.push(item.main?.temp_min ?? NaN);
+    bucket.pops.push(item.pop != null && Number.isFinite(item.pop) && item.pop >= 0 && item.pop <= 1 ? item.pop * 100 : NaN);
     bucket.clouds.push(item.clouds.all);
-    bucket.conditions.push(conditionFromWeatherArray(item.weather));
-    bucket.icons.push(item.weather[0]?.id ?? 0);
+    bucket.conditions.push(item.weather?.length ? conditionFromWeatherArray(item.weather) : "");
+    bucket.icons.push(item.weather?.[0]?.id ?? 0);
     bucket.humidity.push(item.main.humidity);
     bucket.wind.push(item.wind.speed);
   }
 
   return [...byDate.entries()]
+    .filter(([, b]) => !requireCompleteDays || new Set(b.timestamps).size >= 8)
     .sort(([a], [b]) => a.localeCompare(b))
     .slice(0, maxDays)
     .map(([date, b]) => ({
       date,
       tempHighC: Math.round(Math.max(...b.highs) * 10) / 10,
       tempLowC: Math.round(Math.min(...b.lows) * 10) / 10,
-      precipProbability: Math.round(Math.max(...b.pops)),
+      // Three-hour probabilities cannot be converted into a daily rain probability.
+      precipProbability: !requireCompleteDays && b.pops.every(Number.isFinite) ? Math.round(Math.max(...b.pops)) : null,
       condition: b.conditions[Math.floor(b.conditions.length / 2)] ?? "多雲",
       iconType: String(b.icons[0] ?? 0),
       cloudCoverPercent: Math.round(b.clouds.reduce((s, v) => s + v, 0) / b.clouds.length),

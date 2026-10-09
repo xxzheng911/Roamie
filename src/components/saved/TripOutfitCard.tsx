@@ -1,6 +1,6 @@
 import { useI18n } from "@/hooks/use-i18n";
 import { CloudSun, Loader2, Moon, Shirt, Sun, Umbrella } from "lucide-react";
-import { ROAMIE_WEATHER_UNAVAILABLE_MESSAGE } from "@/lib/weather/constants";
+import { unavailableTripWeatherCopy } from "@/lib/outfit/trip-weather-policy";
 import { formatTripDateRangeLabel } from "@/lib/outfit/trip-outfit-context";
 import type { TripWeatherSource } from "@/lib/outfit/types";
 import { cn } from "@/lib/utils";
@@ -47,7 +47,7 @@ export function TripOutfitCard({
   loading,
   className,
 }: Props) {
-  const { t: uiT } = useI18n();
+  const { t: uiT, locale } = useI18n();
 
   const dateLabel = formatTripDateRangeLabel(dateRange.start, dateRange.end);
   const unavailable = weatherSource === "unavailable";
@@ -83,9 +83,9 @@ export function TripOutfitCard({
         </div>
       ) : (
         <>
-          {unavailable && !weatherSummary ? (
+          {unavailable && !weatherSummary && !suggestion ? (
             <p className="mt-3 text-xs text-muted-foreground">
-              {ROAMIE_WEATHER_UNAVAILABLE_MESSAGE}
+              {unavailableTripWeatherCopy(locale)}
             </p>
           ) : null}
 
@@ -99,6 +99,7 @@ export function TripOutfitCard({
             <p
               className={cn(
                 "text-sm leading-relaxed text-foreground/90",
+                unavailable && "whitespace-pre-line",
                 showWeatherSummary ? "mt-3" : "mt-4",
               )}
             >

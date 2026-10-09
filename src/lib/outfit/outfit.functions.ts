@@ -24,6 +24,8 @@ const InputSchema = z.object({
   transport: z.enum(["walk", "scooter", "drive", "transit"]).optional().nullable(),
   lat: z.number().nullable().optional(),
   lng: z.number().nullable().optional(),
+  timezone: z.string().optional(),
+  utcOffsetMinutes: z.number().nullable().optional(),
   mood: z.string().optional(),
 });
 

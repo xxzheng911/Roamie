@@ -1,13 +1,14 @@
+import { buildLocalTripOutfitFallback } from "./local-trip-outfit-fallback";
+import { tripCalendarDates, validWeatherCoords, forecastFacts, tripForecastSummary } from "./trip-weather-policy";
 import { aiObservation, observeProviderAttempt } from "@/lib/abuse-guard-telemetry.server";
 import type { Locale } from "@/lib/i18n/types";
-import { translate } from "@/lib/i18n/translate";
 import { localizedOutfitCopy } from "./localized-outfit-copy";
 import { aiLanguageInstruction } from "@/lib/i18n/ai-instructions";
 import { assertAiUse } from "@/lib/abuse-guard.server";
 import { getOpenAIKey } from "@/lib/env.server";
 import { mapOpenAIError } from "@/lib/ai/errors";
 import type { DailyForecast } from "@/lib/weather-types";
-import { openWeatherGetForecast } from "@/lib/weather/openweather.server";
+import { openWeatherGetTripForecast } from "@/lib/weather/openweather.server";
 import {
   formatTripDateRangeLabel,
   inferHasNightActivities,
@@ -31,6 +32,8 @@ export type GenerateOutfitSuggestionInput = {
   lat?: number | null;
   lng?: number | null;
   mood?: string;
+  timezone?: string;
+  utcOffsetMinutes?: number | null;
 };
 
 export type GenerateOutfitSuggestionResult = {
@@ -53,21 +56,6 @@ const TRIP_OUTFIT_SCHEMA = {
   required: ["suggestion"],
 } as const;
 
-function aggregateWeatherSummary(
-  destination: string,
-  dateRangeLabel: string,
-  forecast: DailyForecast[],
-): string {
-  const lo = Math.min(...forecast.map((f) => f.tempLowC ?? 99));
-  const hi = Math.max(...forecast.map((f) => f.tempHighC ?? -99));
-  const avgPrecip =
-    forecast.reduce((s, f) => s + (f.precipProbability ?? 0), 0) / Math.max(1, forecast.length);
-  const conditions = [...new Set(forecast.map((f) => f.condition))].slice(0, 2).join("、");
-  const uviMax = Math.max(...forecast.map((f) => f.uvi ?? 0));
-  const uviBit = uviMax >= 6 ? ` · 紫外線偏強（UV ${Math.round(uviMax)}）` : "";
-  return `${destination} ${dateRangeLabel} · ${Math.round(lo)}–${Math.round(hi)}°C · ${conditions} · 降雨機率約 ${Math.round(avgPrecip)}%${uviBit}`;
-}
-
 function buildTripOutfitSystemPrompt(locale: Locale): string {
   return `你是 Roamie，使用者的旅行穿搭夥伴。
 
@@ -76,6 +64,7 @@ function buildTripOutfitSystemPrompt(locale: Locale): string {
 - suggestion 控制在 2–4 句，依指定語言輸出
 - 語氣溫柔、實用、有生活感；禁止像氣象局播報或表格列點
 - 必須依【真實天氣預報】的溫度、降雨、紫外線、日夜溫差給建議
+- 缺少的欄位代表未知，不得推測或編造數值；不要在建議中重述氣溫或降雨百分比
 - 冷天要提保暖、洋蔥式穿搭；熱天要提透氣、防曬、補水；下雨要提雨具
 - 多步行要提好走的鞋；有夜間行程要提加一層
 - 不要開頭問候，直接給建議
@@ -95,7 +84,7 @@ function buildTripOutfitUserMessage(params: {
     .map((f) => {
       const uvi = f.uvi != null ? `、UV ${Math.round(f.uvi)}` : "";
       const night = f.sunset ? `、日落約 ${f.sunset}` : "";
-      return `${f.date}：${f.condition}，${Math.round(f.tempLowC ?? 0)}–${Math.round(f.tempHighC ?? 0)}°C，降雨 ${f.precipProbability ?? "?"}%${uvi}${night}`;
+      return `${f.date}：${f.condition}，${Math.round(f.tempLowC!)}–${Math.round(f.tempHighC!)}°C，降雨 ${f.precipProbability ?? "?"}%${uvi}${night}`;
     })
     .join("\n");
 
@@ -122,6 +111,7 @@ async function callTripOutfitAI(userMessage: string, locale: Locale): Promise<st
   try {
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
+      signal: AbortSignal.timeout(20_000),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
@@ -171,12 +161,8 @@ function buildRuleBasedTripSuggestion(params: {
   hasNightActivities: boolean;
   heavyOutdoorWalking: boolean;
 }): string {
-  const hi = Math.max(...params.forecast.map((f) => f.tempHighC ?? -99));
-  const lo = Math.min(...params.forecast.map((f) => f.tempLowC ?? 99));
-  const avgPrecip =
-    params.forecast.reduce((s, f) => s + (f.precipProbability ?? 0), 0) /
-    Math.max(1, params.forecast.length);
-  const rainy = avgPrecip >= 40;
+  const { high: hi, low: lo, rain } = forecastFacts(params.forecast);
+  const rainy = rain != null && rain >= 40;
   const cold = hi <= 12 || lo <= 5;
   const hot = hi >= 28;
   const highUvi = params.forecast.some((f) => (f.uvi ?? 0) >= 7);
@@ -212,12 +198,18 @@ export async function generateOutfitSuggestion(
   const hasNightActivities = inferHasNightActivities(input.items);
   const heavyOutdoorWalking = inferHeavyOutdoorWalking(input.items, input.transport);
 
-  const lat = input.lat ?? input.destinationLocation?.lat ?? null;
-  const lng = input.lng ?? input.destinationLocation?.lng ?? null;
+  const lat = input.destinationLocation?.lat ?? input.lat ?? null;
+  const lng = input.destinationLocation?.lng ?? input.lng ?? null;
 
-  if (lat == null || lng == null) {
+  const fallbackSuggestion = buildLocalTripOutfitFallback({
+    locale, destination, startDate: input.startDate, endDate: input.endDate,
+    lat, lng, items: input.items, inputKey: "",
+  }).outfitSuggestion!;
+
+  if (lat == null || lng == null || !validWeatherCoords(lat, lng) ||
+    !tripCalendarDates(input.startDate, input.endDate).length) {
     return {
-      outfitSuggestion: translate(locale, "destinationEditorial.outfit_unavailable"),
+      outfitSuggestion: fallbackSuggestion,
       outfitCopy,
       weatherSummary: "",
       weatherSource: "unavailable",
@@ -227,12 +219,15 @@ export async function generateOutfitSuggestion(
 
   let forecast: DailyForecast[];
   try {
-    const days = Math.min(Math.max(input.dayCount, 1), 14);
-    forecast = await openWeatherGetForecast(lat, lng, days);
+    forecast = await openWeatherGetTripForecast({
+      destination, lat, lng, startDate: input.startDate, endDate: input.endDate,
+      timezone: input.destinationLocation?.timezone ?? input.timezone,
+      utcOffsetMinutes: input.destinationLocation?.utcOffsetMinutes ?? input.utcOffsetMinutes,
+    });
   } catch (e) {
     console.warn("[Roamie TripOutfit] OpenWeather forecast failed", e);
     return {
-      outfitSuggestion: translate(locale, "destinationEditorial.outfit_unavailable"),
+      outfitSuggestion: fallbackSuggestion,
       outfitCopy,
       weatherSummary: "",
       weatherSource: "unavailable",
@@ -242,7 +237,7 @@ export async function generateOutfitSuggestion(
 
   if (!forecast.length) {
     return {
-      outfitSuggestion: translate(locale, "destinationEditorial.outfit_unavailable"),
+      outfitSuggestion: fallbackSuggestion,
       outfitCopy,
       weatherSummary: "",
       weatherSource: "unavailable",
@@ -250,13 +245,7 @@ export async function generateOutfitSuggestion(
     };
   }
 
-  const weatherSummary = locale === "zh-TW"
-    ? aggregateWeatherSummary(destination, dateRangeLabel, forecast)
-    : `${destination} ${input.startDate} – ${input.endDate} · ${translate(locale, "destinationEditorial.weather_numeric", {
-      low: Math.round(Math.min(...forecast.map((f) => f.tempLowC ?? 99))),
-      high: Math.round(Math.max(...forecast.map((f) => f.tempHighC ?? -99))),
-      rain: Math.round(forecast.reduce((sum, f) => sum + (f.precipProbability ?? 0), 0) / forecast.length),
-    })}`;
+  const weatherSummary = tripForecastSummary(locale, destination, input.startDate, input.endDate, forecast);
 
   let outfitSuggestion: string;
   try {
@@ -273,8 +262,8 @@ export async function generateOutfitSuggestion(
   } catch (e) {
     console.warn("[Roamie TripOutfit] AI failed, using forecast-based rules", e);
     outfitSuggestion = locale !== "zh-TW" ? localizedOutfitCopy(locale, {
-      high: Math.max(...forecast.map((f) => f.tempHighC ?? 23)),
-      rain: Math.max(...forecast.map((f) => f.precipProbability ?? 0)),
+      high: forecastFacts(forecast).high,
+      rain: forecastFacts(forecast).rain,
       uv: Math.max(...forecast.map((f) => f.uvi ?? 0)),
       walking: heavyOutdoorWalking, night: hasNightActivities,
     }) : buildRuleBasedTripSuggestion({

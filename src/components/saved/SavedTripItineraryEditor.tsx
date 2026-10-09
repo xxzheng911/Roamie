@@ -152,8 +152,7 @@ function inferTripDates(
   if (isoDates.length > 0) {
     return { start: isoDates[0]!, end: isoDates[isoDates.length - 1]! };
   }
-  const today = new Date().toISOString().slice(0, 10);
-  return { start: today, end: today };
+  return { start: "", end: "" };
 }
 
 function placeAffiliateKey(item: RoamieItineraryItem): string {
@@ -460,17 +459,13 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
   const outfitDestination = useMemo(
     () =>
       resolveTripDestination({
-        destination: initial.destination,
+        destination: initial.destinationLocation?.formattedName || initial.destinationLocation?.displayLabel || initial.destination,
         destinationLocation: initial.destinationLocation,
         itinerary: items,
       }),
     [initial.destination, initial.destinationLocation, items],
   );
 
-  const firstWithCoords = items.find((i) => i.lat != null && i.lng != null);
-  const tripCenter = firstWithCoords
-    ? { lat: firstWithCoords.lat!, lng: firstWithCoords.lng! }
-    : undefined;
 
   const { loading: outfitLoading, outfitFields } = useTripOutfitSuggestion({
     initialFields: initialOutfitFields(initial),
@@ -484,7 +479,6 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
       end: settings.tripEndDate ?? tripDatesForOutfit.end,
     },
     dayCount: dayGroups.length,
-    tripCenter,
     moodTag: initial.moodTag,
     onGenerated: handleOutfitGenerated,
   });

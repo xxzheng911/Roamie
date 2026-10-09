@@ -1,3 +1,4 @@
+import { TRIP_WEATHER_VERSION } from "./trip-weather-policy";
 import type { RoamieItineraryItem, TripTransportMode } from "@/lib/ai/types";
 import type { TripLocation } from "@/lib/location/types";
 import { inferActivityTypesFromDayItems } from "@/lib/outfit/infer-activities";
@@ -7,8 +8,15 @@ export function buildOutfitInputKey(params: {
   startDate: string;
   endDate: string;
   dayCount: number;
+  lat?: number | null;
+  lng?: number | null;
+  timezone?: string;
+  utcOffsetMinutes?: number | null;
 }): string {
   return [
+    TRIP_WEATHER_VERSION, "openweather",
+    String(params.lat ?? "unknown"), String(params.lng ?? "unknown"),
+    params.timezone ?? "provider", String(params.utcOffsetMinutes ?? "unknown"),
     params.destination.trim().toLowerCase(),
     params.startDate.trim(),
     params.endDate.trim(),

@@ -1,3 +1,4 @@
+import { isFreshTripOutfit, tripCalendarDates, unavailableTripWeatherCopy } from "@/lib/outfit/trip-weather-policy";
 import { useI18n } from "@/hooks/use-i18n";
 import { isCurrentGeneratedCopy } from "@/lib/generated-locale";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -18,7 +19,6 @@ type Params = {
   destinationLocation?: TripLocation | null;
   dateRange: { start: string; end: string };
   dayCount: number;
-  tripCenter?: { lat: number; lng: number };
   moodTag?: string;
   enabled?: boolean;
   /** 僅在伺服器新生成穿搭建議時呼叫（不於 mount / cache hit / 本地 fallback 觸發） */
@@ -77,7 +77,6 @@ export function useTripOutfitSuggestion({
   destinationLocation,
   dateRange,
   dayCount,
-  tripCenter,
   moodTag,
   enabled = true,
   onGenerated,
@@ -100,8 +99,10 @@ export function useTripOutfitSuggestion({
         startDate: dateRange.start,
         endDate: dateRange.end,
         dayCount,
+        lat: destinationLocation?.lat, lng: destinationLocation?.lng,
+        timezone: destinationLocation?.timezone, utcOffsetMinutes: destinationLocation?.utcOffsetMinutes,
       })}`,
-    [locale, resolvedDestination, dateRange.start, dateRange.end, dayCount],
+    [locale, resolvedDestination, dateRange.start, dateRange.end, dayCount, destinationLocation?.lat, destinationLocation?.lng, destinationLocation?.timezone, destinationLocation?.utcOffsetMinutes],
   );
 
   const itemsSignature = useMemo(() => itemsOutfitSignature(items), [items]);
@@ -119,19 +120,21 @@ export function useTripOutfitSuggestion({
 
   const isCached =
     isCurrentGeneratedCopy(outfitFields.outfitCopy ?? {}, locale) &&
-    Boolean(outfitFields.outfitSuggestion) &&
-    outfitFields.outfitSuggestionInputKey === inputKey;
+    isFreshTripOutfit(outfitFields, inputKey);
 
-  const pendingRegeneration =
-    outfitFields.outfitSuggestionInputKey !== inputKey && Boolean(dateRange.start);
+  const hasDates = tripCalendarDates(dateRange.start, dateRange.end).length > 0;
+  const pendingRegeneration = enabled && !isCached && hasDates;
 
-  const displayFields = isCached ? outfitFields : { outfitSuggestion: "", weatherSummary: "" };
+  const displayFields: TripOutfitSuggestionFields = isCached ? outfitFields : {
+    outfitSuggestion: hasDates && enabled ? "" : unavailableTripWeatherCopy(locale),
+    weatherSummary: "", weatherSource: "unavailable",
+  };
 
-  const showLoading = loading || (pendingRegeneration && !displayFields.outfitSuggestion);
+  const showLoading = enabled && hasDates && (loading || (pendingRegeneration && !displayFields.outfitSuggestion));
 
   useEffect(() => {
     if (!enabled || isCached) return;
-    if (!dateRange.start) return;
+    if (!hasDates) return;
 
     let cancelled = false;
     setLoading(true);
@@ -145,8 +148,10 @@ export function useTripOutfitSuggestion({
         dayCount,
         items: itemsRef.current,
         transport: settings.transport ?? null,
-        lat: tripCenter?.lat ?? destinationLocation?.lat ?? null,
-        lng: tripCenter?.lng ?? destinationLocation?.lng ?? null,
+        lat: destinationLocation?.lat ?? null,
+        lng: destinationLocation?.lng ?? null,
+        timezone: destinationLocation?.timezone,
+        utcOffsetMinutes: destinationLocation?.utcOffsetMinutes,
         mood: moodTag,
       },
     })
@@ -159,6 +164,7 @@ export function useTripOutfitSuggestion({
             buildLocalTripOutfitFallback({
               locale,
               destination: resolvedDestination,
+              lat: destinationLocation?.lat, lng: destinationLocation?.lng,
               startDate: dateRange.start,
               endDate: dateRange.end || dateRange.start,
               items: itemsRef.current,
@@ -183,6 +189,7 @@ export function useTripOutfitSuggestion({
           buildLocalTripOutfitFallback({
             locale,
             destination: resolvedDestination,
+            lat: destinationLocation?.lat, lng: destinationLocation?.lng,
             startDate: dateRange.start,
             endDate: dateRange.end || dateRange.start,
             items: itemsRef.current,
@@ -206,8 +213,9 @@ export function useTripOutfitSuggestion({
     resolvedDestination,
     itemsSignature,
     settings.transport,
-    tripCenter?.lat,
-    tripCenter?.lng,
+    hasDates,
+    destinationLocation?.timezone,
+    destinationLocation?.utcOffsetMinutes,
     destinationLocation?.lat,
     destinationLocation?.lng,
     moodTag,
