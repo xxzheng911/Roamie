@@ -13,7 +13,7 @@ const root=resolve(import.meta.dirname,'..');
 Object.assign(process.env,{CLOUDFLARE_ACCOUNT_ID:'cb1835ce26e88097148685b0b1569bc3',CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV:'false',WRANGLER_LOG:'error'});
 let platform,temp;
 const read=args=>{
- const r=spawnSync(resolve(root,'node_modules/.bin/wrangler'),[...args,'--config',resolve(root,'dist/server/wrangler.json'),'--json'],{encoding:'utf8',env:process.env,timeout:30000});
+ const r=spawnSync(resolve(root,'node_modules/.bin/wrangler'),[...args,'--config',resolve(root,'dist/server/wrangler.json'),'--json'],{encoding:'utf8',env:{...process.env,WRANGLER_LOG:'log'},timeout:30000});
  if(r.status!==0)throw Error('preflight_failed');return JSON.parse(r.stdout);
 };
 try {
