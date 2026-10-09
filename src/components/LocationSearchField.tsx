@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { Loader2, MapPin } from "lucide-react";
+import { searchTripLocations, resolveTripLocation } from "@/lib/location.functions";
 import { searchTripStops, resolveTripStop } from "@/lib/trip-stop-search.functions";
 import { formatTripLocationLabel } from "@/lib/location/format";
 import type { LocationSuggestion, TripLocation } from "@/lib/location/types";
@@ -72,6 +73,8 @@ export function LocationSearchField({
   const committedLabelRef = useRef<string | null>(null);
   const sessionTokenRef = useRef(createPlacesSessionToken());
 
+  const searchLocationFn = useServerFn(searchTripLocations);
+  const resolveLocationFn = useServerFn(resolveTripLocation);
   const searchStopFn = useServerFn(searchTripStops);
   const resolveStopFn = useServerFn(resolveTripStop);
 
@@ -108,7 +111,9 @@ export function LocationSearchField({
       setSearchError(null);
       try {
         // Phase 1 Step B #1：Autocomplete 經 places-gateway（flag OFF=舊路徑，ON=PIE Facade→舊實作）
-        const stopResult = await searchAutocompleteViaGateway(trimmed, {
+        const stopResult = searchMode === "geographic"
+          ? await searchLocationFn({ data: { query: trimmed, locale } })
+          : await searchAutocompleteViaGateway(trimmed, {
           locale,
           sessionToken: sessionTokenRef.current,
           searchFn: searchStopFn,
@@ -146,7 +151,7 @@ export function LocationSearchField({
         }
       }
     },
-    [fieldRole, locale, searchMode, searchStopFn],
+    [fieldRole, locale, searchMode, searchStopFn, searchLocationFn],
   );
 
   useEffect(() => {
@@ -192,6 +197,16 @@ export function LocationSearchField({
     });
     setResolvingId(item.placeId);
     try {
+      if (searchMode === "geographic") {
+        const { location } = await resolveLocationFn({ data: { placeId: item.placeId, locale } });
+        if (interactionGen !== interactionGenRef.current) return;
+        if (!location) {
+          setSearchError(t("location.resolveFailed"));
+          return;
+        }
+        commitLocation(location);
+        return;
+      }
       // Phase 1 Step B #2：PlaceLite details 經 places-gateway（flag OFF=舊路徑，ON=PIE Facade→舊實作）
       const { place, error } = await getPlaceLiteDetailsViaGateway(item.placeId, {
         locale,

@@ -614,7 +614,7 @@ function PlanPage() {
 
           <LocationSearchField
             fieldRole="destination"
-            searchMode="place"
+            searchMode="geographic"
             label={t("plan.destination")}
             required
             value={destination}

@@ -4,7 +4,6 @@ import { createServerFn } from "@tanstack/react-start";
 import { allowGuestPublicRead } from "@/lib/public-read-auth";
 import { z } from "zod";
 import {
-  GOOGLE_PLACES_MAX_RADIUS_METERS,
   geocodeForwardUrl,
   placesAutocompleteUrl,
   placeDetailsUrl,
@@ -495,14 +494,6 @@ async function geocodeQueryToSuggestions(
   return { suggestions, error: null };
 }
 
-const INTERNATIONAL_DEST_HINT =
-  /^(首爾|首尔|大阪|東京|东京|京都|札幌|福岡|名古屋|橫濱|神戶|沖繩|台北|高雄|台中|台南|香港|新加坡|曼谷|巴黎|倫敦|紐約|洛杉磯|雪梨|墨爾本)/i;
-
-function prefersGeocodeFirst(query: string): boolean {
-  const q = query.trim();
-  return q.length <= 8 || INTERNATIONAL_DEST_HINT.test(q);
-}
-
 export const searchTripLocations = createServerFn({ method: "POST" })
   .middleware([allowGuestPublicRead, requireGoogleProviderRate])
   .inputValidator((input) => AutocompleteInput.parse(input))
@@ -512,71 +503,66 @@ export const searchTripLocations = createServerFn({ method: "POST" })
       const userLocale: Locale = data.locale ? coerceLocale(data.locale) : "zh-TW";
       const trimmed = data.query.trim();
 
-      if (prefersGeocodeFirst(trimmed)) {
-        const geo = await geocodeQueryToSuggestions(trimmed, userLocale, apiKey);
-        if (geo.suggestions.length > 0) return geo;
-      }
-
+      // Destination search is global: explicit world bounds avoid implicit IP bias.
+      // (regions) is a collection, not seven primary types (Google allows at most five).
       const autocompleteBody: Record<string, unknown> = {
         input: trimmed,
         languageCode: localeToGoogleLanguageCode(userLocale),
-        includedPrimaryTypes: [...TRIP_LOCATION_PRIMARY_TYPES],
+        includedPrimaryTypes: ["(regions)"],
+        locationBias: { rectangle: {
+          low: { latitude: -90, longitude: -180 },
+          high: { latitude: 90, longitude: 180 },
+        } },
       };
-      if (userLocale === "zh-TW" && !INTERNATIONAL_DEST_HINT.test(trimmed)) {
-        autocompleteBody.locationBias = {
-          circle: {
-            center: { latitude: 25.033963, longitude: 121.564472 },
-            radius: GOOGLE_PLACES_MAX_RADIUS_METERS,
+      // Only a genuine empty geographic result permits one natural-destination lookup.
+      // Never broaden to establishments or retry provider errors.
+      for (const primaryTypes of [["(regions)"], ["natural_feature"]]) {
+        autocompleteBody.includedPrimaryTypes = primaryTypes;
+        const res = await googleRestFetch(placesAutocompleteUrl(), {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": apiKey,
+            "X-Goog-FieldMask": AUTOCOMPLETE_FIELD_MASK,
           },
-        };
-      }
-      const res = await googleRestFetch(placesAutocompleteUrl(), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Goog-Api-Key": apiKey,
-          "X-Goog-FieldMask": AUTOCOMPLETE_FIELD_MASK,
-        },
-        body: JSON.stringify(autocompleteBody),
-      });
-
-      if (!res.ok) {
-        const detail = parseGoogleError(await res.text());
-        console.error("[Roamie Location] autocomplete failed", res.status, detail);
-        return geocodeQueryToSuggestions(data.query.trim(), userLocale, apiKey);
-      }
-
-      const json = (await res.json()) as { suggestions?: AutocompleteSuggestion[] };
-      const suggestions: LocationSuggestion[] = [];
-      const seen = new Set<string>();
-
-      for (const s of json.suggestions ?? []) {
-        const pred = s.placePrediction;
-        const placeId = pred?.placeId;
-        if (!placeId) continue;
-
-        const types = pred?.types ?? [];
-        if (types.length > 0 && !isGeographicPlaceTypes(types)) continue;
-
-        const main = pred?.structuredFormat?.mainText?.text ?? pred?.text?.text ?? "";
-        const secondary = pred?.structuredFormat?.secondaryText?.text?.trim();
-        const label = formatGeographicSuggestionLabel(main, secondary);
-        if (!label || isRejectedTripLocationLabel(label)) continue;
-        if (seen.has(label)) continue;
-        seen.add(label);
-
-        suggestions.push({
-          placeId,
-          label,
-          ...(secondary && !label.includes(secondary) ? { secondary } : {}),
+          body: JSON.stringify(autocompleteBody),
         });
-      }
 
-      if (suggestions.length === 0) {
-        return geocodeQueryToSuggestions(data.query.trim(), userLocale, apiKey);
-      }
+        if (!res.ok) {
+          const detail = parseGoogleError(await res.text());
+          console.error("[Roamie Location] autocomplete failed", res.status, detail);
+          return { suggestions: [], error: detail };
+        }
 
-      return { suggestions, error: null };
+        const json = (await res.json()) as { suggestions?: AutocompleteSuggestion[] };
+        const suggestions: LocationSuggestion[] = [];
+        const seen = new Set<string>();
+
+        for (const s of json.suggestions ?? []) {
+          const pred = s.placePrediction;
+          const placeId = pred?.placeId;
+          if (!placeId) continue;
+
+          const types = pred?.types ?? [];
+          if (!types.length || !isGeographicPlaceTypes(types)) continue;
+
+          const main = pred?.structuredFormat?.mainText?.text ?? pred?.text?.text ?? "";
+          const secondary = pred?.structuredFormat?.secondaryText?.text?.trim();
+          const label = formatGeographicSuggestionLabel(main, secondary);
+          if (!label || isRejectedTripLocationLabel(label)) continue;
+          if (seen.has(label)) continue;
+          seen.add(label);
+
+          suggestions.push({
+            placeId,
+            label,
+            ...(secondary && !label.includes(secondary) ? { secondary } : {}),
+          });
+        }
+
+        if (suggestions.length) return { suggestions, error: null };
+      }
+      return { suggestions: [], error: null };
     },
   );
 
