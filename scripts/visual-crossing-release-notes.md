@@ -29,18 +29,37 @@ as a five-year or thirty-year average. Statistical precipitation is not displaye
 
 ## Release preparation caveats
 
-The local `release-worker-upload.mjs --preserve-vars` change is deliberately NOT
-part of this feature commit. A clean checkout of this commit must not assume
-that option exists. Preserve and separately review/version the safe uploader
-before any release; never fall back to its default `--keep-vars=false` behavior.
+The separate uploader safety commit makes `--keep-vars=true` mandatory;
+`--preserve-vars` remains a compatibility alias. Local vars/secret overrides and
+the old `--enforcement` override are rejected. `--verify-only` checks artifacts
+without network access. `--preflight-only` additionally reads production metadata
+without uploading. Real uploads always run this preflight first. The latest
+uploaded version must be the sole active version at 100%; required vars must
+match, the Visual Crossing Secret must exist, and existing resource bindings must
+match. Unknown resource types fail closed. Keep `VISUAL_CROSSING_ENABLED=false`
+explicitly in production before the first release (absence disables runtime but
+does not satisfy the release preflight).
 
 Cloudflare's deployment-management documentation requires `wrangler deploy` for
 Durable Object class lifecycle migrations, including creating a new class.
 Consequently, the first migration needs an explicitly reviewed rollout plan;
 the normal `versions upload` followed by a later traffic switch must not be
-assumed to support it. This preparation performs neither operation. Keep the
+assumed to support it. Installed Wrangler 4.130.0 still prepares migration
+metadata in its versions-upload path before the control-plane request; do not
+use a real upload to probe whether a migration is accepted. The uploader now
+rejects unprovisioned DO bindings/classes before invoking upload. This preparation
+performs neither operation. Keep the
 feature disabled during provisioning and define a rollback compatible with the
 new namespace before release. Rebuild release metadata for the feature commit.
+
+Minimal future migration path: an explicitly approved migration-aware release
+mode must validate the live version and complete bindings, preserve vars/secrets,
+force the feature to remain false, and allow only the additive climate class.
+It would apply migration and deploy code together, not promise a separate traffic
+switch. It is intentionally not implemented as an automatic fallback here.
+Afterward, rollback should disable the feature or deploy compatible code retaining
+both DO classes/bindings and migration history; do not assume pre-migration Worker
+versions can be restored, and never delete namespaces to simulate rollback.
 
 The `global-v1` DO name is a billing authority, not a cache version: do not rename
 it on routine releases, since that would reset usage accounting. Budget is 900
