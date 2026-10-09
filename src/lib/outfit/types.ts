@@ -63,6 +63,7 @@ export type OutfitAdvicePayload = GeneratedLocaleContract & {
 export type TripWeatherSource = "openweather" | "visual-crossing-stats" | "unavailable" | "fallback";
 
 export type TripOutfitSuggestionFields = {
+  weatherSourceAvailability?: import("./weather-source-availability").WeatherSourceAvailability;
   /** Provenance for outfitSuggestion and weatherSummary, independent of the trip narrative. */
   outfitCopy?: GeneratedLocaleContract;
   /** 2–4 句穿搭建議正文 */

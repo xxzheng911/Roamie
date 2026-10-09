@@ -1,11 +1,12 @@
-import { isFreshTripOutfit, tripCalendarDates, unavailableTripWeatherCopy, tripWeatherMode } from "@/lib/outfit/trip-weather-policy";
+import { canonicalWeatherTimezone, readWeatherSourceAvailability, type WeatherSourceAvailability } from "@/lib/outfit/weather-source-availability";
+import { isFreshTripOutfit, tripCalendarDates, unavailableTripWeatherCopy, tripWeatherMode, validWeatherCoords } from "@/lib/outfit/trip-weather-policy";
 import { useI18n } from "@/hooks/use-i18n";
 import { isCurrentGeneratedCopy } from "@/lib/generated-locale";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import type { RoamieItineraryItem, TripPlanSettings } from "@/lib/ai/types";
 import type { TripLocation } from "@/lib/location/types";
-import { generateTripOutfitSuggestion } from "@/lib/outfit/outfit.functions";
+import { generateTripOutfitSuggestion, getTripWeatherSourceAvailability } from "@/lib/outfit/outfit.functions";
 import { buildLocalTripOutfitFallback, resolveLocalTripOutfit } from "@/lib/outfit/local-trip-outfit-fallback";
 import { buildOutfitInputKey } from "@/lib/outfit/trip-outfit-context";
 import type { TripOutfitSuggestionFields } from "@/lib/outfit/types";
@@ -32,6 +33,7 @@ function outfitFieldsFingerprint(fields: TripOutfitSuggestionFields): string {
     outfitSuggestionUpdatedAt: fields.outfitSuggestionUpdatedAt ?? null,
     weatherSummary: fields.weatherSummary ?? null,
     weatherSource: fields.weatherSource ?? null,
+    weatherSourceAvailability: fields.weatherSourceAvailability ?? null,
     outfitSuggestionInputKey: fields.outfitSuggestionInputKey ?? null,
   });
 }
@@ -62,6 +64,7 @@ function normalizeServerOutfitResult(
     outfitSuggestion: raw.outfitSuggestion ?? raw.suggestion ?? "",
     weatherSummary: raw.weatherSummary ?? "",
     weatherSource: raw.weatherSource ?? "openweather",
+    weatherSourceAvailability: raw.weatherSourceAvailability,
     outfitSuggestionUpdatedAt:
       raw.outfitSuggestionUpdatedAt ?? raw.generatedAt ?? new Date().toISOString(),
     outfitSuggestionInputKey: inputKey,
@@ -82,6 +85,7 @@ export function useTripOutfitSuggestion({
   onGenerated,
 }: Params) {
   const fetchSuggestion = useServerFn(generateTripOutfitSuggestion);
+  const fetchAvailability = useServerFn(getTripWeatherSourceAvailability);
   const { locale } = useI18n();
   const onGeneratedRef = useRef(onGenerated);
   onGeneratedRef.current = onGenerated;
@@ -129,11 +133,26 @@ export function useTripOutfitSuggestion({
     outfitSuggestion: initialFields.outfitSuggestion,
     weatherSummary: initialFields.weatherSummary,
     weatherSource: initialFields.weatherSource,
+    weatherSourceAvailability: initialFields.weatherSourceAvailability,
     outfitSuggestionUpdatedAt: initialFields.outfitSuggestionUpdatedAt,
     outfitSuggestionInputKey: initialFields.outfitSuggestionInputKey,
   }));
 
   const [loading, setLoading] = useState(false);
+  const [availability, setAvailability] = useState<{ key: string; version: WeatherSourceAvailability } | null>(null);
+  const checkAvailability = enabled && weatherMode === "climate" &&
+    validWeatherCoords(destinationLocation?.lat, destinationLocation?.lng) &&
+    !(["openweather", "visual-crossing-stats"] as string[]).includes(outfitFields.weatherSource ?? "");
+  const availabilityVersion = availability?.key === inputKey ? availability.version : undefined;
+  useEffect(() => {
+    if (!checkAvailability) return;
+    let cancelled = false;
+    void readWeatherSourceAvailability(() => fetchAvailability()).then(version => {
+      if (!cancelled) setAvailability({ key: inputKey, version });
+    }).catch(() => { /* Capability unknown: keep cached fallback, do not retry providers. */ });
+    return () => { cancelled = true; };
+  }, [checkAvailability, inputKey, fetchAvailability]);
+
 
   const localOutfit = resolveLocalTripOutfit({
     locale, destination: resolvedDestination, startDate: dateRange.start, endDate: dateRange.end,
@@ -143,7 +162,7 @@ export function useTripOutfitSuggestion({
   });
   const isCached = (
     isCurrentGeneratedCopy(outfitFields.outfitCopy ?? {}, locale) &&
-    isFreshTripOutfit(outfitFields, inputKey));
+    isFreshTripOutfit(outfitFields, inputKey, Date.now(), availabilityVersion));
 
   const hasDates = tripCalendarDates(dateRange.start, dateRange.end).length > 0;
   const pendingRegeneration = enabled && !isCached && hasDates;
@@ -156,7 +175,7 @@ export function useTripOutfitSuggestion({
   const showLoading = !localOutfit && enabled && hasDates && (loading || (pendingRegeneration && !displayFields.outfitSuggestion));
 
   useEffect(() => {
-    if (!enabled || isCached) return;
+    if (!enabled || isCached || (checkAvailability && !availabilityVersion)) return;
     if (!hasDates) return;
 
     let cancelled = false;
@@ -173,7 +192,7 @@ export function useTripOutfitSuggestion({
         transport: settings.transport ?? null,
         lat: destinationLocation?.lat ?? null,
         lng: destinationLocation?.lng ?? null,
-        timezone: destinationLocation?.timezone,
+        timezone: canonicalWeatherTimezone(destinationLocation?.timezone),
         utcOffsetMinutes: destinationLocation?.utcOffsetMinutes,
         mood: moodTag,
       },
@@ -184,7 +203,7 @@ export function useTripOutfitSuggestion({
         const nextFields = normalizeServerOutfitResult(result, inputKey);
         if (!nextFields.outfitSuggestion?.trim() || !isCurrentGeneratedCopy(nextFields.outfitCopy ?? {}, locale)) {
           setOutfitFields(
-            buildLocalTripOutfitFallback({
+            { ...buildLocalTripOutfitFallback({
               locale,
               destination: resolvedDestination,
               lat: destinationLocation?.lat, lng: destinationLocation?.lng,
@@ -193,7 +212,7 @@ export function useTripOutfitSuggestion({
               items: itemsRef.current,
               transport: settings.transport,
               inputKey,
-            }),
+            }), weatherSourceAvailability: availabilityVersion },
           );
           return;
         }
@@ -209,7 +228,7 @@ export function useTripOutfitSuggestion({
         setLoading(false);
         console.warn("[useTripOutfitSuggestion] generation failed", e);
         setOutfitFields(
-          buildLocalTripOutfitFallback({
+          { ...buildLocalTripOutfitFallback({
             locale,
             destination: resolvedDestination,
             lat: destinationLocation?.lat, lng: destinationLocation?.lng,
@@ -218,7 +237,7 @@ export function useTripOutfitSuggestion({
             items: itemsRef.current,
             transport: settings.transport,
             inputKey,
-          }),
+          }), weatherSourceAvailability: availabilityVersion },
         );
       })
       .finally(() => {
@@ -229,6 +248,8 @@ export function useTripOutfitSuggestion({
     locale,
     enabled,
     isCached,
+    checkAvailability,
+    availabilityVersion,
     inputKey,
     dateRange.start,
     dateRange.end,

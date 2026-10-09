@@ -236,6 +236,7 @@ function initialOutfitFields(payload: RoamiePayloadV2): TripOutfitSuggestionFiel
     outfitSuggestionUpdatedAt: payload.outfitSuggestionUpdatedAt,
     weatherSummary: payload.weatherSummary,
     weatherSource: payload.weatherSource,
+    weatherSourceAvailability: payload.weatherSourceAvailability,
     outfitSuggestionInputKey: payload.outfitSuggestionInputKey,
     outfitCopy: payload.outfitCopy,
   };

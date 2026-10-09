@@ -1,3 +1,4 @@
+import { CLIMATE_AVAILABLE, type WeatherSourceAvailability } from "./weather-source-availability";
 import type { DailyForecast } from "@/lib/weather-types";
 import type { Locale } from "@/lib/i18n/types";
 import type { TripOutfitSuggestionFields } from "./types";
@@ -85,7 +86,9 @@ export function tripForecastSummary(locale: Locale, destination: string, start: 
     (condition ? ` · ${condition}` : "") + ` · ${facts.rain == null ? copy[2] : `${copy[1]} ${Math.round(facts.rain)}%`}`;
 }
 
-export function isFreshTripOutfit(fields: TripOutfitSuggestionFields, key: string, now = Date.now()): boolean {
+export function isFreshTripOutfit(fields: TripOutfitSuggestionFields, key: string, now = Date.now(), availability?: WeatherSourceAvailability): boolean {
+  if (key.includes("|climate|") && (fields.weatherSource === "unavailable" || fields.weatherSource === "fallback") &&
+    availability === CLIMATE_AVAILABLE && fields.weatherSourceAvailability !== availability) return false;
   const age = now - Date.parse(fields.outfitSuggestionUpdatedAt ?? "");
   const ttl = fields.weatherSource === "openweather" ? FORECAST_TTL_MS
     : fields.weatherSource === "visual-crossing-stats" ? 6 * 60 * 60_000 : UNAVAILABLE_TTL_MS;

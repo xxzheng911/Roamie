@@ -1,0 +1,53 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { CLIMATE_AVAILABLE as ON, CLIMATE_UNAVAILABLE as OFF, canonicalWeatherTimezone, readWeatherSourceAvailability } from '../src/lib/outfit/weather-source-availability.ts';
+import { getWeatherSourceAvailability, visualCrossingTripClimate } from '../src/lib/weather/visual-crossing.server.ts';
+import { validClimateInput } from '../src/lib/weather/visual-crossing-contract.ts';
+import { runWithWorkerRequest } from '../src/lib/worker-request-scope.ts';
+import { buildOutfitInputKey } from '../src/lib/outfit/trip-outfit-context.ts';
+import { isFreshTripOutfit } from '../src/lib/outfit/trip-weather-policy.ts';
+import { buildLocalTripOutfitFallback } from '../src/lib/outfit/local-trip-outfit-fallback.ts';
+const now=Date.parse('2026-10-10T00:00:00Z');
+const input={destination:'東京都',startDate:'2026-11-25',endDate:'2026-11-30',dayCount:6,lat:35.68,lng:139.69,timezone:'Asia/Tokyo',now};
+const key=buildOutfitInputKey(input);
+let doCalls=0;
+const env={VISUAL_CROSSING_ENABLED:'false',VISUAL_CROSSING_API_KEY:'fixture-only',VISUAL_CROSSING_CLIMATE:{idFromName:name=>{assert.equal(name,'global-v1');return name},get:()=>({fetch:async req=>{doCalls++;const data=await req.json();assert.equal(data.input.timezone,'Asia/Tokyo');return Response.json({low:9,high:14,timezone:'Asia/Tokyo',dates:[],fetchedAt:now});}})}};
+const available=()=>runWithWorkerRequest({env},()=>getWeatherSourceAvailability());
+assert.equal(await available(),OFF);assert.equal(doCalls,0);
+const fallback={...buildLocalTripOutfitFallback({...input,locale:'zh-TW',items:[],inputKey:key}),outfitSuggestionUpdatedAt:new Date(now).toISOString(),weatherSourceAvailability:OFF};
+assert.ok(isFreshTripOutfit(fallback,key,now,OFF));
+env.VISUAL_CROSSING_ENABLED='true';assert.equal(await available(),ON);assert.equal(doCalls,0);
+for(const old of [fallback,{...fallback,weatherSourceAvailability:undefined}]){
+ assert.equal(isFreshTripOutfit(old,key,now,ON),false,'OFF/legacy fallback invalidated');
+}
+if(!isFreshTripOutfit(fallback,key,now,await available())) assert.ok(await runWithWorkerRequest({env},()=>visualCrossingTripClimate(input)));
+assert.equal(doCalls,1,'one source-selection dispatch, fake DO only');
+assert.ok(isFreshTripOutfit({...fallback,weatherSourceAvailability:ON},key,now,ON),'same-source failure TTL preserved');
+assert.ok(isFreshTripOutfit({...fallback,weatherSource:'visual-crossing-stats'},key,now,ON),'B success unchanged');
+const nearKey=buildOutfitInputKey({...input,startDate:'2026-10-11',endDate:'2026-10-12'});
+assert.ok(isFreshTripOutfit({...fallback,weatherSource:'openweather',outfitSuggestionInputKey:nearKey},nearKey,now,ON),'C forecast untouched');
+for(const zone of ['Asia/Tokyo','Asia/Seoul','Europe/Paris','Australia/Melbourne']) assert.ok(canonicalWeatherTimezone(zone));
+assert.equal(canonicalWeatherTimezone('asia/tokyo'),'Asia/Tokyo');
+assert.equal(canonicalWeatherTimezone('UTC+9','Asia/Tokyo'),'Asia/Tokyo','trusted alternate metadata preferred');
+for(const timezone of ['UTC+9','GMT+9',undefined,'not-a-zone','Etc/GMT-9']){
+ assert.equal(canonicalWeatherTimezone(timezone),undefined);
+ assert.equal(validClimateInput({...input,timezone}),false);
+ assert.equal(await runWithWorkerRequest({env},()=>visualCrossingTripClimate({...input,timezone,utcOffsetMinutes:540})),null);
+}
+assert.equal(doCalls,1,'E/F/G no provider/DO for unknown or offset-only zone');
+for(const change of [{destination:'大阪'},{lat:34.69,lng:135.5},{startDate:'2026-11-26'}]) assert.notEqual(buildOutfitInputKey({...input,...change}),key);
+for(const unavailableEnv of [{},{...env,VISUAL_CROSSING_API_KEY:''},{...env,VISUAL_CROSSING_CLIMATE:undefined}]) assert.equal(await runWithWorkerRequest({env:unavailableEnv},()=>getWeatherSourceAvailability()),OFF);
+let checks=0;const read=async()=>{checks++;return ON};
+await Promise.all(Array.from({length:12},()=>readWeatherSourceAvailability(read)));assert.equal(checks,1);
+await readWeatherSourceAvailability(read);assert.equal(checks,2,'reopen rechecks capability');
+await assert.rejects(readWeatherSourceAvailability(async()=>{throw Error('fixture')}));
+assert.equal(await readWeatherSourceAvailability(read),ON,'rejected promise cleanup');
+const hook=fs.readFileSync('src/hooks/use-trip-outfit-suggestion.ts','utf8');
+assert.ok(hook.includes('isFreshTripOutfit(outfitFields, inputKey, Date.now(), availabilityVersion)'));
+assert.ok(hook.includes('(checkAvailability && !availabilityVersion)'));
+assert.ok(hook.includes('weatherSourceAvailability: raw.weatherSourceAvailability'));
+assert.ok(fs.readFileSync('src/components/saved/SavedTripItineraryEditor.tsx','utf8').includes('weatherSourceAvailability: payload.weatherSourceAvailability'));
+const functions=fs.readFileSync('src/lib/outfit/outfit.functions.ts','utf8');
+const capability=functions.slice(functions.indexOf('export const getTripWeatherSourceAvailability'));
+assert.ok(!capability.includes('generateOutfitSuggestion('));assert.ok(!capability.includes('visualCrossingTripClimate('));
+console.log('PASS A–J: OFF→ON targeted invalidation, retained success/TTL, IANA/offset/legacy fallback, isolated keys, capability dedup/reopen/failure, metadata propagation. Fake DO only; no AI/provider/Google calls.');

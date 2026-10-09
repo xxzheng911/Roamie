@@ -1,3 +1,4 @@
+import { canonicalWeatherTimezone } from "./weather-source-availability";
 import { buildLocalTripOutfitFallback, climateOutfitCopy } from "./local-trip-outfit-fallback";
 import { tripCalendarDates, validWeatherCoords, forecastFacts, tripForecastSummary, tripWeatherMode } from "./trip-weather-policy";
 import { visualCrossingTripClimate } from "../weather/visual-crossing.server";
@@ -38,6 +39,7 @@ export type GenerateOutfitSuggestionInput = {
 };
 
 export type GenerateOutfitSuggestionResult = {
+  weatherSourceAvailability?: import("./weather-source-availability").WeatherSourceAvailability;
   outfitCopy: { generatedLocale: Locale };
   outfitSuggestion: string;
   weatherSummary: string;
@@ -224,7 +226,9 @@ export async function generateOutfitSuggestion(
     utcOffsetMinutes: input.destinationLocation?.utcOffsetMinutes ?? input.utcOffsetMinutes,
   };
   if (tripWeatherMode(weatherInput) === "climate") {
-    const climate = await visualCrossingTripClimate(weatherInput);
+    const climate = await visualCrossingTripClimate({ ...weatherInput,
+      timezone: canonicalWeatherTimezone(input.destinationLocation?.timezone, input.timezone),
+    });
     return climate ? {
       ...climateOutfitCopy(locale, climate.low, climate.high), outfitCopy,
       weatherSource: "visual-crossing-stats",

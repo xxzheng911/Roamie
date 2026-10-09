@@ -1,3 +1,4 @@
+import { canonicalWeatherTimezone } from "../outfit/weather-source-availability";
 import { destinationDate, tripCalendarDates, validWeatherCoords } from "../outfit/trip-weather-policy";
 
 export const CLIMATE_VERSION = "vc-stats-v1";
@@ -16,7 +17,7 @@ export function validClimateInput(input: ClimateInput): boolean {
     input.destination.length <= 200 && validWeatherCoords(input.lat, input.lng) &&
     typeof input.startDate === "string" && typeof input.endDate === "string" &&
     tripCalendarDates(input.startDate, input.endDate).length &&
-    (input.timezone == null || (typeof input.timezone === "string" && destinationDate(Date.now(), input.timezone))));
+    Boolean(canonicalWeatherTimezone(input.timezone)));
 }
 
 export function climateCacheKey(input: ClimateInput): string {

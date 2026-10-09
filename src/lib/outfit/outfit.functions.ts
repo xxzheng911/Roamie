@@ -34,5 +34,14 @@ export const generateTripOutfitSuggestion = createServerFn({ method: "POST" })
   .inputValidator((input) => InputSchema.parse(input))
   .handler(async ({ data }): Promise<GenerateOutfitSuggestionResult> => {
     const { generateOutfitSuggestion } = await import("@/lib/outfit/generate-trip-outfit.server");
-    return generateOutfitSuggestion(data);
+    const { getWeatherSourceAvailability } = await import("@/lib/weather/visual-crossing.server");
+    return { ...await generateOutfitSuggestion(data), weatherSourceAvailability: getWeatherSourceAvailability() };
+  });
+
+/** Capability check only: no provider, AI or DO calls. Same existing access policy. */
+export const getTripWeatherSourceAvailability = createServerFn({ method: "GET" })
+  .middleware([requireSupabasePlus])
+  .handler(async () => {
+    const { getWeatherSourceAvailability } = await import("@/lib/weather/visual-crossing.server");
+    return getWeatherSourceAvailability();
   });

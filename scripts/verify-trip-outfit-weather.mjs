@@ -1,3 +1,4 @@
+import * as sourceAvailability from '../src/lib/outfit/weather-source-availability.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
@@ -86,6 +87,7 @@ let aiCalls=0;
 let selectedRows=rows;
 let selectedClimate=null, climateCalls=0, forecastCalls=0;
 const generator=load('src/lib/outfit/generate-trip-outfit.server.ts', {
+  './weather-source-availability':sourceAvailability,
   './trip-weather-policy':policy,
   './local-trip-outfit-fallback':{buildLocalTripOutfitFallback,climateOutfitCopy},
   '../weather/visual-crossing.server':{visualCrossingTripClimate:async()=>{climateCalls++;return selectedClimate;}},
