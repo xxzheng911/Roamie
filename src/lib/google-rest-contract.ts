@@ -67,6 +67,13 @@ const nearbySearch = z
     rankPreference: z.enum(["DISTANCE", "POPULARITY"]).optional(),
   })
   .strict();
+// Autocomplete Viewport permits antimeridian crossing, but not an empty viewport.
+// Keep this refinement local: other Google operation contracts are unchanged.
+const autocompleteRectangle = rectangle.refine(
+  ({ rectangle: { low, high } }) =>
+    low.latitude <= high.latitude && !(low.longitude === 180 && high.longitude === -180),
+  "empty_autocomplete_viewport",
+);
 const autocomplete = z
   .object({
     ...common,
@@ -76,7 +83,7 @@ const autocomplete = z
       .array(z.string().regex(/^(?:[a-z_]{1,80}|\(cities\)|\(regions\))$/))
       .max(5)
       .optional(),
-    locationBias: circle.optional(),
+    locationBias: z.union([circle, autocompleteRectangle]).optional(),
     locationRestriction: circle.optional(),
     sessionToken: z.string().max(100).optional(),
     includeQueryPredictions: z.boolean().optional(),

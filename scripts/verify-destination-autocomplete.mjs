@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import ts from 'typescript';
 import { z } from 'zod';
+import { googleRestRequest } from '../src/lib/google-rest-contract.ts';
+import * as googleApi from '../src/lib/google-maps-api.ts';
 import * as geography from '../src/lib/location/geographic-only.ts';
 import * as format from '../src/lib/location/format.ts';
 import * as coords from '../src/lib/ai/destination-provider-coords.ts';
@@ -14,10 +16,13 @@ const deps={
  '@/lib/location/geographic-only':geography,'@/lib/location/format':format,
  '@/lib/ai/destination-provider-coords':coords,'@/lib/i18n/places-language':language,
  '@/lib/i18n/resolve-locale':{coerceLocale:x=>x},
- '@/lib/google-maps-api':{placesAutocompleteUrl:()=>'/autocomplete',placeDetailsUrl:id=>'/details/'+id},
+ '@/lib/google-maps-api':googleApi,
  '@/lib/google-rest-transport':{googleRestFetch:async(url,init)=>{
-  requests.push({url,...init,body:init.body?JSON.parse(init.body):undefined});
-  return Response.json(url.startsWith('/details/')?details:{suggestions:predictions.shift()??[]},{status});
+  const body=init.body?JSON.parse(init.body):undefined;
+  // Real destination handler request must pass the actual proxy contract before provider mock.
+  const spec=googleRestRequest({url,method:init.method,body,fieldMask:init.headers['X-Goog-FieldMask']});
+  requests.push({url,...init,body:spec.body});
+  return Response.json(!url.includes('places:autocomplete')?details:{suggestions:predictions.shift()??[]},{status});
  }},
 };
 const exports={};
@@ -50,3 +55,38 @@ assert.match(fs.readFileSync('src/routes/_app.plan.tsx','utf8'),/fieldRole="dest
 assert.match(fs.readFileSync('src/lib/plan-form-trip-payload.ts','utf8'),/destinationLocation: form.destination/);
 assert.match(fs.readFileSync('src/lib/plan-trip-handoff.ts','utf8'),/tripDestination: form.destination/);
 console.log('PASS destination A–J fixtures; global regions first, natural fallback only on empty; no error retry; complete Details identity/geo/offset; shared Web/iOS wiring and handoff. No live Google calls.');
+
+const circle={circle:{center:{latitude:25,longitude:121},radius:50000}};
+const world={rectangle:{low:{latitude:-90,longitude:-180},high:{latitude:90,longitude:180}}};
+const validate=bias=>googleRestRequest({url:googleApi.placesAutocompleteUrl(),method:'POST',body:{input:'東京',includedPrimaryTypes:['(regions)'],locationBias:bias}});
+assert.deepEqual(validate(circle).body.locationBias,circle);
+assert.deepEqual(validate(world).body.locationBias,world);
+for(const bounds of [
+ {low:{latitude:0,longitude:170},high:{latitude:10,longitude:-170}},
+ {low:{latitude:1,longitude:1},high:{latitude:1,longitude:1}},
+]) assert.doesNotThrow(()=>validate({rectangle:bounds}));
+for(const bias of [{},{anything:true},{...circle,...world},{rectangle:{}},
+ {rectangle:{...world.rectangle,extra:1}},
+ {rectangle:{low:{latitude:0},high:world.rectangle.high}},
+ {rectangle:{low:{latitude:10,longitude:0},high:{latitude:0,longitude:1}}},
+ {rectangle:{low:{latitude:0,longitude:180},high:{latitude:1,longitude:-180}}},
+ {circle:{center:{latitude:0,longitude:0},radius:50001}},
+ {rectangle:world.rectangle,extra:true},
+]) assert.throws(()=>validate(bias));
+for(const corner of ['low','high']) for(const axis of ['latitude','longitude']) {
+ for(const value of [NaN,Infinity,-Infinity,'0',null,undefined,axis==='latitude'?91:181,axis==='latitude'?-91:-181]) {
+  const bad=structuredClone(world);bad.rectangle[corner][axis]=value;assert.throws(()=>validate(bad));
+ }
+ const bad=structuredClone(world);bad.rectangle[corner].extra=true;assert.throws(()=>validate(bad));
+}
+assert.throws(()=>googleRestRequest({url:googleApi.placesAutocompleteUrl(),method:'POST',body:{input:'東京',locationBias:world,locationRestriction:circle}}));
+// Adjacent operation contracts retain their existing restrictions.
+const req=(operation,body)=>googleRestRequest({url:'https://places.googleapis.com/v1/places:'+operation,method:'POST',body});
+assert.doesNotThrow(()=>req('searchText',{textQuery:'東京',locationBias:circle}));
+assert.doesNotThrow(()=>req('searchText',{textQuery:'東京',locationRestriction:world}));
+assert.throws(()=>req('searchText',{textQuery:'東京',locationBias:world}));
+assert.doesNotThrow(()=>req('searchNearby',{locationRestriction:circle}));
+assert.throws(()=>req('searchNearby',{locationRestriction:world}));
+assert.throws(()=>req('autocomplete',{input:'東京',locationRestriction:world}));
+assert.throws(()=>googleRestRequest({url:'https://example.com/v1/places:autocomplete',method:'POST',body:{input:'東京'}}));
+console.log('PASS contract A–F: real destination request → proxy validator, strict circle/rectangle union, malformed/range/extra-field rejection, unchanged adjacent contracts.');
