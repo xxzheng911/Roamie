@@ -15,13 +15,13 @@ async function check(code,{state,body=fixture,http=200,invalidJson=false,timeout
   count++;calls++;
   if(timeout)return new Promise(()=>{});
   if(throws)throw Error('SECRET_SENTINEL https://provider.invalid/?key=SECRET_SENTINEL');
-  return invalidJson?new Response('SECRET_SENTINEL',{status:200}):Response.json(body,{status:http});
+  return invalidJson?new Response('SECRET_SENTINEL',{status:200}):Response.json(body,{status:http,headers:{'x-secret':'HEADER_SENTINEL'}});
  },()=>now);
  const result=await guard.request(input,now+(timeout?15:12000));
- if(code){assert.equal(result,null);assert.deepEqual(logs,[['[climate_failure]',code]]);}else{assert.ok(result);assert.equal(logs.length,0);}
+ if(code){assert.equal(result,null);assert.deepEqual(logs,[code==='provider_http_error'?['[climate_failure]',code,{httpStatus:http}]:['[climate_failure]',code]]);}else{assert.ok(result);assert.equal(logs.length,0);}
  assert.equal(count,state?0:1);
  if(!state)assert.equal(store.peek().charges.reduce((s,c)=>s+c.records,0),6,'diagnostics add no reservations');
- assert.ok(!JSON.stringify(logs).includes('SECRET_SENTINEL'));assert.ok(!JSON.stringify(logs).includes('://'));
+ assert.ok(!JSON.stringify(logs).includes('SECRET_SENTINEL'));assert.ok(!JSON.stringify(logs).includes('://'));assert.ok(!JSON.stringify(logs).includes('BODY_SENTINEL'));assert.ok(!JSON.stringify(logs).includes('HEADER_SENTINEL'));
  return store;
 }
 try{
@@ -38,12 +38,14 @@ try{
  await check('incomplete_dates',{body:{...fixture,days:fixture.days.slice(1)}});
  const invalid=structuredClone(fixture);invalid.days[0].normal.tempmin=[0,99,100];
  await check('invalid_normal_values',{body:invalid});
+ for(const http of [400,401,403,429,500]) await check('provider_http_error',{http,body:{secret:'BODY_SENTINEL',url:'https://provider.invalid/?key=SECRET_SENTINEL'}});
  await check(null);
+ await check(null,{http:201});
  logs.length=0;const store=makeStore();
  const guard=new VisualCrossingGuard(store,'SECRET_SENTINEL',async()=>{calls++;return new Response('SECRET_SENTINEL',{status:503})},()=>now);
- assert.equal(await guard.request(input),null);assert.deepEqual(logs,[['[climate_failure]','provider_http_error']]);
+ assert.equal(await guard.request(input),null);assert.deepEqual(logs,[['[climate_failure]','provider_http_error',{httpStatus:503}]]);
  const before=calls;await guard.request(input);assert.equal(calls,before,'failure cache does not retry');
- assert.ok(!JSON.stringify(logs).includes('SECRET_SENTINEL'));assert.ok(!JSON.stringify(logs).includes('://'));
+ assert.ok(!JSON.stringify(logs).includes('SECRET_SENTINEL'));assert.ok(!JSON.stringify(logs).includes('://'));assert.ok(!JSON.stringify(logs).includes('BODY_SENTINEL'));assert.ok(!JSON.stringify(logs).includes('HEADER_SENTINEL'));
  // Health is read-only, independent from provider and record accounting.
  const saved=store.peek();const health=new VisualCrossingClimate({storage:{...store,sql:{exec:()=>({toArray:()=>[{ok:1}]})},put:async()=>{throw Error('health wrote ledger')}}},{VISUAL_CROSSING_API_KEY:'SECRET_SENTINEL'});
  const healthResult=await (await health.fetch(new Request('https://internal/__health'))).json();

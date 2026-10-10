@@ -5,8 +5,12 @@ export type ClimateFailure =
   | 'invalid_timezone' | 'invalid_coordinates' | 'incomplete_dates' | 'incomplete_stats'
   | 'invalid_normal_values' | 'unknown_provider_failure' | 'unexpected_query_cost'
   | 'cached_unavailable' | 'source_unavailable' | 'adapter_timeout' | 'adapter_unavailable';
-export function climateUnavailable(failure: ClimateFailure): null {
+export function climateUnavailable(failure: ClimateFailure, httpStatus?: number): null {
   // One fixed-code completion summary; no user identifiers or arbitrary strings.
-  console.warn('[climate_failure]', failure);
+  if (failure === 'provider_http_error' && typeof httpStatus === 'number' && Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599) {
+    console.warn('[climate_failure]', failure, { httpStatus });
+  } else {
+    console.warn('[climate_failure]', failure);
+  }
   return null;
 }

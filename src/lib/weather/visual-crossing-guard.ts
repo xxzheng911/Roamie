@@ -65,13 +65,14 @@ export class VisualCrossingGuard {
     let value: ClimateSummary | null = null;
     let complete = false;
     let failure: ClimateFailure = 'unknown_provider_failure';
+    let httpStatus: number | undefined;
     try {
       const url = new URL(`https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/${input.lat},${input.lng}/${input.startDate}/${input.endDate}`);
       url.search = new URLSearchParams({ key: this.key, include: "stats", unitGroup: "metric", contentType: "json" }).toString();
       const response = await Promise.race([
         (async () => {
           const r = await this.upstream(url, { signal: controller.signal, redirect: "manual" });
-          if (!r.ok) { failure = 'provider_http_error'; throw new Error('unavailable'); }
+          if (!r.ok) { failure = 'provider_http_error'; httpStatus = r.status; throw new Error('unavailable'); }
           try { return await r.json() as Record<string, unknown>; }
           catch { if (!controller.signal.aborted) failure = 'provider_invalid_json'; throw new Error('unavailable'); }
         })(),
@@ -102,6 +103,6 @@ export class VisualCrossingGuard {
     if (complete) state.leaseUntil = 0;
     state.cache[cacheKey] = { value, until: this.now() + (value ? CLIMATE_TTL_MS : CLIMATE_FAILURE_TTL_MS) };
     await this.store.put("state", state);
-    return value ?? climateUnavailable(failure);
+    return value ?? climateUnavailable(failure, httpStatus);
   }
 }
