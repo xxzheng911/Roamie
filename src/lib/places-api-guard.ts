@@ -101,6 +101,7 @@ const callStats = {
 const loggedKeys = new Set<string>();
 
 export type PlacesRequestOwner = {
+  onSkipped?: (reason: string) => void;
   requestId: string;
   surface:
     | "chat"
@@ -162,6 +163,7 @@ function logPlacesRequestOwner(
     counted?: boolean;
   },
 ): void {
+  if (state.blocked) { try { owner?.onSkipped?.(state.blockedReason ?? "guard_skipped"); } catch { /* metadata only */ } }
   pushPlacesCallLedger(owner, {
     deduped: state.deduped,
     blocked: state.blocked,

@@ -215,7 +215,8 @@ function mapRawPlaces(
 
 function parseGoogleError(text: string): string {
   try {
-    const j = JSON.parse(text) as { error?: { message?: string; status?: string } };
+    const j = JSON.parse(text) as { reason?: string; error?: { message?: string; status?: string } };
+    if (["ip_rate_limited", "user_rate_limited", "guest_rate_limited"].includes(j.reason ?? "")) return j.reason!;
     if (j.error?.message) return `${j.error.status ?? "ERROR"}: ${j.error.message}`;
   } catch {
     /* ignore */
@@ -317,6 +318,7 @@ async function postPlaces(
             : stats?.screen === "itinerary" || stats?.screen === "plan"
               ? "planner"
               : "other";
+  let guardSkipReason = "guard_skipped";
   const exploreSession = getExploreRequestSession(stats?.exploreSessionId);
   try {
     guarded = await runPlacesApiDeduped(
@@ -446,6 +448,7 @@ async function postPlaces(
         }
       },
       {
+        onSkipped: (reason) => { guardSkipReason = reason; },
         requestId: `places_${ownerRequestId}`,
         surface: ownerSurface,
         priority:
@@ -493,15 +496,19 @@ async function postPlaces(
   }
 
   if (guarded === null) {
+    const skipCode = guardSkipReason === "stale_generation" ? "stale_generation"
+      : guardSkipReason === "aborted" ? "aborted"
+      : /cooldown|rate_window|provider_protection/.test(guardSkipReason) ? "cooldown_skipped" : "guard_skipped";
+
     if (stats?.screen === "chat") {
       console.warn("[CHAT_NEARBY_ERROR]", {
-        message: "places_rate_limited",
+        message: skipCode,
         rawResponse: "",
         soft: "skip_nearby_use_existing_places",
       });
     }
     // Soft-fail: never throw — callers must degrade to existing places / skip nearby.
-    return { places: [], error: "places_rate_limited", requestId: `places_${ownerRequestId}` };
+    return { places: [], error: skipCode, requestId: `places_${ownerRequestId}` };
   }
   if (stats?.caller === "planning_selection_lane") {
     const places = guarded.places ?? [];

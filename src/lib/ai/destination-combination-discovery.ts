@@ -1,3 +1,5 @@
+import { generationDiscoverySearchScope, discoverySearchStopped, DiscoverySearchStopped } from "./discovery-search-scope";
+import { createCombinationDiscoveryTrace, type CombinationDiscoveryTrace } from "./combination-discovery-trace";
 import { isDevVerboseLog } from "@/lib/dev-verbose-log";
 /**
  * Destination-agnostic combination discovery via Places category search.
@@ -2318,6 +2320,7 @@ async function searchFallbackPlaces(params: {
   const seen = new Set<string>();
 
   for (const area of areas.slice(0, 3)) {
+    if (discoverySearchStopped(searchPlaces)) break;
     if (out.length >= 18) break;
     if (Date.now() > deadlineAt) break;
     const cooldown = await waitIfPlacesRateLimited({
@@ -2351,7 +2354,8 @@ async function searchFallbackPlaces(params: {
           seen.add(key);
           out.push(place);
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof DiscoverySearchStopped) break;
         // continue
       }
     }
@@ -2411,6 +2415,7 @@ export async function searchPlacesForThemeDirections(params: {
   let stopReason: CombinationTopUpDegradedReason | undefined;
 
   for (const direction of directions) {
+    if (discoverySearchStopped(searchPlaces)) break;
     if (existingCombinations.length + ready.length >= targetCombinationCount) break;
     if (attemptedThemeCount >= MAX_TOP_UP_THEME_ATTEMPTS) break;
     if (Date.now() > deadlineAt) break;
@@ -2513,7 +2518,8 @@ export async function searchPlacesForThemeDirections(params: {
           cumulativeUniqueCount: raw.length,
           capReachedAfterLane: raw.length >= 12,
         });
-      } catch {
+      } catch (error) {
+        if (error instanceof DiscoverySearchStopped) break;
         console.info("[PLANNING_DISCOVERY_QUERY_LANES]", {
           lane: "theme_topup",
           ...discoveryLaneDiagnosticContext("theme_topup", raw.length, false, 12),
@@ -2946,7 +2952,8 @@ async function searchAreaPlaces(params: {
         cumulativeUniqueCount: out.length,
         capReachedAfterLane: out.length >= 18,
       });
-    } catch {
+    } catch (error) {
+        if (error instanceof DiscoverySearchStopped) break;
       queryLanes.push({
         lane,
         ...discoveryLaneDiagnosticContext(lane, out.length, false),
@@ -2961,7 +2968,7 @@ async function searchAreaPlaces(params: {
   }
 
   // Nearby fallback for denser core results
-  if (Date.now() <= deadlineAt) {
+  if (!discoverySearchStopped(searchPlaces) && Date.now() <= deadlineAt) {
     try {
       const nearby = await searchPlaces({
         data: {
@@ -2997,7 +3004,8 @@ async function searchAreaPlaces(params: {
         cumulativeUniqueCount: out.length,
         capReachedAfterLane: false,
       });
-    } catch {
+    } catch (error) {
+        if (error instanceof DiscoverySearchStopped) return { places: out, queryLanes, sourceLaneByCandidateKey };
       queryLanes.push({
         lane: "nearby_attraction",
         ...discoveryLaneDiagnosticContext("nearby_attraction", out.length, false),
@@ -3030,7 +3038,8 @@ async function searchAreaPlaces(params: {
  * On sparse theme results, runs Fallback Discovery instead of hard-failing.
  * Returns null only when geocode + places + all fallback layers fail.
  */
-export async function discoverDestinationCombinations(params: {
+async function discoverDestinationCombinationsInternal(params: {
+  diagnosticTrace?: CombinationDiscoveryTrace;
   destination: string;
   searchPlaces: PlaceSearchFn;
   geocodeFn?: GeocodeDestinationFn;
@@ -3065,6 +3074,7 @@ export async function discoverDestinationCombinations(params: {
 
   const startedAt = Date.now();
   const deadlineAt = startedAt + COMBINATION_DISCOVERY_TIMEOUT_MS;
+  params.diagnosticTrace?.guard(true, "allowed", shouldSkipPlanningPlacesApi(), deadlineAt - Date.now());
   // Silent peek only — never log COMBINATION_CACHE_MISS before Destination Anchor succeeds.
   const cached = getCachedDiscoveredCombinations(label, undefined, undefined, { log: false });
   if (cached) {
@@ -3109,6 +3119,7 @@ export async function discoverDestinationCombinations(params: {
     return null;
   }
   if (waitState === "timeout" || timedOut()) {
+    params.diagnosticTrace?.guard(false, waitState === "timeout" ? "cooldown_blocked" : "deadline_exceeded", shouldSkipPlanningPlacesApi(), deadlineAt - Date.now());
     logAiPipeline(
       "[COMBINATION_DISCOVERY_STATS]",
       `destination=${label}`,
@@ -3308,7 +3319,7 @@ export async function discoverDestinationCombinations(params: {
   }
 
   for (const area of resolution.searchAreas.slice(0, 4)) {
-    if (shouldSkipPlanningPlacesApi() || timedOut()) break;
+    if (discoverySearchStopped(params.searchPlaces) || shouldSkipPlanningPlacesApi() || timedOut()) break;
     if (
       getActivePlacesGenerationRequestId() &&
       getActivePlacesGenerationRequestId() !== generationRequestId
@@ -3351,8 +3362,9 @@ export async function discoverDestinationCombinations(params: {
   }
 
   // Expand radius via secondary areas if sparse
-  if (rawPlaces.length < 12 && !timedOut()) {
+  if (rawPlaces.length < 12 && !timedOut() && !discoverySearchStopped(params.searchPlaces)) {
     for (const area of resolution.searchAreas.slice(4, 8)) {
+      if (discoverySearchStopped(params.searchPlaces)) break;
       if (timedOut()) break;
       const cooldown = await waitIfPlacesRateLimited({
         generationRequestId,
@@ -3403,6 +3415,7 @@ export async function discoverDestinationCombinations(params: {
   }
 
   let candidates = candidatesFromPlaces(label, rawPlaces, { lat, lng }, locale);
+  params.diagnosticTrace?.candidates(rawPlaces.length, new Set(rawPlaces.map(rawCandidateKey)).size, candidates.length);
   for (const candidate of candidates) {
     const sourcePlace = rawPlaces.find(
       (place) =>
@@ -3547,7 +3560,7 @@ export async function discoverDestinationCombinations(params: {
   let combinations = finalizeCombinationsFromCandidates(label, candidates, generationRequestId);
 
   // Fallback Discovery: do not hard-fail on sparse themes.
-  if (!combinations && !timedOut()) {
+  if (!combinations && !timedOut() && !discoverySearchStopped(params.searchPlaces)) {
     logAiPipeline(
       "[COMBINATION_DISCOVERY_FAILED]",
       "reason=too_few_combinations",
@@ -3557,6 +3570,7 @@ export async function discoverDestinationCombinations(params: {
     );
 
     for (const mode of FALLBACK_SEARCH_MODES) {
+      if (discoverySearchStopped(params.searchPlaces)) break;
       if (timedOut()) break;
       logAiPipeline("[COMBINATION_FALLBACK_STARTED]", `mode=${mode.mode}`);
       const fallbackPlaces = await searchFallbackPlaces({
@@ -3573,6 +3587,7 @@ export async function discoverDestinationCombinations(params: {
       });
       const mergedPlaces = [...rawPlaces, ...fallbackPlaces];
       candidates = candidatesFromPlaces(label, mergedPlaces, { lat, lng }, locale);
+      params.diagnosticTrace?.candidates(mergedPlaces.length, new Set(mergedPlaces.map(rawCandidateKey)).size, candidates.length);
       combinations = finalizeCombinationsFromCandidates(label, candidates, generationRequestId);
       if (combinations?.length) {
         logAiPipeline(
@@ -3595,7 +3610,7 @@ export async function discoverDestinationCombinations(params: {
   let topUpThemeCount = 0;
   let topUpResultCount = 0;
   let degradedReason: CombinationTopUpDegradedReason | undefined;
-  if ((!combinations || combinations.length < PREFERRED_COMBINATIONS) && !timedOut()) {
+  if ((!combinations || combinations.length < PREFERRED_COMBINATIONS) && !timedOut() && !discoverySearchStopped(params.searchPlaces)) {
     topUpAttempted = true;
     const themed = await searchPlacesForThemeDirections({
       destination: label,
@@ -3608,6 +3623,10 @@ export async function discoverDestinationCombinations(params: {
       locale,
       existingCombinations: combinations ?? [],
       targetCombinationCount: PREFERRED_COMBINATIONS,
+    }).catch((error): ThemeDirectionSearchResult => {
+      if (!(error instanceof DiscoverySearchStopped) || initialCombinationCount < MIN_COMBINATIONS) throw error;
+      // A stopped optional top-up must not discard already validated combinations.
+      return {combinations:[],attemptedThemeCount:0,stopReason:"insufficient_verified_candidates"};
     });
     topUpThemeCount = themed.attemptedThemeCount;
     if (initialCombinationCount >= MIN_COMBINATIONS) {
@@ -3801,7 +3820,8 @@ export { PRIMARY_PLACES_PER_COMBO, FALLBACK_PLACES_PER_COMBO, TARGET_PLACES_PER_
  * Ensure combinations are ready for a destination.
  * Uses curated/synthesized cache when valid; otherwise discovers via Places.
  */
-export async function ensureDestinationCombinationsReady(params: {
+async function ensureDestinationCombinationsReadyInternal(params: {
+  diagnosticTrace?: CombinationDiscoveryTrace;
   destination: string;
   searchPlaces: PlaceSearchFn;
   geocodeFn?: GeocodeDestinationFn;
@@ -3949,7 +3969,7 @@ export async function ensureDestinationCombinationsReady(params: {
     // below instead of caching a name-only option as ready.
   }
 
-  const discovered = await discoverDestinationCombinations(params);
+  const discovered = await discoverDestinationCombinationsInternal(params);
   if (discovered?.length) {
     return {
       ok: true,
@@ -3992,4 +4012,40 @@ export function logDestinationGeocodeHint(destination: string): void {
     `input=${destination}`,
     `geocodeQueries=${queries.slice(0, 4).join("|")}`,
   );
+}
+
+/** Observe the existing search boundary without adding calls or changing results. */
+export async function ensureDestinationCombinationsReady(params: Parameters<typeof ensureDestinationCombinationsReadyInternal>[0]) {
+  const trace = params.diagnosticTrace ?? createCombinationDiscoveryTrace();
+  if (!params.diagnosticTrace) trace.started(Boolean(params.destination.trim()), Boolean(getCachedDiscoveredCombinations(normalizeDestinationLabel(params.destination), undefined, undefined, {log:false,locale:params.locale})?.length));
+  const scope = generationDiscoverySearchScope(params.generationRequestId, args => trace.request(() => params.searchPlaces(args)), {deadlineAt:Date.now()+COMBINATION_DISCOVERY_TIMEOUT_MS});
+  try {
+    const result = await ensureDestinationCombinationsReadyInternal({...params, diagnosticTrace:trace,
+      searchPlaces: scope.search,
+    });
+    trace.work(scope.stats);
+    trace.finish(result.ok,result.failureReason,result.combinations.length);
+    return result;
+  } catch (error) {
+    trace.work(scope.stats);
+    if (error instanceof DiscoverySearchStopped) {
+      trace.finish(false,error.reason);
+      return {ok:false,combinations:[],source:'failed' as const,failureReason:'place_discovery_failed' as const,failureDetail:error.reason};
+    }
+    trace.finish(false,'unknown'); throw error;
+  }
+}
+
+export async function discoverDestinationCombinations(params: Parameters<typeof discoverDestinationCombinationsInternal>[0]) {
+  const trace = params.diagnosticTrace ?? createCombinationDiscoveryTrace();
+  trace.started(Boolean(params.destination.trim()),Boolean(getCachedDiscoveredCombinations(normalizeDestinationLabel(params.destination),undefined,undefined,{log:false,locale:params.locale})?.length));
+  const scope=generationDiscoverySearchScope(params.generationRequestId, args=>trace.request(()=>params.searchPlaces(args)),{deadlineAt:Date.now()+COMBINATION_DISCOVERY_TIMEOUT_MS});
+  try {
+    const result=await discoverDestinationCombinationsInternal({...params,diagnosticTrace:trace,searchPlaces:scope.search});
+    trace.work(scope.stats); trace.finish(Boolean(result?.length),lastDiscoveryFailure?.reason,result?.length??0);return result;
+  } catch(error) {
+    trace.work(scope.stats);trace.finish(false,error instanceof DiscoverySearchStopped?error.reason:'unknown');
+    if(error instanceof DiscoverySearchStopped) return setDiscoveryFailure(normalizeDestinationLabel(params.destination),'place_discovery_failed',error.reason);
+    throw error;
+  }
 }

@@ -24,6 +24,12 @@ export function resolveGoogleRuntimeEnv(
   return getWorkerScope()?.env ?? contextEnv;
 }
 
+/** Preserve status/headers; add only an allowlisted bucket classification. */
+function rateLimited(bucket: "ip_rate_limited" | "user_rate_limited" | "guest_rate_limited"): Response {
+  const response = fixedStatusResponse("rate_limited", 60);
+  return Response.json({ error: "rate_limited", reason: bucket }, {status:response.status,headers:response.headers});
+}
+
 /** Guest burst. Fails closed when the trusted IP is missing. */
 export async function consumeGuestGoogleBurst(
   env: CloudflareRuntimeEnv | undefined,
@@ -35,12 +41,12 @@ export async function consumeGuestGoogleBurst(
   if (!ip) return fixedStatusResponse("google_unavailable");
   try {
     if (!store?.ipBurstDone) {
-      if (!(await checkGoogleProviderRate(env, `google:ip:${ip}`))) return fixedStatusResponse("rate_limited", 60);
+      if (!(await checkGoogleProviderRate(env, `google:ip:${ip}`))) return rateLimited("ip_rate_limited");
       if (store) store.ipBurstDone = true;
     }
     if (!store?.guestBurstDone) {
       if (!(await checkGoogleProviderRate(env, `google:guest:${ip}`))) {
-        return fixedStatusResponse("rate_limited", 60);
+        return rateLimited("guest_rate_limited");
       }
       if (store) store.guestBurstDone = true;
     }
@@ -62,12 +68,12 @@ export async function consumeGoogleBurst(
   if (!userId || !ip) return fixedStatusResponse("google_unavailable");
   try {
     if (!store?.ipBurstDone) {
-      if (!(await checkGoogleProviderRate(env, `google:ip:${ip}`))) return fixedStatusResponse("rate_limited", 60);
+      if (!(await checkGoogleProviderRate(env, `google:ip:${ip}`))) return rateLimited("ip_rate_limited");
       if (store) store.ipBurstDone = true;
     }
     if (!store?.userBurstDone) {
       if (!(await checkGoogleProviderRate(env, `google:user:${userId}`))) {
-        return fixedStatusResponse("rate_limited", 60);
+        return rateLimited("user_rate_limited");
       }
       if (store) store.userBurstDone = true;
     }
