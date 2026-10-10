@@ -1,5 +1,5 @@
 import { canonicalWeatherTimezone } from "./weather-source-availability";
-import { buildLocalTripOutfitFallback, climateOutfitCopy } from "./local-trip-outfit-fallback";
+import { buildLocalTripOutfitFallback, climateOutfitCopy, climateCopy } from "./local-trip-outfit-fallback";
 import { tripCalendarDates, validWeatherCoords, forecastFacts, tripForecastSummary, tripWeatherMode } from "./trip-weather-policy";
 import { visualCrossingTripClimate } from "../weather/visual-crossing.server";
 import { aiObservation, observeProviderAttempt } from "@/lib/abuse-guard-telemetry.server";
@@ -59,14 +59,14 @@ const TRIP_OUTFIT_SCHEMA = {
   required: ["suggestion"],
 } as const;
 
-function buildTripOutfitSystemPrompt(locale: Locale): string {
+function buildTripOutfitSystemPrompt(locale: Locale, historical = false): string {
   return `你是 Roamie，使用者的旅行穿搭夥伴。
 
 規則：
 - 只輸出一個 JSON 物件，符合 schema
 - suggestion 控制在 2–4 句，依指定語言輸出
 - 語氣溫柔、實用、有生活感；禁止像氣象局播報或表格列點
-- 必須依【真實天氣預報】的溫度、降雨、紫外線、日夜溫差給建議
+${historical ? "- 資料為歷史同期氣候平均，並非實際天氣預報；僅依提供的代表性氣溫與行程活動給一般準備建議，不可推測降雨、紫外線或當日天氣" : "- 必須依【真實天氣預報】的溫度、降雨、紫外線、日夜溫差給建議"}
 - 缺少的欄位代表未知，不得推測或編造數值；不要在建議中重述氣溫或降雨百分比
 - 冷天要提保暖、洋蔥式穿搭；熱天要提透氣、防曬、補水；下雨要提雨具
 - 多步行要提好走的鞋；有夜間行程要提加一層
@@ -106,7 +106,7 @@ ${params.mood ? `旅行心情：${params.mood}` : ""}
 請生成整趟旅程的穿搭建議與攜帶物提醒（JSON）。`;
 }
 
-async function callTripOutfitAI(userMessage: string, locale: Locale): Promise<string> {
+async function callTripOutfitAI(userMessage: string, locale: Locale, historical = false): Promise<string> {
   await assertAiUse("outfit");
   const apiKey = getOpenAIKey();
   const finish = observeProviderAttempt(aiObservation("outfit"));
@@ -124,7 +124,7 @@ async function callTripOutfitAI(userMessage: string, locale: Locale): Promise<st
         max_tokens: 400,
         temperature: 0.75,
         messages: [
-          { role: "system", content: buildTripOutfitSystemPrompt(locale) },
+          { role: "system", content: buildTripOutfitSystemPrompt(locale, historical) },
           { role: "user", content: userMessage },
         ],
         response_format: {
@@ -188,6 +188,7 @@ function buildRuleBasedTripSuggestion(params: {
 /** 依行程資料生成整趟穿搭建議 */
 export async function generateOutfitSuggestion(
   input: GenerateOutfitSuggestionInput,
+  access: { allowAi: boolean } = { allowAi: false },
 ): Promise<GenerateOutfitSuggestionResult> {
   const locale = input.locale ?? "zh-TW";
   const outfitCopy = { generatedLocale: locale };
@@ -229,8 +230,21 @@ export async function generateOutfitSuggestion(
     const climate = await visualCrossingTripClimate({ ...weatherInput,
       timezone: canonicalWeatherTimezone(input.destinationLocation?.timezone, input.timezone),
     });
-    return climate ? {
-      ...climateOutfitCopy(locale, climate.low, climate.high), outfitCopy,
+    const climateGuidance = climate ? climateOutfitCopy(locale, climate.low, climate.high) : null;
+    if (climate && climateGuidance && access.allowAi === true) {
+      try {
+        const suggestion = await callTripOutfitAI(`目的地：${destination}
+旅行日期：${dateRangeLabel}
+【歷史同期氣候參考，非實際天氣預報】
+同期日低溫平均：${climate.low}°C；同期日高溫平均：${climate.high}°C
+交通：${transport}；夜間活動：${hasNightActivities}；多步行：${heavyOutdoorWalking}
+${input.mood ? `旅行心情：${input.mood}` : ""}
+其他天氣資訊未知，請勿推測。`, locale, true);
+        climateGuidance.outfitSuggestion = `${suggestion}\n\n${climateCopy[locale].disclaimer}`;
+      } catch { /* AI unavailable: keep reliable climate plus local rules. */ }
+    }
+    return climate && climateGuidance ? {
+      ...climateGuidance, outfitCopy,
       weatherSource: "visual-crossing-stats",
       outfitSuggestionUpdatedAt: new Date(climate.fetchedAt).toISOString(),
     } : {
@@ -269,30 +283,22 @@ export async function generateOutfitSuggestion(
 
   const weatherSummary = tripForecastSummary(locale, destination, input.startDate, input.endDate, forecast);
 
-  let outfitSuggestion: string;
-  try {
-    const userMsg = buildTripOutfitUserMessage({
-      destination,
-      dateRangeLabel,
-      forecast,
-      transport,
-      hasNightActivities,
-      heavyOutdoorWalking,
-      mood: input.mood,
-    });
-    outfitSuggestion = await callTripOutfitAI(userMsg, locale);
-  } catch (e) {
-    console.warn("[Roamie TripOutfit] AI failed, using forecast-based rules", e);
-    outfitSuggestion = locale !== "zh-TW" ? localizedOutfitCopy(locale, {
-      high: forecastFacts(forecast).high,
-      rain: forecastFacts(forecast).rain,
-      uv: Math.max(...forecast.map((f) => f.uvi ?? 0)),
-      walking: heavyOutdoorWalking, night: hasNightActivities,
-    }) : buildRuleBasedTripSuggestion({
-      forecast,
-      hasNightActivities,
-      heavyOutdoorWalking,
-    });
+  let outfitSuggestion = locale !== "zh-TW" ? localizedOutfitCopy(locale, {
+    high: forecastFacts(forecast).high,
+    rain: forecastFacts(forecast).rain,
+    uv: Math.max(...forecast.map((f) => f.uvi ?? 0)),
+    walking: heavyOutdoorWalking, night: hasNightActivities,
+  }) : buildRuleBasedTripSuggestion({ forecast, hasNightActivities, heavyOutdoorWalking });
+  if (access.allowAi === true) {
+    try {
+      const userMsg = buildTripOutfitUserMessage({
+        destination, dateRangeLabel, forecast, transport,
+        hasNightActivities, heavyOutdoorWalking, mood: input.mood,
+      });
+      outfitSuggestion = await callTripOutfitAI(userMsg, locale);
+    } catch {
+      console.warn("[Roamie TripOutfit] AI unavailable, using forecast-based rules");
+    }
   }
 
   return {
