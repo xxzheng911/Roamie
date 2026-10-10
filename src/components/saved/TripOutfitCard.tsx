@@ -52,6 +52,15 @@ export function TripOutfitCard({
 
   const dateLabel = formatTripDateRangeLabel(dateRange.start, dateRange.end);
   const unavailable = weatherSource === "unavailable";
+  const historical = weatherSource === "visual-crossing-stats";
+  // Display-only normalization also covers summaries already saved before this UI change.
+  const displaySummary = historical
+    ? weatherSummary?.replace(` · ${climateCopy[locale].meaning}`, "")
+    : weatherSummary;
+  const disclaimer = climateCopy[locale].disclaimer;
+  const displaySuggestion = historical && suggestion?.trimEnd().endsWith(disclaimer)
+    ? suggestion.trimEnd().slice(0, -disclaimer.length).trimEnd()
+    : suggestion;
   const showWeatherSummary = !isRedundantWeatherSummary(weatherSummary, weatherSource);
   const iconHint = showWeatherSummary ? weatherSummary : suggestion;
 
@@ -92,7 +101,7 @@ export function TripOutfitCard({
 
           {showWeatherSummary ? (
             <p className={cn("text-sm text-foreground/75", unavailable ? "mt-2" : "mt-3")}>
-              {weatherSummary}
+              {displaySummary}
             </p>
           ) : null}
 
@@ -104,7 +113,7 @@ export function TripOutfitCard({
                 showWeatherSummary ? "mt-3" : "mt-4",
               )}
             >
-              {suggestion}
+              {displaySuggestion}
             </p>
           ) : (
             <p className="mt-4 text-sm leading-relaxed text-muted-foreground">
@@ -112,9 +121,12 @@ export function TripOutfitCard({
             </p>
           )}
           {weatherSource === "visual-crossing-stats" ? (
-            <a className="mt-2 block text-xs text-muted-foreground underline" href="https://www.visualcrossing.com/" target="_blank" rel="noopener noreferrer">
-              {climateCopy[locale].source}
-            </a>
+            <>
+              <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{disclaimer}</p>
+              <a className="mt-4 block w-fit text-[11px] leading-relaxed text-muted-foreground underline decoration-muted-foreground/40 underline-offset-2 hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2" href="https://www.visualcrossing.com/" target="_blank" rel="noopener noreferrer">
+                {climateCopy[locale].source}
+              </a>
+            </>
           ) : null}
         </>
       )}
