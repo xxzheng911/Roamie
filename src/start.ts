@@ -1,3 +1,4 @@
+import { serverFunctionFetch } from "@/lib/server-function-transport";
 import { createStart, createMiddleware } from "@tanstack/react-start";
 
 import { logAppError } from "@/lib/log-error";
@@ -22,6 +23,7 @@ const errorMiddleware = createMiddleware().server(async ({ next }) => {
 export const startInstance = createStart(() => ({
   /** Capacitor bundled HTML 無 SSR shell，須走 client render 而非 hydrateRoot(document) */
   defaultSsr: false,
+  serverFns: { fetch: serverFunctionFetch },
   requestMiddleware: [errorMiddleware],
   functionMiddleware: [attachSupabaseAuth],
 }));

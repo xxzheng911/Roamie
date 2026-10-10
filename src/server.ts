@@ -1,3 +1,4 @@
+import { isTrustedNativeApiRequest, withNativeApiCors } from "./lib/native-api-cors";
 import "./lib/error-capture";
 import { installWorkerRequestStorage } from "./lib/worker-request-als.server";
 
@@ -18,30 +19,6 @@ type ServerEntry = {
     options: { context: RoamieServerRequestContext },
   ) => Promise<Response> | Response;
 };
-
-const NATIVE_APP_ORIGIN = "capacitor://localhost";
-
-function isTrustedNativeApiRequest(request: Request): boolean {
-  if (new URL(request.url).pathname.startsWith("/api/") === false) return false;
-  return request.headers.get("origin") === NATIVE_APP_ORIGIN;
-}
-
-function withNativeApiCors(request: Request, response: Response): Response {
-  if (!isTrustedNativeApiRequest(request)) return response;
-  const headers = new Headers(response.headers);
-  headers.set("Access-Control-Allow-Origin", NATIVE_APP_ORIGIN);
-  headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  headers.set(
-    "Access-Control-Allow-Headers",
-    "Authorization, Content-Type, X-Roamie-Request-Id, X-Roamie-Stream, X-Roamie-Cancel",
-  );
-  headers.set("Vary", "Origin");
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
-}
 
 function withSecurityHeaders(request: Request, response: Response): Response {
   const headers = new Headers(response.headers);
@@ -145,7 +122,7 @@ export default {
       );
     } catch (error) {
       logAppError("SSR_FETCH_ERROR", error);
-      return withSecurityHeaders(request, brandedErrorResponse(error));
+      return withSecurityHeaders(request, withNativeApiCors(request, brandedErrorResponse(error)));
     }
   },
 };
