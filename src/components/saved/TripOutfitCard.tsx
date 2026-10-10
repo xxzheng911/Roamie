@@ -87,7 +87,7 @@ export function TripOutfitCard({
       </div>
 
       {loading ? (
-        <div className="mt-4 flex items-start gap-2 text-sm text-muted-foreground">
+        <div role="status" aria-busy="true" className="mt-4 flex min-h-36 items-start gap-2 text-sm text-muted-foreground">
           <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-clay" />
           <p className="leading-relaxed">{uiT("productionUi.p7ec3554264")}</p>
         </div>

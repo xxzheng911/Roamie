@@ -1,3 +1,4 @@
+import { locationSearchDiagnostic } from "@/lib/location-search-diagnostic";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { Loader2, MapPin } from "lucide-react";
@@ -73,6 +74,10 @@ export function LocationSearchField({
   const committedLabelRef = useRef<string | null>(null);
   const sessionTokenRef = useRef(createPlacesSessionToken());
 
+  useEffect(() => {
+    console.warn("[LocationSearch] mounted");
+  }, []);
+
   const searchLocationFn = useServerFn(searchTripLocations);
   const resolveLocationFn = useServerFn(resolveTripLocation);
   const searchStopFn = useServerFn(searchTripStops);
@@ -101,6 +106,7 @@ export function LocationSearchField({
     async (q: string) => {
       const trimmed = q.trim();
       if (trimmed.length < 2) {
+        console.warn("[LocationSearch] autocomplete skipped short input");
         setSuggestions([]);
         setSearchError(null);
         return;
@@ -110,6 +116,7 @@ export function LocationSearchField({
       setSearching(true);
       setSearchError(null);
       try {
+        console.warn("[LocationSearch] autocomplete start");
         // Phase 1 Step B #1：Autocomplete 經 places-gateway（flag OFF=舊路徑，ON=PIE Facade→舊實作）
         const stopResult = searchMode === "geographic"
           ? await searchLocationFn({ data: { query: trimmed, locale } })
@@ -124,7 +131,13 @@ export function LocationSearchField({
           secondary: s.secondary,
         }));
 
-        if (gen !== searchGenRef.current) return;
+        if (gen !== searchGenRef.current) {
+          console.warn("[LocationSearch] autocomplete stale");
+          return;
+        }
+        console.warn(stopResult.error
+          ? "[LocationSearch] autocomplete returned error"
+          : "[LocationSearch] autocomplete success");
 
         logTripPlace(fieldRole, "autocomplete", {
           count: list.length,
@@ -141,8 +154,9 @@ export function LocationSearchField({
         }
         setSuggestions(list);
       } catch (e) {
+        console.warn("[LocationSearch] autocomplete catch");
         if (gen !== searchGenRef.current) return;
-        console.error("[LocationSearch] failed", fieldRole, e);
+        console.error("[LocationSearch] failed", fieldRole, JSON.stringify(locationSearchDiagnostic(e, "autocomplete", searchMode === "geographic" ? searchTripLocations.url : searchTripStops.url)));
         setSuggestions([]);
         setSearchError(PLACE_API_ERROR_MESSAGE);
       } finally {
@@ -157,6 +171,7 @@ export function LocationSearchField({
   useEffect(() => {
     if (!focused || composing) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
+    console.warn("[LocationSearch] debounce scheduled");
     debounceRef.current = setTimeout(() => void runSearch(query), 300);
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -243,7 +258,7 @@ export function LocationSearchField({
       logTripPlace(fieldRole, "details", tripLocationToPlaceRef(location));
       commitLocation(location);
     } catch (e) {
-      console.error("[LocationSearch] resolve failed", fieldRole, e);
+      console.error("[LocationSearch] resolve failed", fieldRole, JSON.stringify(locationSearchDiagnostic(e, "details", searchMode === "geographic" ? resolveTripLocation.url : resolveTripStop.url)));
       setSearchError(PLACE_API_ERROR_MESSAGE);
     } finally {
       setResolvingId(null);
@@ -294,6 +309,7 @@ export function LocationSearchField({
           inputMode="search"
           value={query}
           onChange={(e) => {
+            console.warn("[LocationSearch] input changed");
             const next = e.target.value;
             setQuery(next);
             onQueryChange?.(next);

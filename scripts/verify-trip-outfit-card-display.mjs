@@ -28,6 +28,9 @@ for(const [locale,[label,meaning,disclaimer,source]] of Object.entries(copies)){
  assert.ok(html.includes('text-[11px]'));assert.ok(html.includes('href="https://www.visualcrossing.com/"'));assert.ok(html.includes('rel="noopener noreferrer"'));
  const forecast=render({weatherSource:'openweather',weatherSummary:'Forecast 12–20°C · rain 30%',suggestion:'Forecast advice'});
  assert.ok(forecast.includes('Forecast 12–20°C · rain 30%'));assert.ok(forecast.includes('Forecast advice'));assert.ok(!forecast.includes(disclaimer));assert.ok(!forecast.includes('visualcrossing.com'));
+ const pending=render({loading:true,weatherSource:'unavailable',suggestion:'Seasonal fallback hidden',weatherSummary:'Old weather hidden'});
+ assert.ok(pending.includes('role="status"'));assert.ok(pending.includes('aria-busy="true"'));assert.ok(pending.includes('min-h-36'));
+ assert.ok(!pending.includes('Seasonal fallback hidden'));assert.ok(!pending.includes('Old weather hidden'));
  const fallback=render({weatherSource:'unavailable',weatherSummary:'',suggestion:'Seasonal fallback unchanged'});
  assert.ok(fallback.includes('Seasonal fallback unchanged'));assert.ok(!fallback.includes(disclaimer));assert.ok(!fallback.includes('visualcrossing.com'));
 }

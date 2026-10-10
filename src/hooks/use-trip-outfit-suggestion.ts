@@ -139,6 +139,9 @@ export function useTripOutfitSuggestion({
   }));
 
   const [loading, setLoading] = useState(false);
+  // Presentation settlement only; does not change cache authority or request admission.
+  const [settledInputKey, setSettledInputKey] = useState<string | null>(null);
+  const [availabilityFailedKey, setAvailabilityFailedKey] = useState<string | null>(null);
   const [availability, setAvailability] = useState<{ key: string; version: WeatherSourceAvailability } | null>(null);
   const checkAvailability = enabled && weatherMode === "climate" &&
     validWeatherCoords(destinationLocation?.lat, destinationLocation?.lng) &&
@@ -149,7 +152,10 @@ export function useTripOutfitSuggestion({
     let cancelled = false;
     void readWeatherSourceAvailability(() => fetchAvailability()).then(version => {
       if (!cancelled) setAvailability({ key: inputKey, version });
-    }).catch(() => { /* Capability unknown: keep cached fallback, do not retry providers. */ });
+    }).catch(() => {
+      if (!cancelled) setAvailabilityFailedKey(inputKey);
+      // Capability failed: show existing fallback; do not retry providers.
+    });
     return () => { cancelled = true; };
   }, [checkAvailability, inputKey, fetchAvailability]);
 
@@ -172,7 +178,12 @@ export function useTripOutfitSuggestion({
     weatherSummary: "", weatherSource: "unavailable",
   };
 
-  const showLoading = !localOutfit && enabled && hasDates && (loading || (pendingRegeneration && !displayFields.outfitSuggestion));
+  const successfulCache = isCached && ["openweather", "visual-crossing-stats"].includes(outfitFields.weatherSource ?? "");
+  const capabilityPending = checkAvailability && !availabilityVersion && availabilityFailedKey !== inputKey;
+  const showLoading = enabled && hasDates &&
+    validWeatherCoords(destinationLocation?.lat, destinationLocation?.lng) &&
+    !successfulCache && availabilityFailedKey !== inputKey &&
+    (capabilityPending || loading || (pendingRegeneration && settledInputKey !== inputKey));
 
   useEffect(() => {
     if (!enabled || isCached || (checkAvailability && !availabilityVersion)) return;
@@ -241,7 +252,10 @@ export function useTripOutfitSuggestion({
         );
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          setSettledInputKey(inputKey);
+        }
       });
     return () => { cancelled = true; };
   }, [

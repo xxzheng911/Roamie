@@ -1,0 +1,18 @@
+import assert from 'node:assert/strict';
+import { locationSearchDiagnostic as diagnostic } from '../src/lib/location-search-diagnostic.ts';
+const run=e=>diagnostic(e,'autocomplete','https://roamie.tw/_serverFn/abc123?token=SECRET');
+assert.equal(run(new TypeError('Load failed')).category,'fetch_network');
+assert.equal(run({status:401}).category,'auth');
+assert.equal(run({statusCode:503}).category,'http_non_2xx');
+assert.equal(run({name:'TimeoutError'}).category,'timeout');
+assert.equal(run(new SyntaxError('Unexpected token in JSON')).category,'json_parse');
+assert.equal(run({code:'invalid_google_request'}).category,'server_function');
+assert.equal(run(new Error('unrecognized')).category,'unknown');
+assert.equal(run({response:{status:429}}).httpStatus,429);
+assert.equal(run({}).endpointPathname,'/_serverFn/abc123');
+assert.equal(diagnostic({},'details','/users/private-email').endpointPathname,null);
+const unsafe={name:'SECRET',message:'https://provider/?key=SECRET raw body email@example.com',code:'SECRET',headers:{Authorization:'SECRET'},response:{body:'SECRET',headers:{cookie:'SECRET'}},stack:'SECRET'};
+const text=JSON.stringify(run(unsafe));
+for(const banned of ['SECRET','provider','example.com','Authorization','cookie','stack','raw body']) assert.ok(!text.includes(banned));
+assert.equal(run({status:NaN}).httpStatus,null);
+console.log('PASS: network/http/auth/timeout/JSON/server/unknown classifications; safe string output, pathname-only, secrets/body/header suppression. No requests.');
