@@ -1,3 +1,4 @@
+import { isResolvedDestination } from "@/lib/location/destination-authority";
 import type { Locale } from "@/lib/i18n/types";
 import type { TripLocation } from "@/lib/location/types";
 import { resolveLocalTripOutfit } from "@/lib/outfit/local-trip-outfit-fallback";
@@ -92,7 +93,8 @@ export function applyPlanTripDetails(payload: RoamiePayloadV2, input: {
   locale: Locale; destinationLocation?: TripLocation; originLocation?: TripLocation;
   travelers?: number;
 }, now = Date.now()): RoamiePayloadV2 {
-  const location = input.destinationLocation ?? payload.destinationLocation;
+  const candidate = input.destinationLocation ?? payload.destinationLocation;
+  const location = isResolvedDestination(candidate) ? candidate : undefined;
   const local = resolveLocalTripOutfit({
     locale: input.locale, destination: payload.destination ?? location?.formattedName ?? "",
     startDate: payload.tripSettings?.tripStartDate ?? "", endDate: payload.tripSettings?.tripEndDate ?? "",

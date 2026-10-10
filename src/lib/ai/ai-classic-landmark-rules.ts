@@ -1,3 +1,4 @@
+import { dailyCompleteness } from "@/lib/ai/daily-completeness";
 import type { PlaceResult } from "@/lib/place-result";
 import type { SearchAttempt } from "@/lib/ai/chat-place-recommendation";
 import type { ComposedDayPlan, DayPlanEntry, DayPlanSlot, PlanPlaceKind } from "@/lib/ai/ai-day-plan-source";
@@ -17,7 +18,7 @@ import {
 import { isRecEnginePlannerEnabled } from "@/lib/recommendation/engine/feature-flag-planner";
 
 export const CLASSIC_LANDMARK_MIN_ATTRACTIONS_PER_DAY = 2;
-export const CLASSIC_LANDMARK_MIN_ITEMS_PER_DAY = 5;
+export const CLASSIC_LANDMARK_MIN_ITEMS_PER_DAY = dailyCompleteness().minimumPlacesPerDay;
 export const CLASSIC_LANDMARK_MIN_PER_DAY = CLASSIC_LANDMARK_MIN_ATTRACTIONS_PER_DAY;
 export const CLASSIC_LANDMARK_MAX_LEG_DISTANCE_M = 30_000;
 

@@ -1,3 +1,4 @@
+import { dailyCompleteness } from "@/lib/ai/daily-completeness";
 /**
  * Planner Day Route + Capacity Assembly（P1 Step 1）
  *
@@ -422,15 +423,11 @@ export type PlannerAssemblyResult = {
 };
 
 export function minEffectivePlacesPerDay(pace?: PlannerPaceHint): number {
-  if (pace === "slow") return 2;
-  if (pace === "active") return 3;
-  return 3;
+  return dailyCompleteness(pace).routeMinimum;
 }
 
 export function maxEffectivePlacesPerDay(pace?: PlannerPaceHint): number {
-  if (pace === "slow") return 4;
-  if (pace === "active") return 8;
-  return 6;
+  return dailyCompleteness(pace).routeMaximum;
 }
 
 function hasCoords(place: PlaceResult): boolean {

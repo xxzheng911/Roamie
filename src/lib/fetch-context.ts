@@ -1,3 +1,4 @@
+import { isResolvedDestination } from "@/lib/location/destination-authority";
 import { getPreferences } from "@/lib/preferences-storage";
 import type { TravelPreferences } from "@/lib/preferences-storage";
 import type { RoamieLocation, RoamieRequestContext } from "@/lib/ai/context";
@@ -106,6 +107,7 @@ export async function buildContextBundleForTrip(
 ): Promise<ClientContextBundle> {
   const locale = resolveLocaleSync();
   const preferences = options?.preferences ?? (await getPreferences());
+  if (!isResolvedDestination(destination)) throw new Error("destination_unresolved");
   const location = tripLocationToRoamie(destination);
 
   const loadWeather = async (): Promise<WeatherSummary | null> => {

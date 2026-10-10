@@ -1,3 +1,4 @@
+import { dailyCompleteness } from "@/lib/ai/daily-completeness";
 import type { PlaceResult } from "@/lib/place-result";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { ComposedDayPlan } from "@/lib/ai/ai-day-plan-source";
@@ -147,8 +148,8 @@ export function evaluateIncompletePayloadDegradation(params: {
   days: number;
   requiredPlaceIds?: string[];
 }): PayloadDegradationDecision {
-  const requiredSlots = ["scenic", "meal"];
-  const optionalSlots = ["breakfast", "cafe", "evening", "attraction_2"];
+  const requiredSlots = dailyCompleteness().degradedRequiredSlots;
+  const optionalSlots = dailyCompleteness().degradedOptionalSlots;
   const missingRequired: string[] = [];
   const missingOptional: string[] = [];
   const globallyUsed = new Set<string>();
@@ -158,7 +159,7 @@ export function evaluateIncompletePayloadDegradation(params: {
 
   for (let day = 1; day <= params.days; day += 1) {
     const entries = byDay.get(day)?.entries ?? [];
-    if (entries.length < 3) missingRequired.push(`day${day}:minimum_stops`);
+    if (entries.length < dailyCompleteness().degradedMinimum) missingRequired.push(`day${day}:minimum_stops`);
     let scenic = 0;
     let meals = 0;
     for (const entry of entries) {

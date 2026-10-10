@@ -1,3 +1,4 @@
+import { beginTripCreation } from "@/lib/ai/generated-plan-handoff";
 import type { RoamieLocation } from "@/lib/ai/context";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import type { ClientContextBundle } from "@/lib/fetch-context";
@@ -199,7 +200,7 @@ export function preparePlanTripSession(
     logPlanningSelectionDateAuthority("selection_session", authority, sessionId);
   }
 
-  return syncSessionPlaceMemory(base);
+  return syncSessionPlaceMemory(planAiMode ? beginTripCreation(base, "plan_ai_create") : base);
 }
 
 export function markPlanHandoffComplete(session: ChatPlanningSession): ChatPlanningSession {

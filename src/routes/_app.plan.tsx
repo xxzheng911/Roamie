@@ -1,3 +1,6 @@
+import { beginTripCreation, type TripCreationAuthority } from "@/lib/ai/generated-plan-handoff";
+import { receiveTripAction, logTripAction, type TripActionDiagnostic } from "@/lib/ai/trip-action-diagnostic";
+import { planCorrelationToken } from "@/lib/ai/generated-plan-handoff-diagnostic";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -323,6 +326,7 @@ function PlanPage() {
   };
 
   const handleCreateTripDirect = async (e?: React.FormEvent) => {
+    receiveTripAction("manual_plan");
     e?.preventDefault();
     if (!requireAuthForAction("trip_create")) return;
     const resolved = await resolvePlanFormForSubmit();
@@ -366,7 +370,7 @@ function PlanPage() {
     }
   };
 
-  const startPlanChat = async (planAiMode: boolean) => {
+  const startPlanChat = async (planAiMode: boolean, actionDiagnostic?: TripActionDiagnostic, creationAuthority?: TripCreationAuthority) => {
     if (!requireAuthForAction(planAiMode ? "trip_generation" : "ai_chat")) return;
     // Selection click feedback must be the first synchronous state transition.
     if (planAiMode) setLoading(true);
@@ -508,6 +512,9 @@ function PlanPage() {
         prefs,
         { planAiMode, localeStyleOptions: styleOptions },
       );
+      if (creationAuthority) preparedSession.tripCreationAuthority = creationAuthority;
+      preparedSession.tripActionDiagnostic = actionDiagnostic;
+      logTripAction('action_bound', actionDiagnostic, preparedSession.tripCreationAuthority?.explicitCreate === true, preparedSession.tripCreationAuthority ? planCorrelationToken(preparedSession.tripCreationAuthority.generationId) : undefined);
       const session = handoffTrace
         ? { ...preparedSession, planningSelectionHandoffTrace: handoffTrace }
         : preparedSession;
@@ -554,7 +561,9 @@ function PlanPage() {
   };
 
   const handleAiAssist = async () => {
-    await startPlanChat(true);
+    const authority = beginTripCreation({}, "plan_ai_create").tripCreationAuthority;
+    const action = receiveTripAction("plan_ai_button", authority.explicitCreate);
+    await startPlanChat(true, action, authority);
   };
 
   const startPlanChatRef = useRef(startPlanChat);
@@ -564,7 +573,7 @@ function PlanPage() {
 
   usePendingAuthActionResume("trip_generation", () => {
     window.setTimeout(() => {
-      void startPlanChatRef.current(true);
+      void handleAiAssist();
     }, 0);
   });
   usePendingAuthActionResume("trip_create", (pending) => {

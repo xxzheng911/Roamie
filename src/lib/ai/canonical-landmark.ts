@@ -1,3 +1,4 @@
+import { dailyCompleteness } from "@/lib/ai/daily-completeness";
 /**
  * Canonical landmark identity — Planner 分配前去重用。
  *
@@ -282,5 +283,5 @@ export function requiredCanonicalCandidatesForTrip(
   pace?: "slow" | "medium" | "active",
 ): number {
   const safe = Math.max(1, days);
-  return pace === "slow" ? safe * 2 : safe * 3;
+  return safe * dailyCompleteness(pace).minimumPlacesPerDay;
 }

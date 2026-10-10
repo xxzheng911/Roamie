@@ -1,3 +1,4 @@
+import { logTripRuntime } from "@/lib/ai/trip-runtime-diagnostic";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { Locale } from "@/lib/i18n/types";
 import type { PlaceResult } from "@/lib/place-result";
@@ -785,10 +786,12 @@ export async function fetchItineraryPlaces(params: {
   let geocodedForProfile: typeof geocoded = geocoded;
 
   if (geocoded?.lat != null && geocoded?.lng != null) {
+    logTripRuntime("coordinates", { coordinateSource: "geocode" });
     lat = geocoded.lat;
     lng = geocoded.lng;
   } else {
     const approx = resolveDestinationApproxCenter(label);
+    logTripRuntime("coordinates", { coordinateSource: approx ? "approximate" : "fixed_fallback" });
     lat = approx?.lat ?? 24.1477;
     lng = approx?.lng ?? 120.6736;
     geocodedForProfile = {
@@ -970,6 +973,10 @@ async function mergeSessionPlacesWithFetch(params: {
   const approx = resolveDestinationApproxCenter(params.destination);
   const lat = geocoded?.lat ?? approx?.lat ?? 24.1477;
   const lng = geocoded?.lng ?? approx?.lng ?? 120.6736;
+  logTripRuntime("coordinates", { coordinateSource:
+    geocoded?.lat != null && geocoded?.lng != null ? "geocode" :
+    geocoded?.lat == null && geocoded?.lng == null && approx ? "approximate" :
+    geocoded?.lat == null && geocoded?.lng == null && !approx ? "fixed_fallback" : "unresolved" });
 
   const scopedSessionPlaces = allowlist
     ? filterPlacesByCombinationAllowlist(params.sessionPlaces, allowlist)

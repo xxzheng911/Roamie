@@ -1,3 +1,5 @@
+import { STANDARD_ITINERARY_DAY_SLOTS, type ItinerarySlotTemplate } from "@/lib/ai/daily-completeness";
+export { STANDARD_ITINERARY_DAY_SLOTS, type ItinerarySlotTemplate } from "@/lib/ai/daily-completeness";
 import type { PlaceResult } from "@/lib/place-result";
 import { normalizeGooglePlaceId } from "@/lib/ai/normalize-google-place";
 import { isHardGooglePlaceId } from "@/lib/ai/planning-place-id";
@@ -13,12 +15,6 @@ export const ALLOWED_ITINERARY_SLOT_LABELS = [
 ] as const;
 
 export type AllowedItinerarySlotLabel = (typeof ALLOWED_ITINERARY_SLOT_LABELS)[number];
-
-export type ItinerarySlotTemplate = {
-  time: string;
-  kind: string;
-  label: string;
-};
 
 const SYNTHETIC_PLACE_ID_PREFIXES = [
   "synthetic:",
@@ -39,15 +35,7 @@ export const PLANNING_PLACEHOLDER_NAME_RE =
   /在地午餐|在地晚餐|在地小吃|在地咖啡|在地早餐|推薦景點|placeholder|fallback/i;
 
 /** 標準每日 slot 模板（僅六類標題） */
-export const STANDARD_ITINERARY_DAY_SLOTS: ItinerarySlotTemplate[] = [
-  { time: "08:30", kind: "restaurant", label: "早餐" },
-  { time: "10:00", kind: "attraction", label: "景點" },
-  { time: "12:00", kind: "restaurant", label: "午餐" },
-  { time: "14:00", kind: "attraction", label: "景點" },
-  { time: "16:00", kind: "cafe", label: "咖啡" },
-  { time: "18:00", kind: "restaurant", label: "晚餐" },
-  { time: "20:00", kind: "night_market", label: "酒吧" },
-];
+
 
 /** 轉成 DayPlanSlot（供 planner / slot rules 共用） */
 export function standardItineraryDayPlanSlots(): {

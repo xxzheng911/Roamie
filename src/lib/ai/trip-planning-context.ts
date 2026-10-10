@@ -922,17 +922,9 @@ export function resolveConversationMode(
   return persisted ?? session.conversationMode ?? "general";
 }
 
-export function tripLocationFromCity(city: string): TripLocation {
-  const label = city.trim();
-  return {
-    placeId: "",
-    country: "",
-    city: label,
-    lat: 0,
-    lng: 0,
-    formattedName: label,
-    displayLabel: label,
-  };
+/** Text-only destinations remain in planning context, never pretend to have geometry. */
+export function tripLocationFromCity(_city: string): undefined {
+  return undefined;
 }
 
 export function mergeTripPlanningContext(

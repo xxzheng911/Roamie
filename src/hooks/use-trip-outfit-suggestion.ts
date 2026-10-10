@@ -1,3 +1,4 @@
+import { isResolvedDestination } from "@/lib/location/destination-authority";
 import { canonicalWeatherTimezone, readWeatherSourceAvailability, type WeatherSourceAvailability } from "@/lib/outfit/weather-source-availability";
 import { isFreshTripOutfit, tripCalendarDates, unavailableTripWeatherCopy, tripWeatherMode, validWeatherCoords } from "@/lib/outfit/trip-weather-policy";
 import { useI18n } from "@/hooks/use-i18n";
@@ -77,13 +78,14 @@ export function useTripOutfitSuggestion({
   settings,
   destination,
   fallbackDestination,
-  destinationLocation,
+  destinationLocation: suppliedDestinationLocation,
   dateRange,
   dayCount,
   moodTag,
   enabled = true,
   onGenerated,
 }: Params) {
+  const destinationLocation = isResolvedDestination(suppliedDestinationLocation) ? suppliedDestinationLocation : undefined;
   const fetchSuggestion = useServerFn(generateTripOutfitSuggestion);
   const fetchAvailability = useServerFn(getTripWeatherSourceAvailability);
   const { locale } = useI18n();
