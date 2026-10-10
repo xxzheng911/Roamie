@@ -145,6 +145,12 @@ function unavailable(code: Denial["code"]): Denial {
   return { status: 503, code };
 }
 
+/** Add diagnostic bucket only; status, retry interval and admission logic stay unchanged. */
+function googleBillingDenied(reason: "user_rate_limited" | "ip_rate_limited" | "global_budget_limited", retryAt: number): Response {
+  const response = fixedStatusResponse("rate_limited", retrySeconds(retryAt));
+  return Response.json({ error: "rate_limited", reason }, { status: response.status, headers: response.headers });
+}
+
 export async function authorizeGoogleBilling(input: {
   env?: CloudflareRuntimeEnv;
   family: GoogleBillingFamily;
@@ -178,7 +184,7 @@ export async function authorizeGoogleBilling(input: {
       const user = await chargeNamed(env, `user:${userId}`, input.operationId, googleUserBuckets(input.family));
       if (!user.ok) {
         observeGuardRejection(observation, user.reason);
-        return fixedStatusResponse("rate_limited", retrySeconds(user.retryAt));
+        return googleBillingDenied("user_rate_limited", user.retryAt);
       }
       if (input.freshAttempt && user.replay) throw new Error("guard_unavailable");
       charged.push(`user:${userId}`);
@@ -188,7 +194,7 @@ export async function authorizeGoogleBilling(input: {
       if (!ipResult.ok) {
         await rollback(env, charged, input.operationId);
         observeGuardRejection(observation, ipResult.reason);
-        return fixedStatusResponse("rate_limited", retrySeconds(ipResult.retryAt));
+        return googleBillingDenied("ip_rate_limited", ipResult.retryAt);
       }
       if (input.freshAttempt && ipResult.replay) throw new Error("guard_unavailable");
       charged.push(`ip:${ip}`);
@@ -207,7 +213,7 @@ export async function authorizeGoogleBilling(input: {
       if (!global.ok) {
         await rollback(env, charged, input.operationId);
         observeGuardRejection(observation, global.reason);
-        return fixedStatusResponse("rate_limited", retrySeconds(global.retryAt));
+        return googleBillingDenied("global_budget_limited", global.retryAt);
       }
       if (input.freshAttempt && global.replay) throw new Error("guard_unavailable");
     }

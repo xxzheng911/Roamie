@@ -1,20 +1,19 @@
+import { fixedPlacesFailureReason } from "../places-failure-reason";
+import { classifyDiscoverySearch, discoverySearchFailureReason } from "./discovery-search-scope";
 /** Hash only an opaque diagnostic generation ID; no dependency on chat/handoff state. */
 function planCorrelationToken(generationId: string): string {
   let hash = 2166136261;
   for (let i = 0; i < generationId.length; i++) hash = Math.imul(hash ^ generationId.charCodeAt(i), 16777619);
   return (hash >>> 0).toString(16).padStart(8, "0");
 }
-const reasons = ['destination_unresolved','destination_state_mismatch','cooldown_blocked','deadline_exceeded','provider_rate_limited','provider_failed','insufficient_candidates','insufficient_combinations','discovery_budget_exhausted','ip_rate_limited','user_rate_limited','guest_rate_limited','rate_limited','cooldown_skipped','stale_generation','timeout','provider_error','invalid_request','auth_error','network_error','unknown'] as const;
+const reasons = ['destination_unresolved','destination_state_mismatch','cooldown_blocked','deadline_exceeded','provider_rate_limited','provider_failed','insufficient_candidates','insufficient_combinations','discovery_budget_exhausted','ip_rate_limited','user_rate_limited','guest_rate_limited','global_budget_limited','rate_limited','cooldown_skipped','stale_generation','timeout','provider_error','invalid_request','auth_error','network_error','unknown'] as const;
 export type DiscoveryFailure = typeof reasons[number];
 export function discoveryFailure(value: unknown): DiscoveryFailure {
   const code = typeof value === 'string' ? value : '';
   if (reasons.includes(code as DiscoveryFailure)) return code as DiscoveryFailure;
   if (['destination_resolution_failed','missing_destination','blocked_country'].includes(code)) return 'destination_unresolved';
-  if (code === 'rate_limited') return 'provider_rate_limited';
-  if (code === 'cooldown_skipped' || code === 'stale_generation') return 'cooldown_blocked';
-  if (['provider_error','invalid_request','auth_error','network_error'].includes(code)) return 'provider_failed';
   if (code === 'destination_state_desync') return 'destination_state_mismatch';
-  if (code === 'places_rate_limited') return 'cooldown_blocked';
+  if (code === 'places_rate_limited') return 'rate_limited';
   if (/timeout|deadline/.test(code)) return 'deadline_exceeded';
   if (code === 'places_no_results' || code === 'place_discovery_failed' || code === 'real_places_below_minimum') return 'insufficient_candidates';
   if (code === 'too_few_combinations' || code === 'combination_candidates_insufficient') return 'insufficient_combinations';
@@ -47,9 +46,16 @@ export function createCombinationDiscoveryTrace(correlationToken?: string) {
         requests.failed++;
         const v=e as {status?:number;httpStatus?:number;error?:unknown;message?:unknown;name?:string}|null;
         const message = typeof v?.error === 'string' ? v.error : typeof v?.message === 'string' ? v.message : '';
-        if (v?.status===429 || v?.httpStatus===429 || /429|rate[_ -]?limited/i.test(message)) {requests.rateLimited++;failure='provider_rate_limited';}
+        const fixed = fixedPlacesFailureReason(e);
+        if (fixed) {
+          failure = fixed;
+          if (fixed.endsWith('rate_limited') || fixed === 'global_budget_limited') requests.rateLimited++;
+          if (fixed === 'deadline_exceeded') requests.timedOut++;
+        }
+        else if (v?.status===429 || v?.httpStatus===429 || /429|rate[_ -]?limited/i.test(message)) {requests.rateLimited++;failure=discoveryFailure(discoverySearchFailureReason(e,classifyDiscoverySearch(e,true)));}
         else if (v?.name==='TimeoutError' || /timeout|timed[_ -]?out/i.test(message)) {requests.timedOut++;failure='deadline_exceeded';}
-        else failure='provider_failed';
+        else failure='provider_error';
+        work.failFastReason = failure;
       };
       try { const result=await run(); if ((result as {error?:unknown}|null)?.error) record(result); else requests.succeeded++; return result; }
       catch(e) {record(e);throw e;}

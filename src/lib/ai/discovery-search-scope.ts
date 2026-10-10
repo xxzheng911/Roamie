@@ -1,3 +1,4 @@
+import { fixedPlacesFailureReason } from "../places-failure-reason";
 import type { PlaceSearchData, PlaceSearchFn } from './chat-place-recommendation';
 export type DiscoverySearchStatus = 'success_with_results'|'success_empty'|'rate_limited'|'cooldown_skipped'|'stale_generation'|'timeout'|'provider_error'|'invalid_request'|'auth_error'|'network_error';
 export const DISCOVERY_REQUEST_BUDGET = 12;
@@ -7,6 +8,10 @@ export class DiscoverySearchStopped extends Error {
   constructor(public readonly status: DiscoverySearchStatus, public readonly reason: string) { super(reason); this.name='DiscoverySearchStopped'; }
 }
 export function classifyDiscoverySearch(value: unknown, thrown=false): DiscoverySearchStatus {
+  const fixed = fixedPlacesFailureReason(value);
+  if (fixed === 'cooldown_skipped' || fixed === 'stale_generation' || fixed === 'provider_error') return fixed;
+  if (fixed === 'deadline_exceeded') return 'timeout';
+  if (fixed) return 'rate_limited';
   const v=value as {error?:unknown;message?:unknown;name?:string;places?:unknown[];status?:number;httpStatus?:number}|null;
   const msg=typeof v?.error==='string'?v.error:typeof v?.message==='string'?v.message:'';
   const status=v?.httpStatus??v?.status;
@@ -21,7 +26,9 @@ export function classifyDiscoverySearch(value: unknown, thrown=false): Discovery
   if (!Array.isArray(v?.places)) return 'provider_error';
   return v.places.length?'success_with_results':'success_empty';
 }
-function failureReason(value:unknown,status:DiscoverySearchStatus):string {
+export function discoverySearchFailureReason(value:unknown,status:DiscoverySearchStatus):string {
+  const fixed = fixedPlacesFailureReason(value);
+  if (fixed) return fixed;
   const v=value as {error?:unknown;message?:unknown}|null;
   const message=typeof v?.error==='string'?v.error:typeof v?.message==='string'?v.message:'';
   if(status==='timeout' && /deadline/.test(message)) return 'deadline_exceeded';
@@ -56,9 +63,9 @@ export function createDiscoverySearchScope(search:PlaceSearchFn, options:{deadli
     stats.attempted++;
     const promise=Promise.resolve().then(async()=> {
       let result:Awaited<ReturnType<PlaceSearchFn>>;
-      try {result=await search(args);} catch(error){stats.failed++;const status=classifyDiscoverySearch(error,true);if(status==='rate_limited') stats.rateLimited++;if(status==='timeout') stats.timedOut++;return stop(status,failureReason(error,status));}
+      try {result=await search(args);} catch(error){stats.failed++;const status=classifyDiscoverySearch(error,true);if(status==='rate_limited') stats.rateLimited++;if(status==='timeout') stats.timedOut++;return stop(status,discoverySearchFailureReason(error,status));}
       const status=classifyDiscoverySearch(result);
-      if(status!=='success_empty'&&status!=='success_with_results'){stats.failed++;if(status==='rate_limited') stats.rateLimited++;if(status==='timeout') stats.timedOut++;return stop(status,failureReason(result,status));}
+      if(status!=='success_empty'&&status!=='success_with_results'){stats.failed++;if(status==='rate_limited') stats.rateLimited++;if(status==='timeout') stats.timedOut++;return stop(status,discoverySearchFailureReason(result,status));}
       stats.succeeded++;return {...result,discoveryStatus:status};
     });
     cache.set(key,promise);

@@ -1,6 +1,7 @@
+import { fixedPlacesFailureReason, type PlacesFailureReason } from "@/lib/places-failure-reason";
 import type { PlaceResult } from "@/lib/place-result";
 
-export type PlacesSearchResult = { places: PlaceResult[]; error: string | null };
+export type PlacesSearchResult = { places: PlaceResult[]; error: string | null; reason?: PlacesFailureReason };
 
 /** 確保 server/client 回傳永遠有 places[]，避免 .places.length throw */
 export function normalizePlacesSearchResult(raw: unknown): PlacesSearchResult {
@@ -15,7 +16,8 @@ export function normalizePlacesSearchResult(raw: unknown): PlacesSearchResult {
           : places.length === 0 && !Array.isArray(r.places)
             ? "places_undefined"
             : null;
-    return { places, error };
+    const reason = fixedPlacesFailureReason(raw);
+    return { places, error, ...(reason ? { reason } : {}) };
   }
   return { places: [], error: "invalid_places_response" };
 }

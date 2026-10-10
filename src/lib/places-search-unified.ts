@@ -1,3 +1,4 @@
+import { fixedPlacesFailureReason } from "@/lib/places-failure-reason";
 import { CHAT_PLACES_SEARCH_TIMEOUT_MS } from "@/lib/search-timeout";
 import {
   getExploreRequestSession,
@@ -111,7 +112,7 @@ export function createUnifiedSearchPlacesFn(serverFn: SearchPlacesFn): SearchPla
         if (isPlacesRateLimited()) {
           return serverResult.places.length > 0
             ? serverResult
-            : { places: [], error: "places_rate_limited" };
+            : { places: [], error: fixedPlacesFailureReason(serverResult) ?? "cooldown_skipped" };
         }
 
         return runClientSearch(args, key, "fallback");

@@ -1,3 +1,4 @@
+import { fixedPlacesFailureReason } from "@/lib/places-failure-reason";
 import { CHAT_PLACES_SEARCH_TIMEOUT_MS, withAbortableSearchTimeout } from "@/lib/search-timeout";
 import { requireGoogleProviderRate } from "@/lib/google-rate-limit.server";
 import { googleRestFetch } from "@/lib/google-rest-transport";
@@ -216,7 +217,8 @@ function mapRawPlaces(
 function parseGoogleError(text: string): string {
   try {
     const j = JSON.parse(text) as { reason?: string; error?: { message?: string; status?: string } };
-    if (["ip_rate_limited", "user_rate_limited", "guest_rate_limited"].includes(j.reason ?? "")) return j.reason!;
+    const reason = fixedPlacesFailureReason(j);
+    if (reason) return reason;
     if (j.error?.message) return `${j.error.status ?? "ERROR"}: ${j.error.message}`;
   } catch {
     /* ignore */
