@@ -1,3 +1,10 @@
+import { logGeneratedPlanHandoff, type PlanCorrelation } from "./generated-plan-handoff-diagnostic";
+import { plannerFailureCounts } from "@/lib/ai/planner-validation-diagnostic";
+import { dailyCompleteness } from "@/lib/ai/daily-completeness";
+import { comparePlannerSnapshots, logPlannerReplacement, type PlannerCandidateSource } from "@/lib/ai/planner-best-so-far";
+import { logTripRuntime } from "@/lib/ai/trip-runtime-diagnostic";
+import { logCandidateDiagnostic } from "@/lib/ai/candidate-insufficient-diagnostic";
+import { logTripLifecycle } from "@/lib/ai/trip-lifecycle-diagnostic";
 import type { Locale } from "@/lib/i18n/types";
 import type { PlaceResult } from "@/lib/place-result";
 import type { WeatherSummary } from "@/lib/weather-types";
@@ -129,6 +136,7 @@ import {
   validateGeneratedDays,
   isItineraryRenderable,
   preferBetterComposedPlans,
+  isPlannerResultBetter,
   shouldFreezePlannerResult,
   logAiRenderBlockedIncompleteDay,
   computeDayPlanPlaceNeed,
@@ -376,6 +384,7 @@ export function rankPlacesForTripPlanning(params: {
   const normalized = normalizePlanningPlaces(filterRealPlanningPlaces(retailFiltered), {
     logSummary: !params.skipNormalizeLog,
   });
+  logTripRuntime("eligibility", { afterEligibility: normalized.length });
   logAiResolvedPlacesCount(normalized.length);
 
   const requiredCanonical = requiredCanonicalCandidatesForTrip(
@@ -472,19 +481,13 @@ export function rankPlacesForTripPlanning(params: {
   });
   const validationSummary = getLastRecommendationValidationSummary();
   if (isRecEngineValidatorEnabled() && validationSummary.recommendationInsufficient) {
-    logAiPipeline(
-      "[CANDIDATE_INSUFFICIENT_RESULT]",
-      "candidateInsufficient=true",
-      "recommendationInsufficient=true",
-      `requiredCount=${validationSummary.requiredCount}`,
-      `availableCount=${validationSummary.availableCount}`,
-      `missingCount=${validationSummary.missingCount}`,
-      `failedRules=${Object.keys(validationSummary.failedRuleCounts).join("|") || "none"}`,
-      `affectedKinds=${validationSummary.affectedKinds.join("|") || "none"}`,
-      `affectedClusters=${validationSummary.affectedClusters.length}`,
-      "replanReasons=recommendation_validator_insufficient",
-      "sourceFunction=rankPlacesForTripPlanning",
-    );
+    logCandidateDiagnostic("CANDIDATE_INSUFFICIENT_RESULT", {
+      requiredCount: validationSummary.requiredCount,
+      availableCount: validationSummary.availableCount,
+      affectedDaysCount: params.days,
+      dayCounts: Array.from({ length: params.days }, () => 0),
+      pace, candidateInsufficientFromEarlyState: true,
+    });
     logPlannerResult(params.days, 0, false);
     return {
       ranked: [],
@@ -535,6 +538,7 @@ export function rankPlacesForTripPlanning(params: {
     );
   });
 
+  logTripRuntime("assembly", { beforeAssembly: ranked.length, afterCanonicalDedupe: canonicalCount });
   let composedPlans: ComposedDayPlan[];
   try {
     composedPlans = buildComposedDayPlans({
@@ -562,8 +566,9 @@ export function rankPlacesForTripPlanning(params: {
     });
   }
 
+  logTripRuntime("assembly", { afterAssembly: plannerTotalPlaces(composedPlans) });
   const dayCounts = composedPlans.map((p) => p.entries.length);
-  const minPerDay = minEffectivePlacesPerDay(pace);
+  const minPerDay = dailyCompleteness(pace).minimumPlacesPerDay;
   const singletonDays = composedPlans.filter(
     (p) => p.entries.length === 1 && p.entries.length < minPerDay,
   );
@@ -582,16 +587,11 @@ export function rankPlacesForTripPlanning(params: {
     `candidateInsufficient=${candidateInsufficient}`,
   );
   if (candidateInsufficient) {
-    logAiPipeline(
-      "[CANDIDATE_INSUFFICIENT_RESULT]",
-      "candidateInsufficient=true",
-      `requiredCount=${requiredCanonical}`,
-      `availableCount=${canonicalCount}`,
-      `missingCount=${Math.max(0, requiredCanonical - canonicalCount)}`,
-      `affectedDays=[${affectedDays.join(",")}]`,
-      "replanReasons=insufficient_candidates",
-      "sourceFunction=rankPlacesForTripPlanning",
-    );
+    logCandidateDiagnostic("CANDIDATE_INSUFFICIENT_RESULT", {
+      requiredCount: requiredCanonical, availableCount: canonicalCount,
+      affectedDaysCount: affectedDays.length, dayCounts, pace,
+      candidateInsufficientFromEarlyState: candidateInsufficient,
+    });
   }
 
   const buckets = composedDayPlansToBuckets(composedPlans);
@@ -1800,19 +1800,61 @@ export async function resolveTripPlanningDayPlans(params: {
     });
   }
 
-  let result = rankPlacesForTripPlanning({ ...params, places, planningSessionId: params.planningSessionId });
-  let validation = validateComposedDayPlans(
-    result.composedPlans,
-    params.days,
-    minItemsPerDayForTrip(params.days),
-  );
-  let itineraryValidation = validateItinerary(
-    result.composedPlans,
-    classifyPlanPlaceKind,
-    params.style,
-    params.context.startDate,
-    params.days,
-  );
+  type RankedResult = ReturnType<typeof rankPlacesForTripPlanning>;
+  // Clone the whole graph together: validators mutate plan completeness, and repair
+  // must never mutate the retained plan/pool snapshot through shared references.
+  const snapshot = (candidate: RankedResult, pool: PlaceResult[], minimum: number) => {
+    const owned = structuredClone({ result: candidate, places: pool });
+    const plans = owned.result.composedPlans;
+    const validation = validateComposedDayPlans(plans, params.days, minimum);
+    const itineraryValidation = validateItinerary(plans, classifyPlanPlaceKind, params.style, params.context.startDate, params.days);
+    const classicValidation = params.style === "classic_landmarks"
+      ? validateClassicLandmarkItinerary(plans, classifyPlanPlaceKind)
+      : { ok: true, reasons: [] as string[], failedDays: [] as number[] };
+    const affected = new Set([...validation.missingDays, ...validation.sparseDays, ...validation.overflowDays,
+      ...classicValidation.failedDays, ...itineraryValidation.failedDays]);
+    return {
+      ...owned, validation, itineraryValidation, classicValidation,
+      validationDiagnostics: {
+        validateComposedDayPlans: plannerFailureCounts([
+          ...validation.missingDays.map(() => "missing_day"),
+          ...validation.sparseDays.map(() => "sparse_day"),
+          ...validation.overflowDays.map(() => "overflow_day"),
+        ]),
+        validateClassicLandmarkItinerary: plannerFailureCounts(classicValidation.reasons),
+        validateItinerary: plannerFailureCounts(itineraryValidation.reasons),
+        ...itineraryValidation.diagnostics,
+      },
+      valid: validation.ok && itineraryValidation.ok && classicValidation.ok,
+      renderable: isItineraryRenderable(plans, params.days, params.style, params.context.startDate),
+      totalCount: plannerTotalPlaces(plans), perDayCounts: plans.map(plan => plan.entries.length),
+      completeDays: plans.filter(plan => plan.entries.length >= minItemsPerDayForTrip(params.days)).length,
+      canonicalCount: countUniqueCanonicalLandmarks(flattenComposedDayPlanPlaces(plans)),
+      affectedDays: affected.size,
+      reasons: [...validation.missingDays.map(() => "missing_day"),
+        ...validation.sparseDays.map(() => "sparse_day"),
+        ...validation.overflowDays.map(() => "overflow_day"),
+        ...classicValidation.reasons, ...itineraryValidation.reasons],
+    };
+  };
+  let best = snapshot(rankPlacesForTripPlanning({ ...params, places, planningSessionId: params.planningSessionId }), places, minItemsPerDayForTrip(params.days));
+  let { result, validation, itineraryValidation, classicValidation } = structuredClone(best);
+  places = structuredClone(best.places);
+  logPlannerReplacement("initial", best, best, { replaced: false, reason: "initial_snapshot" }, best.reasons, best.reasons);
+  const consider = (source: PlannerCandidateSource, candidate: RankedResult, pool: PlaceResult[], minimum: number) => {
+    const next = snapshot(candidate, pool, minimum);
+    const decision = comparePlannerSnapshots(best, next, (a, b) =>
+      isPlannerResultBetter(a.result.composedPlans, b.result.composedPlans, params.days, params.style));
+    logPlannerReplacement(source, best, next, decision, best.reasons, next.reasons);
+    if (decision.replaced) best = next;
+    // Always restore a working copy, so subsequent repair cannot corrupt best.
+    const working = structuredClone(best);
+    result = working.result;
+    places = working.places;
+    validation = working.validation;
+    itineraryValidation = working.itineraryValidation;
+    classicValidation = working.classicValidation;
+  };
   if (!validation.ok || !itineraryValidation.ok) {
     const refilled = refillMissingDaySlots({
       plans: result.composedPlans,
@@ -1821,32 +1863,13 @@ export async function resolveTripPlanningDayPlans(params: {
       style: params.style,
       plannedDate: params.context.startDate,
     });
-    result = {
-      ...result,
-      composedPlans: enforceStandardDaySlotPlans(
-        ensureAllDayPlansExist(refilled, params.days),
-        params.days,
-      ),
-      ranked: flattenComposedDayPlanPlaces(refilled),
-      buckets: composedDayPlansToBuckets(refilled),
-    };
-    validation = validateComposedDayPlans(
-      result.composedPlans,
-      params.days,
-      minItemsPerDayForTrip(params.days),
-    );
-    itineraryValidation = validateItinerary(
-      result.composedPlans,
-      classifyPlanPlaceKind,
-      params.style,
-      params.context.startDate,
-      params.days,
-    );
+    const refillPlans = enforceStandardDaySlotPlans(ensureAllDayPlansExist(refilled, params.days), params.days);
+    consider("refill", {
+      ...result, composedPlans: refillPlans,
+      ranked: flattenComposedDayPlanPlaces(refillPlans),
+      buckets: composedDayPlansToBuckets(refillPlans),
+    }, places, minItemsPerDayForTrip(params.days));
   }
-  let classicValidation =
-    params.style === "classic_landmarks"
-      ? validateClassicLandmarkItinerary(result.composedPlans, classifyPlanPlaceKind)
-      : { ok: true, reasons: [] as string[], failedDays: [] as number[] };
 
   for (let retry = 0; (!validation.ok || !classicValidation.ok || !itineraryValidation.ok) && retry < 5; retry += 1) {
     console.info(
@@ -1930,29 +1953,13 @@ export async function resolveTripPlanningDayPlans(params: {
         places = dedupePlaces([...places, ...batch]);
       }
     }
-    result = rankPlacesForTripPlanning({ ...params, places, skipNormalizeLog: true });
-    validation = validateComposedDayPlans(
-      result.composedPlans,
-      params.days,
-      minItemsPerDayForStyle(params.style),
-    );
-    itineraryValidation = validateItinerary(
-      result.composedPlans,
-      classifyPlanPlaceKind,
-      params.style,
-      params.context.startDate,
-      params.days,
-    );
-    classicValidation =
-      params.style === "classic_landmarks"
-        ? validateClassicLandmarkItinerary(result.composedPlans, classifyPlanPlaceKind)
-        : { ok: true, reasons: [], failedDays: [] };
+    consider("retry", rankPlacesForTripPlanning({ ...params, places, skipNormalizeLog: true }), places, minItemsPerDayForStyle(params.style));
   }
 
   if (!validation.ok || !classicValidation.ok || !itineraryValidation.ok) {
     logAiDayPlanRebuild();
     if (params.style === "classic_landmarks") {
-      places = await fetchClassicLandmarkPlacesForTrip({
+      const rebuiltPlaces = await fetchClassicLandmarkPlacesForTrip({
         label: params.label,
         lat: params.lat,
         lng: params.lng,
@@ -1967,17 +1974,8 @@ export async function resolveTripPlanningDayPlans(params: {
         searchContext: params.searchContext,
         searchDestinationPlaces: params.searchDestinationPlaces,
       });
-      result = rankPlacesForTripPlanning({ ...params, places, skipNormalizeLog: true });
-      validation = validateComposedDayPlans(
-        result.composedPlans,
-        params.days,
-        minItemsPerDayForStyle(params.style),
-      );
-      classicValidation = validateClassicLandmarkItinerary(
-        result.composedPlans,
-        classifyPlanPlaceKind,
-      );
-      if (validation.ok && classicValidation.ok) {
+      consider("classic_rebuild", rankPlacesForTripPlanning({ ...params, places: rebuiltPlaces, skipNormalizeLog: true }), rebuiltPlaces, minItemsPerDayForStyle(params.style));
+      if (validation.ok && classicValidation.ok && itineraryValidation.ok) {
         return { ...result, places, slowTravel };
       }
     }
@@ -1998,29 +1996,11 @@ export async function resolveTripPlanningDayPlans(params: {
             plannedDate: params.context.startDate,
             nearbyExtensions: params.context.nearbyExtensions,
           });
-    const slowValidation = validateComposedDayPlans(
-      fallbackPlans,
-      params.days,
-      minItemsPerDayForStyle(params.style),
-    );
-    logAiDayPlanFinalValidate(
-      params.days,
-      slowValidation.ok,
-      minItemsPerDayForStyle(params.style),
-      slowValidation.sparseDays,
-    );
-
-    if (fallbackPlans.some((plan) => plan.entries.length > 0)) {
-      slowTravel =
-        params.style === "slow_nature" || params.profile?.pace === "slow";
-      return {
-        ranked: flattenComposedDayPlanPlaces(fallbackPlans),
-        buckets: composedDayPlansToBuckets(fallbackPlans),
-        composedPlans: fallbackPlans,
-        places,
-        slowTravel,
-      };
-    }
+    consider("fallback", {
+      ranked: flattenComposedDayPlanPlaces(fallbackPlans),
+      buckets: composedDayPlansToBuckets(fallbackPlans),
+      composedPlans: fallbackPlans,
+    }, places, minItemsPerDayForStyle(params.style));
   }
 
   logAiDayPlanFinalValidate(
@@ -2214,6 +2194,7 @@ async function resolveStylePlanningPlaceFallback(params: {
 }
 
 export async function generateTripPlanFromStyle(input: {
+  diagnostic?: PlanCorrelation;
   label: string;
   lat: number;
   lng: number;
@@ -2254,6 +2235,7 @@ export async function generateTripPlanFromStyle(input: {
     caller,
   } = params;
 
+  logGeneratedPlanHandoff("planner_start", { ...input.diagnostic, sourceStage: "planner", hasDayPlan: false, dayPlanCount: 0 });
   logAiStylePlanGenerateStart(label, style, days, planningSessionId);
   if (!beginPlannerSession(planningSessionId)) {
     const frozen = getFrozenPlanningDayPlan(planningSessionId);
@@ -2285,6 +2267,7 @@ export async function generateTripPlanFromStyle(input: {
     searchDestinationPlaces,
     sessionId: planningSessionId,
   });
+  logTripRuntime("discovery", { discoveryInitial: places.length, afterGeographicFilter: null });
   let searchCount = places.length;
   logAiStylePlacesResult(places.length, "primary_search");
 
@@ -3052,7 +3035,7 @@ export async function generateTripPlanFromStyle(input: {
   );
   const finalDayCounts = composedPlans.map((p) => p.entries.length);
   const affectedDaysFinal = composedPlans
-    .filter((p) => p.entries.length < minEffectivePlacesPerDay(paceHint))
+    .filter((p) => p.entries.length < dailyCompleteness(paceHint).minimumPlacesPerDay)
     .map((p) => p.day);
   let candidateInsufficientResult: CandidateInsufficientResult | undefined =
     planningResult.candidateInsufficient ??
@@ -3106,16 +3089,20 @@ export async function generateTripPlanFromStyle(input: {
   }
 
   if (candidateInsufficientResult) {
-    logAiPipeline(
-      "[CANDIDATE_INSUFFICIENT_BLOCK_SAVE]",
-      `requiredCount=${candidateInsufficientResult.requiredCount}`,
-      `availableCount=${candidateInsufficientResult.availableCount}`,
-      `missingCount=${candidateInsufficientResult.missingCount}`,
-      `affectedDays=[${candidateInsufficientResult.affectedDays.join(",")}]`,
-      `dayCounts=${finalDayCounts.join(",")}`,
-      "action=do_not_freeze_incomplete_itinerary",
-      "sourceFunction=generateTripPlanFromStyle",
-    );
+    logCandidateDiagnostic("CANDIDATE_INSUFFICIENT_BLOCK_SAVE", {
+      requiredCount: candidateInsufficientResult.requiredCount,
+      availableCount: candidateInsufficientResult.availableCount,
+      affectedDaysCount: candidateInsufficientResult.affectedDays.length,
+      dayCounts: finalDayCounts, pace: paceHint,
+      finalRenderable, gracefulDegradationAllowed,
+      candidateInsufficientFromEarlyState: Boolean(planningResult.candidateInsufficient),
+      candidateInsufficientRecomputedFinal:
+        availableCanonicalFinal < requiredCanonicalFinal || affectedDaysFinal.length > 0,
+      finalRequiredCount: requiredCanonicalFinal,
+      finalAvailableCount: availableCanonicalFinal,
+      finalAffectedDaysCount: affectedDaysFinal.length,
+      minimumPlacesPerDay: dailyCompleteness(paceHint).minimumPlacesPerDay,
+    });
   }
 
   let dayPlan: AiDayPlan | undefined;
@@ -3302,6 +3289,16 @@ export async function generateTripPlanFromStyle(input: {
     }
   }
 
+  logTripRuntime("final", {
+    finalAvailable: countUniqueCanonicalLandmarks(flattenComposedDayPlanPlaces(composedPlans)),
+    finalRenderable: Boolean(dayPlan?.items.length),
+    failureCode: dayPlan?.items.length ? "none" : candidateInsufficientResult ? "candidate_insufficient" : "planner_not_renderable",
+  });
+  logGeneratedPlanHandoff("final_planner_gate", { ...input.diagnostic, sourceStage: "planner", hasDayPlan: Boolean(dayPlan?.items.length), dayPlanCount: dayPlan?.items.length ?? 0, renderable: Boolean(dayPlan?.items.length) });
+  logTripLifecycle("final_planner_gate", { correlationToken: input.diagnostic?.correlationToken, renderable: Boolean(dayPlan?.items.length), count: dayPlan?.items.length ?? 0 });
+  if (!dayPlan?.items.length) logTripLifecycle("aborted", {
+    failureCode: candidateInsufficientResult ? "candidate_insufficient" : "planner_not_renderable",
+  });
   return {
     places: planningResult.places,
     rankedPlaces: planningResult.ranked,

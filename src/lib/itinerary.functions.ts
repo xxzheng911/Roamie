@@ -1,3 +1,4 @@
+import { isResolvedDestination } from "@/lib/location/destination-authority";
 import { inGenerationPhase, setGenerationPhase, generationSettlement, generationSettlementResponse, creditSettlementException, captureGenerationException, emitGenerationDiagnostic } from "@/lib/itinerary-diagnostics.server";
 import { integrityRuleCodes, sanitizeIntegrityFailureTelemetry } from "@/lib/analytics/itinerary-integrity-failure-telemetry";
 import { PlaceReviewEvidenceSchema } from "@/lib/place-review-evidence";
@@ -349,6 +350,11 @@ export const InputSchema = z.object({
   excludedPlaces: z.array(PlaceSchema).max(100).optional().default([]),
   preferences: z.record(z.unknown()).optional(),
   location: z.object({ lat: z.number(), lng: z.number(), city: z.string().optional() }).optional(),
+  destinationLocation: z.object({
+    placeId: z.string(), country: z.string(), city: z.string(), region: z.string().optional(),
+    lat: z.number(), lng: z.number(), formattedName: z.string(), displayLabel: z.string(),
+    timezone: z.string().optional(), utcOffsetMinutes: z.number().nullable().optional(),
+  }).optional(),
   weather: z.record(z.unknown()).nullable().optional(),
   time: z.string().optional(),
   /** 穿搭風格（文青、韓系、極簡等），來自個人檔案 */
@@ -594,7 +600,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
       });
       timingLastAt = now;
     };
-    const [{ callRoamieAI }, { buildTransitLegsForItinerary }, { openWeatherGetForecast }] =
+    const [{ callRoamieAI }, { buildTransitLegsForItinerary }, { openWeatherGetTripForecast }] =
       await Promise.all([
         import("@/lib/ai/service.server"),
         import("@/lib/transit/build-legs.server"),
@@ -2304,15 +2310,20 @@ export const generateItinerary = createServerFn({ method: "POST" })
       .join(" ");
     logAiPipeline("[DAILY_ALLOCATION_STATS]", dayStats);
 
-    const lat = data.location?.lat;
-    const lng = data.location?.lng;
+    const verifiedDestination = isResolvedDestination(data.destinationLocation) ? data.destinationLocation : undefined;
+    const lat = verifiedDestination?.lat;
+    const lng = verifiedDestination?.lng;
 
     setGenerationPhase("outfit");
     let outfitAdvice: RoamiePayloadV2["outfitAdvice"];
     if (data.placeAuthority !== "selected_only" && lat != null && lng != null) {
       try {
-        const forecast = await openWeatherGetForecast(lat, lng, data.days);
-        outfitAdvice = await buildOutfitAdviceForTrip({
+        const forecast = await openWeatherGetTripForecast({
+          destination: data.destination, lat, lng,
+          startDate: data.startDate, endDate: data.endDate,
+          timezone: verifiedDestination?.timezone, utcOffsetMinutes: verifiedDestination?.utcOffsetMinutes,
+        });
+        if (forecast.length) outfitAdvice = await buildOutfitAdviceForTrip({
           locale: data.locale,
           destination: data.destination,
           startDate,
@@ -2434,6 +2445,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
       days: data.days,
       generatedAt: new Date().toISOString(),
       outfitAdvice,
+      destinationLocation: verifiedDestination,
       tripSettings,
       itinerary: itineraryItems,
     };

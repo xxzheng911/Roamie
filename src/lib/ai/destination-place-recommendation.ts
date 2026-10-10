@@ -1,3 +1,5 @@
+import { bindTripCreationAuthority, type TripCreationAuthority } from "./generated-plan-handoff";
+import { logGeneratedPlanHandoff, type PlanCorrelation } from "./generated-plan-handoff-diagnostic";
 import { unwrapWeatherResult } from "@/lib/ai/unwrap-weather-result";
 import type { Locale } from "@/lib/i18n/types";
 import { isPlaceOperationalForRecommendation } from "@/lib/place-operational-eligibility";
@@ -882,7 +884,20 @@ export async function buildAlternativeDestinationRecommendations(params: {
   }
 }
 
-export async function buildDestinationMustVisitRecommendation(params: {
+export async function buildDestinationMustVisitRecommendation(
+  params: Parameters<typeof buildDestinationMustVisitRecommendationResult>[0],
+) {
+  const authority = params.creationAuthority ?? params.session?.tripCreationAuthority;
+  const generationId = params.generationId ?? authority?.generationId ?? "";
+  const tripCreationAuthority = bindTripCreationAuthority(authority, generationId);
+  const result = await buildDestinationMustVisitRecommendationResult(params);
+  return { ...result, tripCreationAuthority, generationId };
+}
+
+async function buildDestinationMustVisitRecommendationResult(params: {
+  creationAuthority?: TripCreationAuthority;
+  generationId?: string;
+  diagnostic?: PlanCorrelation;
   destination: string;
   userText: string;
   context: CanonicalTravelContext;
@@ -1075,6 +1090,7 @@ export async function buildDestinationMustVisitRecommendation(params: {
         })();
 
       const stylePlan = await generateTripPlanFromStyle({
+        diagnostic: params.diagnostic,
         label,
         lat,
         lng,
@@ -1101,6 +1117,7 @@ export async function buildDestinationMustVisitRecommendation(params: {
         geocodeFn,
         fetchPlaceDetailsFn,
       }).catch((error) => {
+        logGeneratedPlanHandoff("result_cleared", { ...params.diagnostic, sourceStage: "recommendation_wrapper", reason: "planner_exception", hasDayPlan: false, dayPlanCount: 0 });
         logAiPipeline(
           "[AI_TRIP_PLAN_ERROR]",
           error instanceof Error ? error.message : String(error),
@@ -1124,6 +1141,7 @@ export async function buildDestinationMustVisitRecommendation(params: {
 
       let recommendations = stylePlan.recommendations;
       let dayPlan = stylePlan.dayPlan;
+      logGeneratedPlanHandoff("result_received", { ...params.diagnostic, sourceStage: "recommendation_wrapper", hasDayPlan: Boolean(dayPlan?.items.length), dayPlanCount: dayPlan?.items.length ?? 0 });
       const dayBuckets = stylePlan.dayBuckets;
       let composedPlans = stylePlan.composedPlans;
       const slowTravel = stylePlan.slowTravel ?? false;
@@ -1134,6 +1152,7 @@ export async function buildDestinationMustVisitRecommendation(params: {
         const frozen = getFrozenPlanningDayPlan(sessionId);
         if (frozen?.items.length) {
           dayPlan = frozen;
+          logGeneratedPlanHandoff("frozen_restored", { ...params.diagnostic, sourceStage: "recommendation_wrapper", hasDayPlan: true, dayPlanCount: dayPlan.items.length });
           recommendations = dayPlanToRecommendations(frozen);
         }
       }
@@ -1194,6 +1213,7 @@ export async function buildDestinationMustVisitRecommendation(params: {
         stylePlan.itineraryValidation.path === "validator" &&
         !stylePlan.itineraryValidation.pass
       ) {
+        logGeneratedPlanHandoff("result_cleared", { ...params.diagnostic, sourceStage: "recommendation_wrapper", reason: "validator_failed", hasDayPlan: Boolean(dayPlan?.items.length), dayPlanCount: dayPlan?.items.length ?? 0 });
         dayPlan = undefined;
         recommendations = [];
         itineraryRenderable = false;
@@ -1236,6 +1256,7 @@ export async function buildDestinationMustVisitRecommendation(params: {
           safeChatLog(logChatRenderBlocked, `planner_days_mismatch:${plannerDayCount}/${days}`);
         }
       } else if (stylePlan.candidateInsufficient || plannerTotalPlaces(composedPlans) > 0) {
+        logGeneratedPlanHandoff("result_cleared", { ...params.diagnostic, sourceStage: "recommendation_wrapper", reason: "candidateInsufficient" in stylePlan && stylePlan.candidateInsufficient ? "insufficient_candidates" : "itinerary_plan_incomplete", hasDayPlan: Boolean(dayPlan?.items.length), dayPlanCount: dayPlan?.items.length ?? 0 });
         // P1 Step 1: 候選不足或不可 render → 不得保留 partial 假完成行程／單點日
         dayPlan = undefined;
         recommendations = [];
@@ -1256,6 +1277,7 @@ export async function buildDestinationMustVisitRecommendation(params: {
           );
         }
       } else {
+        logGeneratedPlanHandoff("result_cleared", { ...params.diagnostic, sourceStage: "recommendation_wrapper", reason: "no_valid_geocoded_places", hasDayPlan: Boolean(dayPlan?.items.length), dayPlanCount: dayPlan?.items.length ?? 0 });
         dayPlan = undefined;
         recommendations = [];
         safeChatLog(
@@ -1273,6 +1295,7 @@ export async function buildDestinationMustVisitRecommendation(params: {
         );
       }
 
+      logGeneratedPlanHandoff("result_returned", { ...params.diagnostic, sourceStage: "recommendation_wrapper", hasDayPlan: Boolean(dayPlan?.items.length), dayPlanCount: dayPlan?.items.length ?? 0 });
       return {
         summary,
         recommendations,

@@ -1,3 +1,4 @@
+import { dailyCompleteness } from "@/lib/ai/daily-completeness";
 import type { PlaceResult } from "@/lib/place-result";
 import type { RoamieItineraryItem, RoamieRecommendationItem } from "@/lib/ai/types";
 import { normalizeItineraryItem, normalizeRecommendationItem } from "@/lib/ai/types";
@@ -272,15 +273,15 @@ export const TRIP_STYLE_COMPOSITION: Record<
 };
 
 export const STYLE_ITEMS_PER_DAY: Record<TripStyleKey, { min: number; max: number }> = {
-  classic_landmarks: { min: 7, max: 8 },
-  local_life: { min: 7, max: 8 },
-  slow_nature: { min: 7, max: 8 },
-  mixed: { min: 7, max: 8 },
+  classic_landmarks: { min: dailyCompleteness().minimumPlacesPerDay, max: dailyCompleteness().maximumPlacesPerDay },
+  local_life: { min: dailyCompleteness().minimumPlacesPerDay, max: dailyCompleteness().maximumPlacesPerDay },
+  slow_nature: { min: dailyCompleteness().minimumPlacesPerDay, max: dailyCompleteness().maximumPlacesPerDay },
+  mixed: { min: dailyCompleteness().minimumPlacesPerDay, max: dailyCompleteness().maximumPlacesPerDay },
 };
 
 /** 依總天數決定每日最低行程點：完整日程 7 項（3 天以上） */
 export function minItemsPerDayForTrip(days: number): number {
-  return Math.max(1, days) >= 3 ? 7 : 5;
+  return dailyCompleteness().minimumPlacesPerDay;
 }
 
 export function logAiDayCountValidate(
@@ -408,7 +409,7 @@ export function validateGeneratedDays(
     reasons.push(`day_count_mismatch:${normalized.length}!=${requestedDays}`);
   }
 
-  const maxPerDay = minItemsPerDayForTrip(requestedDays);
+  const maxPerDay = dailyCompleteness().maximumPlacesPerDay;
 
   for (const plan of normalized) {
     const count = plan.entries.length;
@@ -565,7 +566,7 @@ export function isPlannerResultBetter(
 /** 保留較完整的 Planner 結果，避免 rebuild / 空結果覆蓋較好的行程 */
 function maybeTrimOverflowDayPlans(plans: ComposedDayPlan[], requestedDays: number): ComposedDayPlan[] {
   const normalized = ensureAllDayPlansExist(plans, requestedDays);
-  const maxPerDay = minItemsPerDayForTrip(requestedDays);
+  const maxPerDay = dailyCompleteness().maximumPlacesPerDay;
   if (!normalized.some((plan) => plan.entries.length > maxPerDay)) {
     return normalized;
   }
@@ -793,7 +794,7 @@ const STANDARD_DAY_SLOTS: DayPlanSlot[] = STANDARD_ITINERARY_DAY_SLOTS.map((slot
   label: slot.label,
 }));
 
-export const EXPECTED_SLOTS_PER_DAY = 7;
+export const EXPECTED_SLOTS_PER_DAY = dailyCompleteness().slotCount;
 
 export function expectedItineraryItemCount(days: number): number {
   return Math.max(1, days) * minItemsPerDayForTrip(days);
@@ -1248,6 +1249,7 @@ export type DayPlanValidation = {
   ok: boolean;
   missingDays: number[];
   sparseDays: number[];
+  overflowDays: number[];
 };
 
 export function minItemsPerDayForStyle(style: TripStyleKey, days?: number): number {
@@ -1268,6 +1270,7 @@ export function validateComposedDayPlans(
   const normalized = ensureAllDayPlansExist(plans, safeDays);
   const missingDays: number[] = [];
   const sparseDays: number[] = [];
+  const overflowDays: number[] = [];
 
   for (let day = 1; day <= safeDays; day += 1) {
     const plan = normalized.find((p) => p.day === day);
@@ -1275,13 +1278,15 @@ export function validateComposedDayPlans(
       missingDays.push(day);
       continue;
     }
-    if (plan.entries.length < minPerDay) {
+    if (plan.entries.length < dailyCompleteness().minimumPlacesPerDay) {
       sparseDays.push(day);
     }
+    if (plan.entries.length > dailyCompleteness().maximumPlacesPerDay) overflowDays.push(day);
   }
 
   return {
-    ok: missingDays.length === 0 && sparseDays.length === 0,
+    overflowDays,
+    ok: missingDays.length === 0 && sparseDays.length === 0 && overflowDays.length === 0,
     missingDays,
     sparseDays,
   };

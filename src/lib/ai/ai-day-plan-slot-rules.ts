@@ -1,3 +1,5 @@
+import { plannerFailureCounts } from "@/lib/ai/planner-validation-diagnostic";
+import { dailyCompleteness } from "@/lib/ai/daily-completeness";
 import type { PlaceResult } from "@/lib/place-result";
 import { distanceMeters } from "@/lib/map-explore";
 import type { TripStyleKey } from "@/lib/ai/ai-trip-style";
@@ -313,7 +315,7 @@ function ensurePlansForValidation(plans: ComposedDayPlan[], days: number): Compo
 }
 
 function minEntriesPerDayForTripDays(totalDays: number): number {
-  return Math.max(1, totalDays) >= 3 ? 7 : 5;
+  return dailyCompleteness().minimumPlacesPerDay;
 }
 
 export function isLowValuePlanningPlace(place: PlaceResult): boolean {
@@ -375,7 +377,7 @@ function supplementDayPlanEntries(params: {
     plannedDate,
   } = params;
   const minPerDay = minEntriesPerDayForTripDays(totalDays);
-  const maxPerDay = minPerDay;
+  const maxPerDay = dailyCompleteness().maximumPlacesPerDay;
   const result = [...entries];
   const diversityLimits = resolveDailyDiversityLimits({ style });
   const acceptsDiversity = (place: PlaceResult): boolean => {
@@ -1010,9 +1012,10 @@ export function validateDayPlanSlots(
       }
     }
 
-    if (plan.entries.length > 0 && plan.entries.length < minEntriesPerDayForTripDays(3)) {
+    if (plan.entries.length > 0 && plan.entries.length < dailyCompleteness().minimumPlacesPerDay) {
       reasons.push(`too_few_items:day${plan.day}`);
     }
+    if (plan.entries.length > dailyCompleteness().maximumPlacesPerDay) reasons.push(`overflow_day:${plan.day}`);
     if (scenicCount < 1 && plan.entries.length > 0) {
       reasons.push(`no_scenic:day${plan.day}`);
     }
@@ -1347,6 +1350,7 @@ export function repairDayPlanSlots(
 }
 
 export type ItineraryValidation = {
+  diagnostics?: Record<string, Record<string, number>>;
   ok: boolean;
   reasons: string[];
   failedDays: number[];
@@ -1550,10 +1554,12 @@ export function validatePlaceOpenAtTime(
   place: PlaceResult,
   date: string | undefined,
   plannedTime: string,
+  diagnostic?: (code: string) => void,
 ): boolean {
   const name = place.name ?? "";
   if (place.businessStatus === "CLOSED_PERMANENTLY") {
     logAiOpenHoursDrop(name, plannedTime, "permanently_closed");
+    diagnostic?.("opening_hours_known_closed");
     return false;
   }
 
@@ -1564,6 +1570,7 @@ export function validatePlaceOpenAtTime(
     (place.normalizedOpeningStatus === "closed" || place.openStatus === "closed_now")
   ) {
     logAiOpenHoursDrop(name, plannedTime, "closed_now");
+    diagnostic?.("opening_hours_known_closed");
     return false;
   }
 
@@ -1571,15 +1578,18 @@ export function validatePlaceOpenAtTime(
   const hours = placeHoursDataFromPlace(place);
   const hasHours = hasOpeningHoursData(place);
   const scheduled = hasHours ? isOpenAtScheduled(hours, at, plannedTime) : null;
+  if (scheduled === null) diagnostic?.("opening_hours_unknown_hours");
 
   if (scheduled === false) {
     // Tier A: known hours and closed at slot — reject meal/bar; scenic may still pass conservative rules.
     if (requiresOpeningHours(place) || isBarBistroPlace(place)) {
       logAiOpenHoursDrop(name, plannedTime, "not_open_at_scheduled");
+      diagnostic?.("opening_hours_known_closed");
       return false;
     }
     if (isMuseumCulturePlace(place) || isNightMarketPlace(place)) {
       logAiOpenHoursDrop(name, plannedTime, "not_open_at_scheduled");
+      diagnostic?.("opening_hours_known_closed");
       return false;
     }
     // Parks / landmarks with hours showing closed: still allow conservative morning/afternoon slots.
@@ -1593,6 +1603,7 @@ export function validatePlaceOpenAtTime(
   if (fromLabel === false) {
     if (requiresOpeningHours(place) || isBarBistroPlace(place)) {
       logAiOpenHoursDrop(name, plannedTime, "hours_label_closed");
+      diagnostic?.("opening_hours_time_window_conflict");
       return false;
     }
   }
@@ -1613,23 +1624,28 @@ export function validatePlaceOpenAtTime(
   checkAt.setHours(Math.floor(minutes / 60), minutes % 60, 0, 0);
   if (isTimePeriodMismatch(name, place.primaryType ?? undefined, checkAt)) {
     logAiOpenHoursDrop(name, plannedTime, "time_period_mismatch");
+    diagnostic?.("opening_hours_heuristic_mismatch");
     return false;
   }
   if (isNightMarketPlace(place) && minutes < 18 * 60) {
     logAiOpenHoursDrop(name, plannedTime, "night_market_too_early");
+    diagnostic?.("opening_hours_heuristic_mismatch");
     return false;
   }
   if (isBarBistroPlace(place) && minutes < 11 * 60) {
     logAiOpenHoursDrop(name, plannedTime, "bar_too_early");
+    diagnostic?.("opening_hours_heuristic_mismatch");
     return false;
   }
   if (isMuseumCulturePlace(place) && minutes >= 19 * 60) {
     logAiOpenHoursDrop(name, plannedTime, "museum_too_late");
+    diagnostic?.("opening_hours_heuristic_mismatch");
     return false;
   }
   if (BREAKFAST_SLOT_RE.test(plannedTime) || minutes < 10 * 60) {
     if (/僅供午餐|午餐開始|11:00|11點/.test(place.todayHoursLabel ?? "")) {
       logAiOpenHoursDrop(name, plannedTime, "lunch_only");
+      diagnostic?.("opening_hours_time_window_conflict");
       return false;
     }
   }
@@ -1757,7 +1773,7 @@ export function validateCompleteItinerary(
   }
 
   const minPerDay = minEntriesPerDayForTripDays(requestedDays);
-  const maxPerDay = minPerDay;
+  const maxPerDay = dailyCompleteness().maximumPlacesPerDay;
   for (const plan of normalized) {
     if (plan.entries.length < minPerDay) {
       reasons.push(`incomplete_day:${plan.day}:${plan.entries.length}<${minPerDay}`);
@@ -1880,6 +1896,7 @@ export function validateOpenHours(
   plannedDate?: string,
 ): ItineraryValidation {
   const reasons: string[] = [];
+  const hourDiagnostics: string[] = [];
   const failedDays = new Set<number>();
 
   for (const plan of plans) {
@@ -1887,14 +1904,14 @@ export function validateOpenHours(
       ? addDaysToIsoDate(plannedDate, plan.day - 1)
       : undefined;
     for (const entry of plan.entries) {
-      if (!validatePlaceOpenAtTime(entry.place, dayDate, entry.time)) {
+      if (!validatePlaceOpenAtTime(entry.place, dayDate, entry.time, code => hourDiagnostics.push(code))) {
         reasons.push(`closed_at_time:${entry.name}@${entry.time}`);
         failedDays.add(plan.day);
       }
     }
   }
 
-  return { ok: reasons.length === 0, reasons, failedDays: [...failedDays] };
+  return { ok: reasons.length === 0, reasons, failedDays: [...failedDays], diagnostics: { validateOpenHours: plannerFailureCounts(hourDiagnostics) } };
 }
 
 function addDaysToIsoDate(isoDate: string, days: number): string {
@@ -1941,6 +1958,7 @@ export function validateItinerary(
 
   const slot = validateDayPlanSlots(plans, classifyKind);
   if (!slot.ok) reasons.push(...slot.reasons);
+  const diagnostics: Record<string, Record<string, number>> = { validateDayPlanSlots: plannerFailureCounts(slot.reasons) };
 
   for (const check of [
     validateItineraryOrder,
@@ -1951,6 +1969,7 @@ export function validateItinerary(
     (p: ComposedDayPlan[]) => validateNoExcludedRetailPlaces(p, style),
   ]) {
     const result = check(plans);
+    if (result.diagnostics) Object.assign(diagnostics, result.diagnostics);
     if (!result.ok) {
       reasons.push(...result.reasons);
       result.failedDays.forEach((day) => failedDays.add(day));
@@ -1967,7 +1986,7 @@ export function validateItinerary(
     }
   }
 
-  const validation = { ok: reasons.length === 0, reasons, failedDays: [...failedDays] };
+  const validation = { ok: reasons.length === 0, reasons, failedDays: [...failedDays], diagnostics };
   logAiDayPlanValidate(validation.ok, validation.reasons);
   logAiItineraryValidation(validation.ok, validation.reasons);
   return validation;

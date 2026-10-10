@@ -255,6 +255,9 @@ export type ChatPlanningSession = GeneratedLocaleContract & {
   startTime?: string;
   endTime?: string;
   phase: ChatPhase;
+  /** Explicit create action carried unchanged through this generation. */
+  tripActionDiagnostic?: import("@/lib/ai/trip-action-diagnostic").TripActionDiagnostic;
+  tripCreationAuthority?: import("@/lib/ai/generated-plan-handoff").TripCreationAuthority;
   /** Canonical AI travel context (merged each turn) */
   travelContext?: CanonicalTravelContext;
   /** Clarifying keys already asked — avoid repeat questions */
