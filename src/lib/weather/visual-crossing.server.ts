@@ -1,3 +1,4 @@
+import { climateUnavailable } from "./climate-diagnostics";
 import { CLIMATE_AVAILABLE, CLIMATE_UNAVAILABLE, canonicalWeatherTimezone } from "../outfit/weather-source-availability";
 import { getWorkerScope } from "../worker-request-scope";
 import { validClimateInput, type ClimateInput, type ClimateSummary } from "./visual-crossing-contract";
@@ -15,10 +16,10 @@ export function getWeatherSourceAvailability() {
 export async function visualCrossingTripClimate(input: ClimateInput): Promise<ClimateSummary | null> {
   const timezone = canonicalWeatherTimezone(input.timezone);
   input = { ...input, timezone };
-  if (!validClimateInput(input)) return null;
+  if (!validClimateInput(input)) return climateUnavailable('source_unavailable');
   const env = getWorkerScope()?.env;
   // Never read process.env/.env or use a direct-fetch escape hatch in application code.
-  if (getWeatherSourceAvailability() !== CLIMATE_AVAILABLE) return null;
+  if (getWeatherSourceAvailability() !== CLIMATE_AVAILABLE) return climateUnavailable('source_unavailable');
   const namespace = env!.VISUAL_CROSSING_CLIMATE as ClimateNamespace;
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -29,10 +30,10 @@ export async function visualCrossingTripClimate(input: ClimateInput): Promise<Cl
         const response = await namespace.get(namespace.idFromName("global-v1")).fetch(new Request("https://climate.internal/query", {
           method: "POST", body: JSON.stringify({ input, deadline }), signal: controller.signal,
         }));
-        return response.ok ? await response.json() as ClimateSummary | null : null;
+        return response.ok ? await response.json() as ClimateSummary | null : climateUnavailable('adapter_unavailable');
       })(),
-      new Promise<null>(resolve => { timer = setTimeout(() => { controller.abort(); resolve(null); }, VC_DEADLINE_MS); }),
+      new Promise<null>(resolve => { timer = setTimeout(() => { controller.abort(); resolve(climateUnavailable('adapter_timeout')); }, VC_DEADLINE_MS); }),
     ]);
-  } catch { return null; }
+  } catch { return climateUnavailable('adapter_unavailable'); }
   finally { clearTimeout(timer); controller.abort(); }
 }

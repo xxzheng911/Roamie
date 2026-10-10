@@ -11,7 +11,12 @@ if(args.length!==3 || args[0]!=='--remote' || args[1]!=='--expected-active' || !
 }
 const root=resolve(import.meta.dirname,'..');
 Object.assign(process.env,{CLOUDFLARE_ACCOUNT_ID:'cb1835ce26e88097148685b0b1569bc3',CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV:'false',WRANGLER_LOG:'error'});
-let platform,temp;
+let platform,temp,stage='preflight';
+const deadline=async(label,work,ms=15000)=>{
+ stage=label;let timer;
+ try{return await Promise.race([Promise.resolve().then(work),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('diagnostic_timeout')),ms);})]);}
+ finally{clearTimeout(timer);}
+};
 const read=args=>{
  const r=spawnSync(resolve(root,'node_modules/.bin/wrangler'),[...args,'--config',resolve(root,'dist/server/wrangler.json'),'--json'],{encoding:'utf8',env:{...process.env,WRANGLER_LOG:'log'},timeout:30000});
  if(r.status!==0)throw Error('preflight_failed');return JSON.parse(r.stdout);
@@ -21,9 +26,11 @@ try {
  assert.deepEqual(active.versions,[{version_id:args[2],percentage:100}]);
  const version=read(['versions','view',args[2]]);const resources=version.resources;
  const bindings=new Map(resources.bindings.map(b=>[b.name,b]));
- for(const [name,value] of Object.entries({VISUAL_CROSSING_ENABLED:'false',ABUSE_GUARD_ENFORCEMENT:'true',GOOGLE_GLOBAL_DAILY_UNITS:'100000'})) {
+ for(const [name,value] of Object.entries({ABUSE_GUARD_ENFORCEMENT:'true',GOOGLE_GLOBAL_DAILY_UNITS:'100000'})) {
   assert.equal(bindings.get(name)?.type,'plain_text');assert.equal(bindings.get(name)?.text,value);
  }
+ assert.equal(bindings.get('VISUAL_CROSSING_ENABLED')?.type,'plain_text');
+ assert.ok(['true','false'].includes(bindings.get('VISUAL_CROSSING_ENABLED')?.text));
  assert.equal(resources.script_runtime.migration_tag,'v2-visual-crossing-climate');
  assert.equal(bindings.get('VISUAL_CROSSING_CLIMATE')?.class_name,'VisualCrossingClimate');
  assert.equal(bindings.get('VISUAL_CROSSING_CLIMATE')?.type,'durable_object_namespace');
@@ -32,15 +39,19 @@ try {
  temp=mkdtempSync(join(tmpdir(),'roamie-health-probe-'));
  const configPath=join(temp,'wrangler.json');
  writeFileSync(configPath,JSON.stringify({name:'roamie-climate-health-probe',account_id:process.env.CLOUDFLARE_ACCOUNT_ID,compatibility_date:'2025-09-24',workers_dev:false,preview_urls:false,services:[{binding:'CLIMATE_HEALTH',service:'roamie',entrypoint:'ClimateHealth',remote:true}]}));
- const {getPlatformProxy}=await import('wrangler');
- platform=await getPlatformProxy({configPath,envFiles:[],persist:false,remoteBindings:true});
+ const {getPlatformProxy}=await deadline('wrangler_import',()=>import('wrangler'));
+ platform=await deadline('remote_binding_init',()=>getPlatformProxy({configPath,envFiles:[],persist:false,remoteBindings:true}));
  // Cloudflare-authorized remote SERVICE binding; the deployed named entrypoint owns the DO binding.
- const response=await platform.env.CLIMATE_HEALTH.fetch('https://climate-health.internal/__health',{method:'GET'});
+ const response=await deadline('health_fetch',()=>platform.env.CLIMATE_HEALTH.fetch('https://climate-health.internal/__health',{method:'GET'}));
  assert.equal(response.status,200);
- const data=await response.json();
+ const data=await deadline('health_parse',()=>response.json());
  assert.equal(data.kind,'visual-crossing-health-v1');assert.equal(data.sqlite,'readable');
  assert.equal(data.limit,900);assert.equal(data.windowHours,24);
  assert.ok(data.budget==='uninitialized' ? data.usedRecords===null : data.budget==='readable' && Number.isSafeInteger(data.usedRecords) && data.usedRecords>=0 && typeof data.blocked==='boolean');
- console.log(JSON.stringify({status:'PASS',kind:data.kind,sqlite:data.sqlite,budget:data.budget,usedRecords:data.usedRecords,limit:data.limit,windowHours:data.windowHours,blocked:data.budget==='readable'?data.blocked:undefined}));
-} catch {console.error('FAIL: climate health/preflight unavailable; keep feature OFF. Raw errors suppressed.');process.exitCode=1;}
-finally {try {await platform?.dispose();} catch {console.error('Health proxy cleanup failed; raw error suppressed.');process.exitCode=1;} finally {if(temp)rmSync(temp,{recursive:true,force:true});}}
+ console.log(JSON.stringify({status:'PASS',kind:data.kind,sqlite:data.sqlite,budget:data.budget,usedRecords:data.usedRecords,limit:data.limit,windowHours:data.windowHours,blocked:data.budget==='readable'?data.blocked:undefined,exhausted:data.budget==='readable'?data.usedRecords>=data.limit:false,guardVersion:data.guardVersion==='visual-crossing-guard-v1'?data.guardVersion:null}));
+} catch {console.error('FAIL: climate health diagnostic stage='+stage+'; raw errors suppressed; no production settings changed.');process.exitCode=1;}
+finally {try {await deadline('cleanup',()=>platform?.dispose(),5000);} catch {console.error('Health proxy cleanup failed; raw error suppressed.');process.exitCode=1;} finally {if(temp)rmSync(temp,{recursive:true,force:true});}}
+
+// Wrangler may retain background handles after a timed-out initialization/cleanup.
+// Exit a failed operator invocation instead of leaving its remote session hanging.
+if(process.exitCode) setTimeout(()=>process.exit(process.exitCode),100).unref();

@@ -64,20 +64,24 @@ try {
 // Operator tool: mock Cloudflare metadata and remote SERVICE binding, never create a remote session.
 const {default:vm}=await import('node:vm');
 const {resolve,join}=await import('node:path');
-const probeSource=readFileSync('scripts/check-climate-health.mjs','utf8').replace(/^#!.*\n/,'').replace(/^import .*;$/gm,'').replaceAll('import.meta.dirname','"/repo/scripts"').replace("await import('wrangler')",'({getPlatformProxy:mockPlatformProxy})');
+const probeSource=readFileSync('scripts/check-climate-health.mjs','utf8').replace(/^#!.*\n/,'').replace(/^import .*;$/gm,'').replaceAll('import.meta.dirname','"/repo/scripts"').replace("import('wrangler')",'Promise.resolve({getPlatformProxy:mockPlatformProxy})');
 const id='c26d2177-1c32-4dc9-b32b-f104725c8f81';
-async function probe({flag='false',data={kind:'visual-crossing-health-v1',sqlite:'readable',budget:'uninitialized',usedRecords:null,limit:900,windowHours:24},transportError=false}={}) {
+async function probe({flag='false',data={kind:'visual-crossing-health-v1',sqlite:'readable',budget:'uninitialized',usedRecords:null,limit:900,windowHours:24},transportError=false,hang}={}) {
  const logs=[];let calls=0,disposed=0,probeConfig;
- const process={argv:['node','probe','--remote','--expected-active',id],env:{},exitCode:0};
- await vm.runInNewContext(`(async()=>{${probeSource}})()`,{
-  process,assert,resolve,join,tmpdir:()=>'/tmp',mkdtempSync:()=>'/tmp/probe-fixture',writeFileSync:(_p,text)=>{probeConfig=JSON.parse(text);},rmSync:()=>{},
+ const process={argv:['node','probe','--remote','--expected-active',id],env:{},exitCode:0,exit(code){this.exitCode=code;}};
+ await vm.runInNewContext(`(async()=>{${probeSource.replace('ms=15000','ms=5').replace("platform?.dispose(),5000","platform?.dispose(),5")}})()`,{
+  process,assert,resolve,join,setTimeout,clearTimeout,tmpdir:()=>'/tmp',mkdtempSync:()=>'/tmp/probe-fixture',writeFileSync:(_p,text)=>{probeConfig=JSON.parse(text);},rmSync:()=>{},
   console:{log:x=>logs.push(x),error:x=>logs.push(x)},
   spawnSync:(_bin,args,options)=>({status:0,stdout:options.env.WRANGLER_LOG==='error'?'':JSON.stringify(args[0]==='deployments'?[{created_on:'today',versions:[{version_id:id,percentage:100}]}]:{resources:{script_runtime:{migration_tag:'v2-visual-crossing-climate'},script:{named_handlers:[{name:'ClimateHealth'}]},bindings:[{name:'VISUAL_CROSSING_ENABLED',type:'plain_text',text:flag},{name:'ABUSE_GUARD_ENFORCEMENT',type:'plain_text',text:'true'},{name:'GOOGLE_GLOBAL_DAILY_UNITS',type:'plain_text',text:'100000'},{name:'VISUAL_CROSSING_CLIMATE',type:'durable_object_namespace',class_name:'VisualCrossingClimate',namespace_id:'fixture'}]}})}),
-  mockPlatformProxy:async options=>{assert.equal(options.remoteBindings,true);assert.equal(options.envFiles.length,0);return {env:{CLIMATE_HEALTH:{fetch:async(url,init)=>{calls++;assert.equal(url,'https://climate-health.internal/__health');assert.equal(init.method,'GET');if(transportError)throw Error('SENSITIVE_SECRET');return Response.json(data);}}},dispose:async()=>{disposed++;}};},
+  mockPlatformProxy:async options=>{if(hang==='init')return new Promise(()=>{});assert.equal(options.remoteBindings,true);assert.equal(options.envFiles.length,0);return {env:{CLIMATE_HEALTH:{fetch:async(url,init)=>{calls++;if(hang==='fetch')return new Promise(()=>{});assert.equal(url,'https://climate-health.internal/__health');assert.equal(init.method,'GET');if(transportError)throw Error('SENSITIVE_SECRET');return hang==='parse'?{status:200,json:()=>new Promise(()=>{})}:Response.json(data);}}},dispose:async()=>{disposed++;if(hang==='cleanup')return new Promise(()=>{});}};},
  });
  return {logs,calls,disposed,probeConfig,code:process.exitCode};
 }
 let p=await probe();assert.equal(p.code,0);assert.equal(p.calls,1);assert.equal(p.disposed,1);assert.deepEqual(p.probeConfig.services,[{binding:'CLIMATE_HEALTH',service:'roamie',entrypoint:'ClimateHealth',remote:true}]);
-p=await probe({flag:'true'});assert.equal(p.code,1);assert.equal(p.calls,0);
+p=await probe({flag:'true'});assert.equal(p.code,0);assert.equal(p.calls,1);
+for(const flag of [undefined,'invalid','']){p=await probe({flag:flag??'missing'});assert.equal(p.code,1);assert.equal(p.calls,0);}
 for(const options of [{transportError:true},{data:{kind:'visual-crossing-health-v1',sqlite:'readable',budget:'readable',usedRecords:{secret:'SENSITIVE_SECRET'},limit:900,windowHours:24,blocked:false}}]){p=await probe(options);assert.equal(p.code,1);assert.equal(p.disposed,1);assert.ok(!p.logs.join().includes('SENSITIVE_SECRET'));}
-console.log('PASS operator probe: post-migration/active/OFF gates, remote service entrypoint only, fixed GET, sanitized errors, cleanup; all remote calls mocked.');
+console.log('PASS operator probe: post-migration/active/boolean flag gates, remote service entrypoint only, fixed GET, sanitized errors, cleanup; all remote calls mocked.');
+
+for(const hang of ['init','fetch','parse','cleanup']){p=await probe({hang});assert.equal(p.code,1);assert.ok(!p.logs.join().includes('SECRET'));}
+console.log('PASS operator phase timeouts: init/fetch/parse/cleanup settle without provider calls.');

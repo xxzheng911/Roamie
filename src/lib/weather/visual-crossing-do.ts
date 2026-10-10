@@ -1,4 +1,4 @@
-import { VisualCrossingGuard, type ClimateStorage, VC_DEADLINE_MS, VC_RECORD_LIMIT } from "./visual-crossing-guard";
+import { VisualCrossingGuard, type ClimateStorage, VC_DEADLINE_MS, VC_RECORD_LIMIT, VC_GUARD_VERSION } from "./visual-crossing-guard";
 import type { ClimateInput } from "./visual-crossing-contract";
 
 type HealthStorage = ClimateStorage & { sql?: { exec(query: string): { toArray(): unknown[] } } };
@@ -20,7 +20,7 @@ export class VisualCrossingClimate {
       const rows = this.storage.sql?.exec("SELECT 1 AS ok").toArray();
       if (!rows || (rows[0] as { ok?: number } | undefined)?.ok !== 1) throw new Error("sqlite_unavailable");
       const state = await this.storage.get<Record<string, unknown>>("state");
-      const base = { kind: "visual-crossing-health-v1", sqlite: "readable", limit: VC_RECORD_LIMIT, windowHours: 24 };
+      const base = { kind: "visual-crossing-health-v1", sqlite: "readable", limit: VC_RECORD_LIMIT, windowHours: 24, guardVersion: VC_GUARD_VERSION };
       if (state === undefined) return Response.json({ ...base, budget: "uninitialized", usedRecords: null });
       if (!state || !Array.isArray(state.charges) || !finiteNonnegative(state.leaseUntil) ||
         typeof state.blocked !== "boolean" || !state.cache || typeof state.cache !== "object" || Array.isArray(state.cache) ||

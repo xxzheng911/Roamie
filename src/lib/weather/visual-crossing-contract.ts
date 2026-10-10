@@ -1,3 +1,4 @@
+import type { ClimateFailure } from "./climate-diagnostics";
 import { canonicalWeatherTimezone } from "../outfit/weather-source-availability";
 import { destinationDate, tripCalendarDates, validWeatherCoords } from "../outfit/trip-weather-policy";
 
@@ -26,17 +27,22 @@ export function climateCacheKey(input: ClimateInput): string {
 
 // The real Tokyo probe (2026-11-25..30) confirmed normal[element] = [min, mean, max].
 // Read ONLY the mean. Never treat historical extremes or statistical rain as a forecast.
-export function parseClimateStats(raw: unknown, input: ClimateInput, now = Date.now()): ClimateSummary | null {
-  if (!validClimateInput(input) || !raw || typeof raw !== "object") return null;
+type ClimateValidation = { value: ClimateSummary; failure?: never } | { value: null; failure: ClimateFailure };
+export function validateClimateStats(raw: unknown, input: ClimateInput, now = Date.now()): ClimateValidation {
+  if (!input || !validWeatherCoords(input.lat, input.lng)) return { value: null, failure: 'invalid_coordinates' };
+  if (!validClimateInput(input)) return { value: null, failure: 'incomplete_dates' };
+  if (!raw || typeof raw !== "object") return { value: null, failure: 'incomplete_stats' };
   const data = raw as Record<string, unknown>;
   const dates = tripCalendarDates(input.startDate, input.endDate);
   const timezone = typeof data.timezone === "string" ? canonicalWeatherTimezone(data.timezone) : undefined;
   const callerTimezone = canonicalWeatherTimezone(input.timezone);
   if (!validWeatherCoords(data.latitude, data.longitude) ||
-    Math.abs((data.latitude as number) - input.lat) > 0.01 || Math.abs((data.longitude as number) - input.lng) > 0.01 ||
-    !timezone || !destinationDate(now, timezone) ||
-    (callerTimezone && callerTimezone !== timezone) ||
-    !Array.isArray(data.days) || data.days.length !== dates.length) return null;
+    Math.abs((data.latitude as number) - input.lat) > 0.01 || Math.abs((data.longitude as number) - input.lng) > 0.01)
+    return { value: null, failure: 'invalid_coordinates' };
+  if (!timezone || !destinationDate(now, timezone) || (callerTimezone && callerTimezone !== timezone))
+    return { value: null, failure: 'invalid_timezone' };
+  if (!Array.isArray(data.days) || data.days.length !== dates.length)
+    return { value: null, failure: 'incomplete_dates' };
   let low = 0, high = 0;
   const mean = (value: unknown): number | null => {
     if (!Array.isArray(value) || value.length !== 3 ||
@@ -46,14 +52,19 @@ export function parseClimateStats(raw: unknown, input: ClimateInput, now = Date.
   };
   for (const date of dates) {
     const matches = data.days.filter(row => row && row.datetime === date);
-    if (matches.length !== 1 || matches[0].source !== "stats") return null;
+    if (matches.length !== 1) return { value: null, failure: 'incomplete_dates' };
+    if (matches[0].source !== 'stats' || !matches[0].normal) return { value: null, failure: 'incomplete_stats' };
     const row = matches[0];
     const lo = mean(row.normal?.tempmin), hi = mean(row.normal?.tempmax);
-    if (lo == null || hi == null || lo > hi) return null;
+    if (lo == null || hi == null || lo > hi) return { value: null, failure: 'invalid_normal_values' };
     // Fail closed if the provider changes the verified daily/normal contract.
     if (typeof row.tempmin !== "number" || typeof row.tempmax !== "number" || !Number.isFinite(row.tempmin) || !Number.isFinite(row.tempmax) ||
-      Math.abs(row.tempmin - lo) > 0.11 || Math.abs(row.tempmax - hi) > 0.11) return null;
+      Math.abs(row.tempmin - lo) > 0.11 || Math.abs(row.tempmax - hi) > 0.11) return { value: null, failure: 'invalid_normal_values' };
     low += lo; high += hi;
   }
-  return { low: low / dates.length, high: high / dates.length, timezone, dates, fetchedAt: now };
+  return { value: { low: low / dates.length, high: high / dates.length, timezone, dates, fetchedAt: now } };
+}
+
+export function parseClimateStats(raw: unknown, input: ClimateInput, now = Date.now()): ClimateSummary | null {
+  return validateClimateStats(raw, input, now).value;
 }

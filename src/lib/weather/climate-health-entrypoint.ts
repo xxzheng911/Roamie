@@ -28,7 +28,7 @@ export class ClimateHealth extends WorkerEntrypoint {
       if (!response.ok) return unavailable();
       const data = await response.json() as Record<string, unknown>;
       if (data.kind !== "visual-crossing-health-v1" || data.sqlite !== "readable" || data.limit !== 900 || data.windowHours !== 24) return unavailable();
-      const base = { kind: "visual-crossing-health-v1", sqlite: "readable", limit: 900, windowHours: 24 };
+      const base = { kind: "visual-crossing-health-v1", sqlite: "readable", limit: 900, windowHours: 24, ...(data.guardVersion === "visual-crossing-guard-v1" ? { guardVersion: data.guardVersion } : {}) };
       if (data.budget === "uninitialized" && data.usedRecords === null) {
         return Response.json({ ...base, budget: "uninitialized", usedRecords: null });
       }
