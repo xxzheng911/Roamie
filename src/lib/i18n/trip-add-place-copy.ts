@@ -6,6 +6,9 @@ const COPY = {
     opening: "當然可以！幫你找了幾個適合加入的地點 👇",
     continuation: "再幫你找了幾個選擇 👇",
     empty: "目前沒有找到適合加入的地點。",
+    searchRestricted: "搜尋暫時受限，請稍後再試",
+    filtered: "已找到地點，但目前沒有符合行程條件的新選項。",
+    searchUnavailable: "搜尋暫時無法完成，請稍後再試。",
     missingContext: "目前缺少地點資訊，暫時無法推薦附近的地點。",
     renderFailed: "我找到地點了，但卡片載入失敗，請重新整理。",
     emptyHint:
@@ -16,6 +19,9 @@ const COPY = {
     opening: "Of course! Here are a few places to consider adding to your day 👇",
     continuation: "Here are a few more options 👇",
     empty: "I couldn’t find a suitable place to add right now.",
+    searchRestricted: "Search is temporarily limited. Please try again later.",
+    filtered: "Places were found, but none are new options that fit this itinerary.",
+    searchUnavailable: "Search is temporarily unavailable. Please try again later.",
     missingContext: "Location information is missing, so I can’t suggest nearby places yet.",
     renderFailed: "I found the places, but the cards didn’t load. Please refresh.",
     emptyHint:
@@ -26,6 +32,9 @@ const COPY = {
     opening: "もちろん！予定に加えるのにおすすめの場所を見つけました 👇",
     continuation: "ほかにも候補をいくつか見つけました 👇",
     empty: "今のところ、追加に適した場所が見つかりませんでした。",
+    searchRestricted: "検索が一時的に制限されています。しばらくしてからお試しください。",
+    filtered: "旅程の条件に合う新しい候補はありません。",
+    searchUnavailable: "検索を完了できませんでした。しばらくしてからお試しください。",
     missingContext: "場所の情報が不足しているため、まだ周辺の場所をおすすめできません。",
     renderFailed:
       "場所は見つかりましたが、カードを表示できませんでした。更新してもう一度お試しください。",
@@ -37,6 +46,9 @@ const COPY = {
     opening: "물론이죠! 일정에 추가할 만한 곳을 몇 군데 찾았어요 👇",
     continuation: "몇 군데 더 찾아봤어요 👇",
     empty: "지금은 일정에 추가하기 적합한 장소를 찾지 못했어요.",
+    searchRestricted: "검색이 일시적으로 제한되었어요. 잠시 후 다시 시도해 주세요.",
+    filtered: "이 일정에 맞는 새로운 후보가 없어요.",
+    searchUnavailable: "검색을 완료할 수 없어요. 잠시 후 다시 시도해 주세요.",
     missingContext: "위치 정보가 부족해서 아직 주변 장소를 추천하기 어려워요.",
     renderFailed: "장소는 찾았지만 카드를 불러오지 못했어요. 새로고침해 주세요.",
     emptyHint:
@@ -49,6 +61,9 @@ const COPY = {
     | "opening"
     | "continuation"
     | "empty"
+    | "searchRestricted"
+    | "filtered"
+    | "searchUnavailable"
     | "missingContext"
     | "renderFailed"
     | "emptyHint"

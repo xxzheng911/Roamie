@@ -1,3 +1,4 @@
+type SearchMetadata = { blockedReason?: string; retryAfterSeconds?: number; rawCount?: number };
 import { fixedPlacesFailureReason } from "@/lib/places-failure-reason";
 import { CHAT_PLACES_SEARCH_TIMEOUT_MS, withAbortableSearchTimeout } from "@/lib/search-timeout";
 import { requireGoogleProviderRate } from "@/lib/google-rate-limit.server";
@@ -270,6 +271,8 @@ async function postPlaces(
   error: string | null;
   nextPageToken?: string;
   requestId: string;
+  blockedReason?: string;
+  retryAfterSeconds?: number;
 }> {
   const providerStartedAt = Date.now();
   const circle =
@@ -510,7 +513,7 @@ async function postPlaces(
       });
     }
     // Soft-fail: never throw — callers must degrade to existing places / skip nearby.
-    return { places: [], error: skipCode, requestId: `places_${ownerRequestId}` };
+    return { places: [], error: skipCode, blockedReason: ["request_cooldown", "query_cooldown", "rate_window"].includes(guardSkipReason) ? guardSkipReason : "other", requestId: `places_${ownerRequestId}` };
   }
   if (stats?.caller === "planning_selection_lane") {
     const places = guarded.places ?? [];
@@ -602,7 +605,7 @@ async function searchText(
   userLocale?: Locale,
   stats?: PlacesSearchStats,
   skipLocationBias = false,
-): Promise<{ places: PlaceResult[]; error: string | null }> {
+): Promise<{ places: PlaceResult[]; error: string | null } & SearchMetadata> {
   const { languageCode, regionCode } = exploreLocale(lat, lng, userLocale);
   const body: Record<string, unknown> = {
     textQuery: query,
@@ -618,6 +621,7 @@ async function searchText(
     places: raw,
     error,
     requestId,
+    ...metadata
   } = await postPlaces(placesSearchTextUrl(), body, apiKey, "text", stats);
   if (error) {
     devVerboseInfo("[PLACES_PROVIDER_MAPPING]", {
@@ -629,7 +633,7 @@ async function searchText(
       mappingRejectedCount: raw.length,
       mappingFailureReason: "provider_error",
     });
-    return { places: [], error };
+    return { places: [], error, ...metadata };
   }
   const mapped = mapRawPlaces(raw, {
     screen: stats?.screen,
@@ -649,6 +653,7 @@ async function searchText(
   return {
     places: mapped,
     error: null,
+    rawCount: raw.length,
   };
 }
 
@@ -662,7 +667,7 @@ async function searchNearby(
   userLocale?: Locale,
   stats?: PlacesSearchStats,
   _opts?: { maxPages?: number },
-): Promise<{ places: PlaceResult[]; error: string | null }> {
+): Promise<{ places: PlaceResult[]; error: string | null } & SearchMetadata> {
   const { languageCode, regionCode } = exploreLocale(lat, lng, userLocale);
   const perPageMax = Math.min(maxResultCount, 20);
   const body: Record<string, unknown> = {
@@ -674,14 +679,14 @@ async function searchNearby(
   };
   if (regionCode) body.regionCode = regionCode;
   // Places Nearby (New) has no pagination contract.
-  const { places: allRaw, error } = await postPlaces(
+  const { places: allRaw, error, ...metadata } = await postPlaces(
     placesSearchNearbyUrl(),
     body,
     apiKey,
     "nearby",
     stats,
   );
-  if (error) return { places: [], error };
+  if (error) return { places: [], error, ...metadata };
 
   const places = mapRawPlaces(allRaw, {
     screen: stats?.screen,
@@ -700,7 +705,7 @@ async function searchNearby(
       error: "",
     });
   }
-  return { places, error: null };
+  return { places, error: null, rawCount: allRaw.length };
 }
 
 async function searchMultiNearby(
@@ -712,25 +717,22 @@ async function searchMultiNearby(
   userLocale?: Locale,
   stats?: PlacesSearchStats,
   opts?: { perGroupMax?: number; mergedMax?: number },
-): Promise<{ places: PlaceResult[]; error: string | null }> {
+): Promise<{ places: PlaceResult[]; error: string | null } & SearchMetadata> {
   const perGroupMax = opts?.perGroupMax ?? 6;
   const mergedMax = opts?.mergedMax ?? 24;
   const paginate = stats?.caller.includes("trip_add_place") ?? false;
-  const settled = await Promise.all(
-    groups.map((types) =>
-      searchNearby(
-        apiKey,
-        lat,
-        lng,
-        radius,
-        types,
-        perGroupMax,
-        userLocale,
-        stats,
-        paginate ? { maxPages: 3 } : undefined,
-      ),
-    ),
-  );
+  const runGroup = (types: string[]) => searchNearby(apiKey, lat, lng, radius, types, perGroupMax, userLocale, stats);
+  const settled: Awaited<ReturnType<typeof searchNearby>>[] = [];
+  if (paginate) {
+    // Saved Trip searches stop at the first failure; no alternate category request.
+    for (const types of groups) {
+      const result = await runGroup(types);
+      if (result.error) return result;
+      settled.push(result);
+    }
+  } else {
+    settled.push(...await Promise.all(groups.map(runGroup)));
+  }
 
   const errors = settled.map((r) => r.error).filter(Boolean);
   if (errors.length === groups.length) {
@@ -758,6 +760,7 @@ async function searchMultiNearby(
 
   return {
     places: merged.slice(0, mergedMax),
+    rawCount: settled.reduce((sum, r) => sum + (r.rawCount ?? r.places.length), 0),
     error: stats?.screen === "explore" && merged.length === 0 ? errors[0] ?? null : null,
   };
 }
@@ -893,13 +896,13 @@ export async function lookupPlacesHoursBatch(
 async function runExploreSearch(
   data: z.infer<typeof ExploreSearchInput>,
   apiKey: string,
-): Promise<{ places: PlaceResult[]; error: string | null }> {
+): Promise<{ places: PlaceResult[]; error: string | null } & SearchMetadata> {
   const center = { lat: data.lat, lng: data.lng };
   const radius = data.radius ?? DEFAULT_SEARCH_RADIUS_M;
   const userLocale = data.locale ? coerceLocale(data.locale) : undefined;
   const stats = buildSearchStats(data);
 
-  let result: { places: PlaceResult[]; error: string | null };
+  let result: { places: PlaceResult[]; error: string | null } & SearchMetadata;
 
   if (data.mode === "multi" && data.nearbyGroups?.length) {
     const groups = sanitizeNearbyGroups(data.nearbyGroups);
@@ -963,6 +966,7 @@ async function runExploreSearch(
 
   if (data.placesScreen === "home") {
     return {
+      ...result,
       places: distanceFiltered,
       error: distanceFiltered.length === 0 ? result.error : null,
     };
@@ -970,6 +974,7 @@ async function runExploreSearch(
 
   if (data.placesScreen === "chat") {
     return {
+      ...result,
       places: distanceFiltered,
       error: distanceFiltered.length === 0 ? result.error : null,
     };
@@ -1001,7 +1006,7 @@ function classifyExplorePlacesError(error: string): string {
 export async function executeExploreSearch(
   data: z.infer<typeof ExploreSearchInput>,
   options?: { apiKey?: string },
-): Promise<{ places: PlaceResult[]; error: string | null }> {
+): Promise<{ places: PlaceResult[]; error: string | null } & SearchMetadata> {
   const stats = buildSearchStats(data);
   pushPlacesCallContext(stats);
   try {
@@ -1038,7 +1043,7 @@ export async function executeExploreSearch(
 export const searchPlaces = createServerFn({ method: "POST" })
   .middleware([allowGuestPublicRead, requireGoogleProviderRate])
   .inputValidator((input) => ExploreSearchInput.parse(input))
-  .handler(async ({ data }): Promise<{ places: PlaceResult[]; error: string | null }> => {
+  .handler(async ({ data }): Promise<{ places: PlaceResult[]; error: string | null } & SearchMetadata> => {
     return executeExploreSearch(data);
   });
 

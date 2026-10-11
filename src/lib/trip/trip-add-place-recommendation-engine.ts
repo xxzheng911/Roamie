@@ -1,3 +1,4 @@
+import { TripSearchFailure, tripSearchOutcomeCopy } from "./trip-add-place-outcome";
 import { isAffirmativeReply } from "@/lib/ai/chat-conversation-state";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import type { ChatMsg } from "@/lib/chat-history";
@@ -32,7 +33,7 @@ import {
   type TripAddPlaceRecommendationSession,
 } from "@/lib/trip/trip-add-place-recommendation-session";
 import {
-  fetchTripAddPlaceCandidatePool,
+  requireTripAddPlaceCandidatePool as fetchTripAddPlaceCandidatePool,
   tripAddPlaceRecommendationsToSession,
 } from "@/lib/trip/trip-add-place-handoff";
 import {
@@ -581,6 +582,7 @@ export async function runTripAddPlaceRecommendationEngine(params: {
 }
 
 export type TripAddPlaceLocalTurnResult = {
+  outcome?: import("./trip-add-place-outcome").TripSearchOutcome<unknown>;
   summary: string;
   recommendations: RoamieRecommendationItem[];
   nextSession: ChatPlanningSession;
@@ -630,6 +632,10 @@ export async function processTripAddPlaceUserMessage(params: {
   try {
     return await runTripAddPlaceRecommendationEngine(params);
   } catch (error) {
+    if (error instanceof TripSearchFailure) {
+      const summary = tripSearchOutcomeCopy(error.outcome, params.locale);
+      return {summary, recommendations:[], nextSession:{...params.session, lastAssistantReply:summary}, outcome:error.outcome};
+    }
     logTripAddPlaceFailure(error, params.session, params.userText, "process_message");
     return recoverTripAddPlaceLocalTurn(params, error);
   }

@@ -99,11 +99,14 @@ test("server propagates abort, has deadlines, structured empty-stream error and 
 
 test("trusted Capacitor API origin gets narrow preflight/CORS support", () => {
   const source = readFileSync(new URL("../src/server.ts", import.meta.url), "utf8");
-  assert.match(source, /NATIVE_APP_ORIGIN = "capacitor:\/\/localhost"/);
+  const policy = readFileSync(new URL("../src/lib/native-rpc-policy.ts", import.meta.url), "utf8");
+  const cors = readFileSync(new URL("../src/lib/native-api-cors.ts", import.meta.url), "utf8");
+  assert.match(policy, /NATIVE_RPC_ORIGIN = "capacitor:\/\/localhost"/);
   assert.match(source, /request\.method === "OPTIONS"/);
-  assert.match(source, /Access-Control-Allow-Origin/);
-  assert.match(source, /Authorization, Content-Type, X-Roamie-Request-Id, X-Roamie-Stream/);
-  assert.match(source, /X-Roamie-Cancel/);
+  assert.match(source, /withNativeApiCors/);
+  assert.match(cors, /Access-Control-Allow-Origin/);
+  assert.match(cors, /Authorization, Content-Type, X-Roamie-Request-Id, X-Roamie-Stream/);
+  assert.match(cors, /X-Roamie-Cancel/);
 });
 
 test("production public env contract requires native API origin", () => {

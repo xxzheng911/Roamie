@@ -330,8 +330,8 @@ const failedSearch = await fetchTripAddPlaceRecommendations({
 });
 assert(
   failedSearch.recommendations.length === 0 &&
-    failedSearch.summary === getTripAddPlaceCopy("zh-TW").empty,
-  "existing search error-to-empty handling never claims success",
+    failedSearch.summary === getTripAddPlaceCopy("zh-TW").searchUnavailable,
+  "search failure is unavailable, not a genuine empty result",
 );
 
 assert(ctx.travelStyle === "慢旅行", "handoff keeps slow-travel semantic, not a localized label");

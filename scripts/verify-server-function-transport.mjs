@@ -46,5 +46,6 @@ const api=withNativeApiCors(request('/api/google'),new Response());assert.match(
 const auth=load('src/integrations/supabase/auth-middleware.ts',{'@tanstack/react-start':{createMiddleware:()=>({server:fn=>fn})},'@tanstack/react-start/server':{getRequest:()=>new Request('https://roamie.tw'+path)},'@supabase/supabase-js':{createClient:()=>{throw Error('unexpected auth network')}},'@/lib/abuse-guard.server':{admitAuthenticatedServerFunction:()=>{}},'@/lib/worker-request-scope':{bindVerifiedUserId:()=>{}}},{process:{env:{SUPABASE_URL:'https://fixture.supabase.co',SUPABASE_PUBLISHABLE_KEY:'fixture'}}});
 await assert.rejects(()=>auth.requireSupabaseAuth({next:()=>{throw Error('protected handler entered')}}),/Unauthorized/);
 assert.match(fs.readFileSync('src/start.ts','utf8'),/serverFns: \{ fetch: serverFunctionFetch \}/);
-assert.match(fs.readFileSync('src/lib/outfit/outfit.functions.ts','utf8'),/middleware\(\[requireSupabasePlus\]\)/);
+assert.match(fs.readFileSync('src/lib/outfit/outfit.functions.ts','utf8'),/middleware\(\[requireSupabaseAuth\]\)/);
+assert.match(fs.readFileSync('src/lib/outfit/outfit.functions.ts','utf8'),/parsePlusEntitlementSnapshot\(entitlement\)\.hasPlus/);
 console.log('PASS RPC A–N: Web/native routing, four method fixtures, bearer/RPC/body/signal preserved, strict CORS, existing API, guest denied, no diagnostic logs or network.');

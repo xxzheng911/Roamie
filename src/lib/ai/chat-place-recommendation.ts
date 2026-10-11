@@ -1,3 +1,4 @@
+import { tripSearchFailure } from "@/lib/trip/trip-add-place-outcome";
 import { translate } from "@/lib/i18n/translate";
 import type { RoamiePayloadV2, RoamieRecommendationItem } from "@/lib/ai/types";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
@@ -206,7 +207,7 @@ export type PlaceSearchData = {
 
 export type PlaceSearchFn = (args: {
   data: PlaceSearchData;
-}) => Promise<{ places?: PlaceResult[]; error?: string | null }>;
+}) => Promise<{ places?: PlaceResult[]; error?: string | null; rawCount?: number }>;
 
 export type PlaceSearchExtras = {
   searchContext?: ChatPlaceSearchContext;
@@ -1115,6 +1116,7 @@ async function runPlaceSearchUncached(
     extras?.timeoutMs ?? CHAT_PLACES_SEARCH_TIMEOUT_MS,
     "places_search_attempt_timeout",
   );
+  if (caller === "chat.fetchNearbyPlacesForIntent.trip_add_place" && result.error) throw tripSearchFailure(result);
   if (result.error?.includes("places_search_attempt_timeout")) throw new Error(result.error);
   const cacheStatus = readPlacesSearchCacheStatus(cacheKey);
   const skipRetail =
@@ -1134,7 +1136,7 @@ async function runPlaceSearchUncached(
     skipRetail: skipRetail ? 1 : 0,
   });
   logChatPlacesRawCount(places.length);
-  const value = { places, error: result.error ?? null, rawCount: rawPlaces.length, cacheStatus };
+  const value = { places, error: result.error ?? null, rawCount: caller === "chat.fetchNearbyPlacesForIntent.trip_add_place" ? result.rawCount ?? rawPlaces.length : rawPlaces.length, cacheStatus };
   if (!extras?.bypassResultCache && !value.error && value.places.length > 0) {
     chatSearchResultCache.set(orchestrationKey, { at: Date.now(), value });
   }
@@ -1446,6 +1448,7 @@ export async function fetchNearbyPlacesForIntent(
     radiusSteps?: readonly number[];
     maxDistanceKm?: number;
     tripAddPlace?: boolean;
+    onTripSearchResult?: (rawCount: number) => void;
     nearbyGroups?: string[][];
     shortcutDiagnostics?: ShortcutRecommendationDiagnostics;
     shortcutScene?: ChatShortcutScene | null;
@@ -1509,6 +1512,7 @@ async function fetchNearbyPlacesForIntentInner(
     radiusSteps?: readonly number[];
     maxDistanceKm?: number;
     tripAddPlace?: boolean;
+    onTripSearchResult?: (rawCount: number) => void;
     nearbyGroups?: string[][];
     shortcutDiagnostics?: ShortcutRecommendationDiagnostics;
     shortcutScene?: ChatShortcutScene | null;
@@ -1871,6 +1875,7 @@ async function fetchNearbyPlacesForIntentInner(
               : undefined,
           },
         );
+        if (isTripAddPlace) opts?.onTripSearchResult?.(attemptRawCount);
         if (error) lastError = error;
         if (shortcutBudgetApplies) {
           shortcutProviderCalls += 1;
@@ -1959,6 +1964,7 @@ async function fetchNearbyPlacesForIntentInner(
         }
         if (!homeSpecialProfile && !explicitCapacityAttempts && places.length >= poolTarget) break;
       } catch (error) {
+        if (isTripAddPlace) throw tripSearchFailure(error);
         const message = error instanceof Error ? error.message : String(error);
         if (message.includes("places_search_attempt_timeout")) throw error;
         lastError = message;

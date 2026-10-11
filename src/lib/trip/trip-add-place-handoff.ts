@@ -1,3 +1,4 @@
+import { tripSearchFailure, requireTripCandidates, tripSearchOutcomeCopy, type TripSearchOutcome } from "./trip-add-place-outcome";
 import type { RoamieLocation } from "@/lib/ai/context";
 import type { RoamieItineraryItem, RoamiePayloadV2, TripPlanSettings } from "@/lib/ai/types";
 import { fetchNearbyPlacesForIntent, type PlaceSearchFn } from "@/lib/ai/chat-place-recommendation";
@@ -366,7 +367,7 @@ export async function ensureHandoffRecommendationSession(params: {
   }
   if (!recommendations.length) return null;
 
-  const pool = await fetchTripAddPlaceCandidatePool({
+  const pool = await requireTripAddPlaceCandidatePool({
     ctx,
     intent: "attraction",
     searchPlaces,
@@ -465,7 +466,7 @@ export async function fetchTripAddPlaceCandidatePool(params: {
   expandConsent?: boolean;
   searchCenter?: TripAddPlaceSearchCenter | null;
   userText?: string;
-}): Promise<RoamieRecommendationItem[]> {
+}): Promise<TripSearchOutcome<RoamieRecommendationItem>> {
   const {
     ctx,
     intent,
@@ -480,7 +481,10 @@ export async function fetchTripAddPlaceCandidatePool(params: {
     userText = "",
   } = params;
   const center = searchCenter ?? resolveTripAddPlaceSearchCenter(ctx, recSession);
-  if (!center) return [];
+  if (!center) return {status:"missing_context", candidates:[], rawCount:0, reason:"destination_unresolved"};
+  let rawCount = 0;
+  let succeeded = 0;
+  let settled = false;
 
   const step =
     radiusStep ??
@@ -533,6 +537,10 @@ export async function fetchTripAddPlaceCandidatePool(params: {
           radiusSteps: [radius],
           maxDistanceKm,
           tripAddPlace: true,
+          onTripSearchResult: (count) => {
+            if (settled) throw tripSearchFailure("timeout");
+            rawCount += count; succeeded += 1;
+          },
           nearbyGroups: tripAddPlaceNearbyGroups(intent, userText),
           userText,
         },
@@ -546,25 +554,34 @@ export async function fetchTripAddPlaceCandidatePool(params: {
     );
     const filtered = filterTripAddPlaceRecommendations(deduped, intent);
     const dedupedBlocked = filterTripAddPlaceCandidates(filtered, recSession ?? null, ctx);
-    return rankAndTrimTripAddPlaceCandidates(
+    const candidates = rankAndTrimTripAddPlaceCandidates(
       dedupedBlocked,
       center,
       maxDistanceKm,
       TRIP_ADD_PLACE_CANDIDATE_KEEP,
     );
-  } catch {
-    return [];
+    if (!succeeded) return {status:"provider_error", candidates:[], rawCount, reason:"provider_error"};
+    return { status: candidates.length ? "success" : rawCount === 0 ? "empty" : "filtered", candidates, rawCount, reason: candidates.length ? "success" : rawCount === 0 ? "empty" : "eligibility_filtered" };
+  } catch (error) {
+    return {...tripSearchFailure(error).outcome, rawCount};
+  } finally {
+    settled = true; // A late provider response must not launch further bounded queries.
   }
 }
 
+export async function requireTripAddPlaceCandidatePool(params: Parameters<typeof fetchTripAddPlaceCandidatePool>[0]): Promise<RoamieRecommendationItem[]> {
+  return requireTripCandidates(await fetchTripAddPlaceCandidatePool(params));
+}
+
 export type TripAddPlaceRecommendationsResult = {
+  outcome?: TripSearchOutcome<RoamieRecommendationItem>;
   summary: string;
   recommendations: RoamieRecommendationItem[];
   recommendationSession: TripAddPlaceRecommendationSession | null;
   allCandidates: RoamieRecommendationItem[];
 };
 
-export async function fetchTripAddPlaceRecommendations(params: {
+async function fetchTripAddPlaceRecommendationsInternal(params: {
   ctx: TripAddPlaceContext;
   searchPlaces: PlaceSearchFn;
   locale: Locale;
@@ -576,7 +593,7 @@ export async function fetchTripAddPlaceRecommendations(params: {
     return { summary: copy.missingContext, recommendations: [], recommendationSession: null, allCandidates: [] };
   }
 
-  const allCandidates = await fetchTripAddPlaceCandidatePool({
+  const allCandidates = await requireTripAddPlaceCandidatePool({
     ctx,
     intent: "attraction",
     searchPlaces,
@@ -644,7 +661,7 @@ function buildTripAddPlaceFollowUpSummary(
   return [lead, "", list, "", "想加入行程的話，直接點卡片就可以。"].join("\n");
 }
 
-export async function fetchTripAddPlaceFollowUpRecommendations(params: {
+async function fetchTripAddPlaceFollowUpRecommendationsInternal(params: {
   ctx: TripAddPlaceContext;
   intent: TripAddPlaceFollowUpIntent;
   searchPlaces: PlaceSearchFn;
@@ -653,7 +670,7 @@ export async function fetchTripAddPlaceFollowUpRecommendations(params: {
 }): Promise<TripAddPlaceRecommendationsResult> {
   const { ctx, intent, searchPlaces, locale, excludePlaceIds = [] } = params;
 
-  const allCandidates = await fetchTripAddPlaceCandidatePool({
+  const allCandidates = await requireTripAddPlaceCandidatePool({
     ctx,
     intent,
     searchPlaces,
@@ -706,4 +723,19 @@ export function tripAddPlaceRecommendationsToSession(
     tripAddPlaceRecommendationSession: slimRec ?? undefined,
     phase: "followup",
   });
+}
+export async function fetchTripAddPlaceRecommendations(params: Parameters<typeof fetchTripAddPlaceRecommendationsInternal>[0]): Promise<TripAddPlaceRecommendationsResult> {
+  try { return await fetchTripAddPlaceRecommendationsInternal(params); }
+  catch (error) {
+    const outcome = tripSearchFailure(error).outcome;
+    return {summary: tripSearchOutcomeCopy(outcome, params.locale), recommendations:[], recommendationSession:null, allCandidates:[], outcome};
+  }
+}
+
+export async function fetchTripAddPlaceFollowUpRecommendations(params: Parameters<typeof fetchTripAddPlaceFollowUpRecommendationsInternal>[0]): Promise<TripAddPlaceRecommendationsResult> {
+  try { return await fetchTripAddPlaceFollowUpRecommendationsInternal(params); }
+  catch (error) {
+    const outcome = tripSearchFailure(error).outcome;
+    return {summary: tripSearchOutcomeCopy(outcome, params.locale), recommendations:[], recommendationSession:null, allCandidates:[], outcome};
+  }
 }

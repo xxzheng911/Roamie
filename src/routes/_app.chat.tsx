@@ -954,14 +954,19 @@ function Chat() {
   const messagesRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLElement>(null);
   const bottomAnchorRef = useRef<HTMLDivElement>(null);
+  const messageContentRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const prevStreamingRef = useRef(false);
   const prevMsgsLengthRef = useRef(0);
   const lastAutoScrollTargetRef = useRef("");
   const pendingScrollTopRef = useRef<number | null>(null);
+  const restoreScrollFrameRef = useRef<number | null>(null);
   const {
     metrics: messengerLayout,
+    restoreScrollPosition,
+    resetScrollToInitial,
+    beginUserTurn,
     scrollToBottom,
     scrollToUserMessage,
     scrollToAiMessageStart,
@@ -971,6 +976,8 @@ function Chat() {
     composerRef,
     messagesRef,
     bottomAnchorRef,
+    contentRef: messageContentRef,
+    autoScrollSuspended: hydrating || pendingScrollTopRef.current != null,
   });
   const keyboardVisible = messengerLayout.keyboardOpen;
   const selectionMode = isPlanningSelectionMode(session);
@@ -1381,6 +1388,7 @@ function Chat() {
 
   const commitUserMessageWithDiscoveringLoading = useCallback(
     (trimmed: string, existingMsgs: ChatMsg[]): ChatMsg[] => {
+      beginUserTurn(existingMsgs.length);
       const submitAt = Date.now();
       const requestId = `load_${submitAt.toString(36)}`;
       // Loading lives in chatLoading state — do not append an assistant bubble to msgs.
@@ -1404,7 +1412,7 @@ function Chat() {
       });
       return next;
     },
-    [startDiscoveringLoadingAnimation, scrollToBottom],
+    [startDiscoveringLoadingAnimation, scrollToBottom, beginUserTurn],
   );
 
   const stripDiscoveringLoadingMessage = useCallback((conversation: ChatMsg[]): ChatMsg[] => {
@@ -2452,11 +2460,12 @@ function Chat() {
     if (pendingScrollTopRef.current != null && messagesRef.current) {
       const top = pendingScrollTopRef.current;
       pendingScrollTopRef.current = null;
-      requestAnimationFrame(() => {
-        if (messagesRef.current) messagesRef.current.scrollTop = top;
+      restoreScrollFrameRef.current = requestAnimationFrame(() => {
+        restoreScrollFrameRef.current = null;
+        restoreScrollPosition(top);
       });
     }
-  }, [msgs, streaming, partial, generating, hydrating]);
+  }, [msgs, streaming, partial, generating, hydrating, restoreScrollPosition]);
 
   const buildRequest = useCallback(
     async (
@@ -7387,6 +7396,7 @@ function Chat() {
     const nextSession = enterPlaceDetailChat(session, item);
     persistSession(nextSession);
 
+    beginUserTurn(msgsRef.current.length);
     const userLine = `想聊聊 ${placeDisplayName(item)}`;
     const assistantLine = buildPlaceDetailReply(item, nextSession);
     setMsgs((prev) => [
@@ -7455,6 +7465,7 @@ function Chat() {
     ) {
       return;
     }
+    beginUserTurn(msgsRef.current.length);
     // Entry snapshot: early recommendation/clarification branches must carry the same action.
     if (isExplicitTripCreationTurn(trimmed) || isUserConfirmingItinerary(trimmed)) {
       session = beginTripCreation(session,
@@ -11831,7 +11842,11 @@ function Chat() {
       persistSession(fresh);
       chatLifecycleEstablishedRef.current = true;
       restoredWorkspaceIdRef.current = null;
+      pendingScrollTopRef.current = null;
+      if (restoreScrollFrameRef.current != null) cancelAnimationFrame(restoreScrollFrameRef.current);
+      restoreScrollFrameRef.current = null;
       setMsgs([greetingMsg]);
+      resetScrollToInitial();
       setLastFailed(null);
       setPartial({});
       setText("");
@@ -11954,6 +11969,7 @@ function Chat() {
               : undefined,
           }}
         >
+          <div ref={messageContentRef} className="space-y-4">
           {hasPlusAccess &&
             travelPrefStatus !== null &&
             !travelPrefStatus.preferenceQuizCompleted &&
@@ -12011,6 +12027,7 @@ function Chat() {
             </div>
           )}
           <div ref={bottomAnchorRef} aria-hidden className="h-px w-full shrink-0" />
+          </div>
         </div>
 
         <div

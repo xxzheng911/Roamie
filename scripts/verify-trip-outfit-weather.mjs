@@ -7,7 +7,7 @@ import * as policy from '../src/lib/outfit/trip-weather-policy.ts';
 import * as context from '../src/lib/outfit/trip-outfit-context.ts';
 import * as parser from '../src/lib/weather/parse-openweather.ts';
 import { createServerRequestCache } from '../src/lib/server-request-cache.ts';
-import { buildLocalTripOutfitFallback, tripPackingSeason, climateOutfitCopy } from '../src/lib/outfit/local-trip-outfit-fallback.ts';
+import { buildLocalTripOutfitFallback, tripPackingSeason, climateOutfitCopy, climateCopy } from '../src/lib/outfit/local-trip-outfit-fallback.ts';
 
 let now = Date.parse('2026-10-09T03:00:00Z');
 class Clock extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } }
@@ -83,24 +83,24 @@ assert.ok(!hook.includes('tripCenter'));assert.ok(hook.includes('lat: destinatio
 assert.ok(!/Capacitor|detectPlatform/.test(hook),'J one shared Web/iOS boundary');
 assert.ok(!fs.readFileSync('src/components/saved/SavedTripItineraryEditor.tsx','utf8').includes('return { start: today, end: today }'));
 console.log('PASS A–J adjusted scope: far/partial dates unavailable; exact forecast dates; calendar/leap/timezone; cache; empty/error/null; locale/platform contract. No live API/AI calls.');
-let aiCalls=0;
+let aiCalls=0, aiBlocked=false;
 let selectedRows=rows;
 let selectedClimate=null, climateCalls=0, forecastCalls=0;
 const generator=load('src/lib/outfit/generate-trip-outfit.server.ts', {
   './weather-source-availability':sourceAvailability,
   './trip-weather-policy':policy,
-  './local-trip-outfit-fallback':{buildLocalTripOutfitFallback,climateOutfitCopy},
+  './local-trip-outfit-fallback':{buildLocalTripOutfitFallback,climateOutfitCopy,climateCopy},
   '../weather/visual-crossing.server':{visualCrossingTripClimate:async()=>{climateCalls++;return selectedClimate;}},
   '@/lib/abuse-guard-telemetry.server':{aiObservation:()=>({}),observeProviderAttempt:()=>()=>{}},
   './localized-outfit-copy':{localizedOutfitCopy:()=> 'rule fallback'},
   '@/lib/i18n/ai-instructions':{aiLanguageInstruction:()=>''},
-  '@/lib/abuse-guard.server':{assertAiUse:async()=>{}},
+  '@/lib/abuse-guard.server':{assertAiUse:async()=>{if(aiBlocked)throw Error('guard blocked')}},
   '@/lib/env.server':{getOpenAIKey:()=> 'fixture'},
   '@/lib/ai/errors':{mapOpenAIError:()=>new Error('mock AI error')},
   '@/lib/weather/openweather.server':{openWeatherGetTripForecast:async()=>{forecastCalls++;return selectedRows;}},
   '@/lib/outfit/trip-outfit-context':context,
 },async()=>{aiCalls++;return Response.json({choices:[{message:{content:JSON.stringify({suggestion:'依預報分層穿著。'})}}]});});
-let result=await generator.generateOutfitSuggestion({...base,endDate:'2026-10-11',items:[],dayCount:1});
+let result=await generator.generateOutfitSuggestion({...base,endDate:'2026-10-11',items:[],dayCount:1}, {allowAi:true});
 assert.equal(result.weatherSource,'openweather');assert.ok(result.weatherSummary.includes('天氣預報'));assert.ok(result.weatherSummary.includes('降雨資料不足'));assert.equal(aiCalls,1);
 assert.equal(climateCalls,0,'recent forecast does not call climate provider');
 selectedRows=[];
@@ -147,3 +147,38 @@ for(const locale of ['zh-TW','en','ja','ko']) {
  assert.equal(forecastCalls,forecastBefore,'far trip never calls OpenWeather');
 }
 console.log('PASS integrated historical branch: four locales, actual mean values, no additional AI/OpenWeather calls.');
+
+// Free / Plus share data authority; AI defaults off and requires server access.
+const far={...base,startDate:'2026-11-25',endDate:'2026-11-30',items:[],dayCount:6};
+const near={...base,endDate:'2026-10-11',items:[],dayCount:1};
+for(const locale of ['zh-TW','en','ja','ko']) {
+ selectedRows=rows;
+ for(const input of [far,near]) {
+  let before=aiCalls;
+  const free=await generator.generateOutfitSuggestion({...input,locale});
+  assert.equal(aiCalls,before,'Free makes zero AI calls');
+  assert.equal(free.weatherSource,input===far?'visual-crossing-stats':'openweather');
+  assert.ok(free.outfitSuggestion);
+  const plus=await generator.generateOutfitSuggestion({...input,locale},{allowAi:true});
+  assert.equal(aiCalls,before+1,'Plus can personalize both forecast and historical climate');
+  assert.equal(plus.weatherSource,free.weatherSource);
+  if(input===far) assert.ok(plus.outfitSuggestion.includes(climateCopy[locale].disclaimer));
+ }
+}
+selectedClimate=null;selectedRows=[];
+for(const allowAi of [false,true]) for(const input of [far,near]) {
+ const before=aiCalls;
+ const fail=await generator.generateOutfitSuggestion(input,{allowAi});
+ assert.equal(fail.weatherSource,'unavailable');assert.equal(aiCalls,before);
+}
+console.log('PASS Free/Plus × forecast/climate × four locales, default-deny AI, provider unavailable zero AI.');
+
+selectedClimate={low:9,high:14,fetchedAt:now};selectedRows=rows;aiBlocked=true;
+for(const input of [far,near]) {
+ const before=aiCalls;
+ const guarded=await generator.generateOutfitSuggestion(input,{allowAi:true});
+ assert.equal(aiCalls,before,'AI abuse rejection must stop AI provider');
+ assert.equal(guarded.weatherSource,input===far?'visual-crossing-stats':'openweather');
+ assert.ok(guarded.outfitSuggestion);
+}
+console.log('PASS AI guard denial retains reliable weather/climate + rules without an AI provider call.');

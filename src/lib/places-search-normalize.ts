@@ -1,7 +1,8 @@
+import { safeTripSearchMetadata } from "@/lib/trip/trip-add-place-outcome";
 import { fixedPlacesFailureReason, type PlacesFailureReason } from "@/lib/places-failure-reason";
 import type { PlaceResult } from "@/lib/place-result";
 
-export type PlacesSearchResult = { places: PlaceResult[]; error: string | null; reason?: PlacesFailureReason };
+export type PlacesSearchResult = { places: PlaceResult[]; error: string | null; reason?: PlacesFailureReason; blockedReason?: string; retryAfterSeconds?: number; rawCount?: number };
 
 /** 確保 server/client 回傳永遠有 places[]，避免 .places.length throw */
 export function normalizePlacesSearchResult(raw: unknown): PlacesSearchResult {
@@ -17,7 +18,7 @@ export function normalizePlacesSearchResult(raw: unknown): PlacesSearchResult {
             ? "places_undefined"
             : null;
     const reason = fixedPlacesFailureReason(raw);
-    return { places, error, ...(reason ? { reason } : {}) };
+    return { places, error, ...(reason ? { reason } : {}), ...safeTripSearchMetadata(raw), ...(typeof r.rawCount === "number" && Number.isFinite(r.rawCount) && r.rawCount >= 0 ? {rawCount:r.rawCount} : {}) };
   }
   return { places: [], error: "invalid_places_response" };
 }

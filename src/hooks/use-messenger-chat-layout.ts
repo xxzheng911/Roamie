@@ -1,3 +1,4 @@
+import { createChatTurnScroll } from "@/lib/chat-turn-scroll";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { subscribeCapacitorKeyboard } from "@/lib/capacitor-keyboard-bridge";
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
@@ -20,32 +21,6 @@ export type MessengerScrollTarget = {
   /** Scroll to place-cards block inside a message */
   placeCards?: boolean;
 };
-
-function queryChatScrollElement(
-  messagesEl: HTMLElement,
-  target: MessengerScrollTarget,
-): HTMLElement | null {
-  if (target.placeCards) {
-    if (target.id) {
-      return messagesEl.querySelector(
-        `[data-chat-message-id="${target.id}"] [data-chat-place-cards]`,
-      );
-    }
-    if (target.index != null) {
-      return messagesEl.querySelector(
-        `[data-chat-message-index="${target.index}"] [data-chat-place-cards]`,
-      );
-    }
-    return null;
-  }
-  if (target.id) {
-    return messagesEl.querySelector(`[data-chat-message-id="${target.id}"]`);
-  }
-  if (target.index != null) {
-    return messagesEl.querySelector(`[data-chat-message-index="${target.index}"]`);
-  }
-  return null;
-}
 
 export type MessengerScrollReason =
   | "new_message"
@@ -145,8 +120,12 @@ export function useMessengerChatLayout(params: {
   composerRef: RefObject<HTMLElement | null>;
   messagesRef: RefObject<HTMLElement | null>;
   bottomAnchorRef: RefObject<HTMLElement | null>;
+  contentRef: RefObject<HTMLElement | null>;
+  autoScrollSuspended?: boolean;
 }) {
-  const { headerRef, composerRef, messagesRef, bottomAnchorRef } = params;
+  const { headerRef, composerRef, messagesRef, bottomAnchorRef, contentRef } = params;
+  const suspendedRef = useRef(params.autoScrollSuspended);
+  suspendedRef.current = params.autoScrollSuspended;
 
   const nativeKeyboardHeightRef = useRef(0);
   const hideClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -170,7 +149,6 @@ export function useMessengerChatLayout(params: {
 
   const userNearBottomRef = useRef(true);
   const prevKeyboardOpenRef = useRef(false);
-  const lastScrollLogRef = useRef("");
   const lastLayoutLogRef = useRef("");
   const scrollToBottomRafRef = useRef<number | null>(null);
 
@@ -280,111 +258,41 @@ export function useMessengerChatLayout(params: {
   const recomputeLayoutRef = useRef(recomputeLayout);
   recomputeLayoutRef.current = recomputeLayout;
 
-  const scrollToMessage = useCallback(
-    (target: MessengerScrollTarget, trigger: string): boolean => {
-      const messagesEl = messagesRef.current;
-      if (!messagesEl) {
-        devVerboseInfo("[CHAT_SCROLL_FAILED]", "reason=no_messages_el");
-        return false;
-      }
-
-      const performScroll = () => {
-        const el = queryChatScrollElement(messagesEl, target);
-        if (!el) {
-          devVerboseInfo(
-            "[CHAT_SCROLL_FAILED]",
-            `reason=element_not_found index=${target.index ?? "none"} id=${target.id ?? "none"} placeCards=${target.placeCards ?? false}`,
-          );
-          return false;
-        }
-        console.info("[CHAT_AUTOSCROLL]", {
-          trigger,
-          target: target.placeCards ? "recommendation_group" : "message",
-          scrollTop: messagesEl.scrollTop,
-          scrollHeight: messagesEl.scrollHeight,
-        });
-        el.scrollIntoView({ block: target.position ?? "start", behavior: "auto" });
-        return true;
-      };
-
-      if (scrollToBottomRafRef.current != null) {
-        cancelAnimationFrame(scrollToBottomRafRef.current);
-        scrollToBottomRafRef.current = null;
-      }
-      scrollToBottomRafRef.current = requestAnimationFrame(() => {
-        scrollToBottomRafRef.current = null;
-        performScroll();
-      });
-      return true;
-    },
-    [messagesRef],
-  );
-
-  const scrollToUserMessage = useCallback(
-    (index: number, id?: string) => {
-      devVerboseInfo("[CHAT_SCROLL_TO_USER_MESSAGE]", `index=${index}`);
-      return scrollToMessage({ index, id, position: "start" }, "user_message");
-    },
-    [scrollToMessage],
-  );
-
-  const scrollToAiMessageStart = useCallback(
-    (index: number, id?: string) => {
-      devVerboseInfo("[CHAT_SCROLL_TO_AI_MESSAGE_START]", `index=${index}`);
-      return scrollToMessage({ index, id, position: "start" }, "assistant_message");
-    },
-    [scrollToMessage],
-  );
-
-  const scrollToPlaceCardsStart = useCallback(
-    (index: number, id?: string, trigger = "recommendations_ready") => {
-      devVerboseInfo("[CHAT_SCROLL_TO_PLACE_CARDS_START]", `index=${index}`);
-      return scrollToMessage({ index, id, position: "start", placeCards: true }, trigger);
-    },
-    [scrollToMessage],
-  );
-
+  const turnScrollRef = useRef<ReturnType<typeof createChatTurnScroll> | null>(null);
+  const beginUserTurn = useCallback((index: number) => {
+    turnScrollRef.current?.begin(index);
+  }, []);
   const scrollToBottom = useCallback(
-    (reason: MessengerScrollReason, opts?: { force?: boolean }) => {
-      const messagesEl = messagesRef.current;
-      const anchorEl = bottomAnchorRef.current;
-      if (!messagesEl || !anchorEl) return;
-
-      const nearBottom = isNearBottom(messagesEl);
-      userNearBottomRef.current = nearBottom;
-
-      const shouldScroll =
-        opts?.force === true ||
-        reason === "new_message" ||
-        (nearBottom &&
-          (reason === "ai_reply_complete" ||
-            reason === "keyboard_did_show" ||
-            reason === "keyboard_did_hide" ||
-            reason === "user_near_bottom"));
-
-      const logKey = `${reason}:${nearBottom}:${shouldScroll}`;
-      if (lastScrollLogRef.current !== logKey) {
-        lastScrollLogRef.current = logKey;
-        devVerboseInfo("[CHAT_AUTO_SCROLL_REASON]", reason);
-        devVerboseInfo("[CHAT_USER_IS_NEAR_BOTTOM]", nearBottom);
-      }
-
-      if (!shouldScroll) return;
-
-      if (scrollToBottomRafRef.current != null) return;
-      scrollToBottomRafRef.current = requestAnimationFrame(() => {
-        scrollToBottomRafRef.current = null;
-        console.info("[CHAT_AUTOSCROLL]", {
-          trigger: reason,
-          target: "bottom",
-          scrollTop: messagesEl.scrollTop,
-          scrollHeight: messagesEl.scrollHeight,
-        });
-        anchorEl.scrollIntoView({ block: "end", behavior: "auto" });
-      });
-    },
-    [bottomAnchorRef, messagesRef],
+    (_reason: MessengerScrollReason, _opts?: { force?: boolean }) => turnScrollRef.current?.update(), [],
   );
+  const scrollToMessage = useCallback(
+    (_target: MessengerScrollTarget, _trigger: string): boolean => {
+      turnScrollRef.current?.update();
+      return true;
+    }, [],
+  );
+  const scrollToUserMessage = useCallback(
+    (_index: number, _id?: string) => scrollToMessage({}, "user_message"), [scrollToMessage],
+  );
+  const scrollToAiMessageStart = useCallback(
+    (_index: number, _id?: string) => scrollToMessage({}, "assistant_message"), [scrollToMessage],
+  );
+  const scrollToPlaceCardsStart = useCallback(
+    (_index: number, _id?: string, trigger = "recommendations_ready") => scrollToMessage({}, trigger), [scrollToMessage],
+  );
+  useLayoutEffect(() => {
+    const el = messagesRef.current, content = contentRef.current, anchor = bottomAnchorRef.current;
+    if (!el || !content || !anchor) return;
+    const controller = createChatTurnScroll(el, content, anchor, () => suspendedRef.current === true);
+    turnScrollRef.current = controller;
+    return () => { controller.dispose(); turnScrollRef.current = null; };
+  }, [messagesRef, contentRef, bottomAnchorRef]);
+  const resetScrollToInitial = useCallback(() => {
+    turnScrollRef.current?.resetToInitial();
+  }, []);
+  const restoreScrollPosition = useCallback((top: number) => {
+    turnScrollRef.current?.restore(top);
+  }, []);
 
   useLayoutEffect(() => {
     recomputeLayout();
@@ -440,16 +348,6 @@ export function useMessengerChatLayout(params: {
   }, []);
 
   useEffect(() => {
-    const messagesEl = messagesRef.current;
-    if (!messagesEl) return;
-    const onScroll = () => {
-      userNearBottomRef.current = isNearBottom(messagesEl);
-    };
-    messagesEl.addEventListener("scroll", onScroll, { passive: true });
-    return () => messagesEl.removeEventListener("scroll", onScroll);
-  }, [messagesRef]);
-
-  useEffect(() => {
     const open = metrics.keyboardOpen;
     const wasOpen = prevKeyboardOpenRef.current;
     if (open && !wasOpen) {
@@ -486,6 +384,9 @@ export function useMessengerChatLayout(params: {
 
   return {
     metrics,
+    restoreScrollPosition,
+    resetScrollToInitial,
+    beginUserTurn,
     scrollToBottom,
     scrollToMessage,
     scrollToUserMessage,

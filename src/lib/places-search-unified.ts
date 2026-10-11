@@ -105,6 +105,9 @@ export function createUnifiedSearchPlacesFn(serverFn: SearchPlacesFn): SearchPla
           }
         }
 
+        if (args.data.placesCaller === "chat.fetchNearbyPlacesForIntent.trip_add_place") {
+          return serverResult; // Saved Trip errors must not trigger client fallback.
+        }
         if (session) assertExploreSessionActive(session, args.data.categoryId);
         if (serverResult.error && /places_(?:search_attempt_)?timeout/.test(serverResult.error)) {
           return serverResult;

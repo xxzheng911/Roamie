@@ -1,0 +1,25 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import {restorePendingPlanAiOwner,selectTripActionOwner} from '../src/lib/ai/plan-ai-action-owner.ts';
+import {beginTripCreation,shouldPersistGeneratedPlan,generatedPlanIdentity} from '../src/lib/ai/generated-plan-handoff.ts';
+const legacy={phase:'collect',tripActionDiagnostic:{actionSource:'unknown',actionToken:'8a8b229d'}};
+const pending={...beginTripCreation({phase:'collect',pendingHandoff:true},'plan_ai_create','new-generation'),tripActionDiagnostic:{actionSource:'plan_ai_button',actionToken:'12345678'},tripDestination:{name:'fixture'}};
+const restored=restorePendingPlanAiOwner(legacy,JSON.parse(JSON.stringify(pending)));
+assert.equal(restored.tripCreationAuthority.generationId,'new-generation');assert.deepEqual(restored.tripDestination,pending.tripDestination);
+for(const actionSource of ['unknown','style_preview','style_selection']) assert.equal(selectTripActionOwner(restored,{actionSource,actionToken:'fe857e70'}),restored.tripActionDiagnostic);
+assert.equal(restorePendingPlanAiOwner(legacy,legacy),legacy);assert.equal(selectTripActionOwner(legacy).actionSource,'unknown');
+assert.equal(generatedPlanIdentity(restored,'old-session'),'new-generation');
+assert.equal(shouldPersistGeneratedPlan({authority:restored.tripCreationAuthority,generationId:'new-generation',styleReselect:true}),true);
+assert.equal(restorePendingPlanAiOwner(restored,{...pending,pendingHandoff:false}),restored);
+assert.equal(restorePendingPlanAiOwner(legacy,{...pending,phase:'done'}),legacy);
+assert.equal(restorePendingPlanAiOwner(legacy,{...pending,tripCreationAuthority:undefined}),legacy);
+// A delayed old hydration write must choose the full newer handoff, not merge old context.
+assert.equal(restorePendingPlanAiOwner({...legacy,tripDestination:{name:'old'}},pending),pending);
+const chat=fs.readFileSync('src/routes/_app.chat.tsx','utf8');
+assert.match(chat,/const pendingOwner = restorePendingPlanAiOwner\(next, loadChatSession\(\)\)/);
+assert.match(chat,/let session = restorePendingPlanAiOwner\(sessionRef.current, loadChatSession\(\)\)/);
+assert.match(chat,/activeSession = restorePendingPlanAiOwner\(activeSession, loadChatSession\(\)\)/);
+const plan=fs.readFileSync('src/routes/_app.plan.tsx','utf8');
+assert.ok(plan.indexOf('const authority = beginTripCreation({}, "plan_ai_create")')<plan.indexOf('receiveTripAction("plan_ai_button", authority.explicitCreate)'));
+assert.match(plan,/preparedSession.tripCreationAuthority = creationAuthority/);
+console.log('PASS pending Plan AI beats old session, serialize/restore, style child action, unknown isolation, generation owner, stale hydration write protection, persist=true.');

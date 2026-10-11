@@ -61,7 +61,8 @@ assert.match(listSource, /reason: "recommendations_ready"/);
 
 const layoutSource = readFileSync("src/hooks/use-messenger-chat-layout.ts", "utf8");
 assert.doesNotMatch(layoutSource, /setTimeout\(\(\) => \{\s*performScroll\(\)/);
-assert.match(layoutSource, /\[CHAT_AUTOSCROLL\]/);
+assert.match(layoutSource, /createChatTurnScroll/);
+assert.match(layoutSource, /beginUserTurn/);
 
 const cardSource = readFileSync("src/components/RoamieResponseView.tsx", "utf8");
 assert.match(cardSource, /aspect-\[16\/10\] min-h-\[7\.5rem\]/);
