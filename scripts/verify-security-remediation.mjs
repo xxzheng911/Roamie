@@ -158,7 +158,8 @@ assert.doesNotMatch(
   "the client must not reserve itinerary credits before the server boundary",
 );
 assert.doesNotMatch(read("src/routes/api/generate-itinerary.ts"), /reserveServerCredits/);
-assert.match(read("src/lib/outfit/outfit.functions.ts"), /requireSupabasePlus/);
+assert.match(read("src/lib/outfit/outfit.functions.ts"), /requireSupabaseAuth/);
+assert.match(read("src/lib/outfit/outfit.functions.ts"), /parsePlusEntitlementSnapshot\(entitlement\)\.hasPlus/);
 assert.match(read("src/routes/api/place-photo.ts"), /PHOTO_RESOURCE/);
 assert.doesNotMatch(read("src/lib/trip/trip-invite-deep-link.ts"), /source, path \}/);
 assert.match(read("src/server.ts"), /X-Content-Type-Options/);
