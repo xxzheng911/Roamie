@@ -63,6 +63,13 @@ export function parseDayCountFromText(text: string): number | undefined {
     if (n) return n;
   }
 
+  const words: Record<string, number> = {a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10};
+  const verbal = text.toLowerCase().match(/\b(a|an|one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(days?|weeks?)\b/);
+  if (verbal) return boundedParsedDayCount((words[verbal[1]] ?? Number(verbal[1])) * (verbal[2].startsWith('week') ? 7 : 1));
+  const weeks = text.match(/(\d+|[一二三四五六七八九十兩两])\s*(?:週間|週|周|주)/);
+  if (weeks) return boundedParsedDayCount((CN_DAY_MAP[weeks[1]] ?? Number(weeks[1])) * 7);
+  const korean = text.match(/(\d+)\s*일(?:간)?/);
+  if (korean) return boundedParsedDayCount(Number(korean[1]));
   const english = text.match(/\b(\d+)\s*(?:-\s*)?days?\b/i);
   if (english?.[1]) {
     return boundedParsedDayCount(Number.parseInt(english[1], 10));

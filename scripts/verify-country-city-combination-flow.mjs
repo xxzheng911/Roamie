@@ -1,9 +1,10 @@
+import {setCachedDiscoveredCombinations, clearDiscoveredCombinationsCache, validateCombinationOptions} from "../src/lib/ai/destination-combination-discovery.ts";
 /**
  * Verify country→city→days→combination flow (generic, not Korea-only).
  */
 import { createEmptySession } from "../src/lib/chat-session.ts";
 import { mergeTravelContext } from "../src/lib/ai/travel-context.ts";
-import { resolveDestinationAdvice } from "../src/lib/ai/destination-advice.ts";
+import { resolveDestinationAdvice as resolveAdvice } from "../src/lib/ai/destination-advice.ts";
 import { resolveDestinationEntity } from "../src/lib/ai/destination-entity.ts";
 import {
   canDiscoverDestinationPlaces,
@@ -13,6 +14,8 @@ import {
 import { hasDestinationCombinations, getDestinationCombinations } from "../src/lib/ai/destination-combination-suggestions.ts";
 import { applyDestinationPendingSelection } from "../src/lib/ai/destination-pending-question.ts";
 
+// These assertions specify Traditional Chinese copy; do not inherit the host OS locale.
+const resolveDestinationAdvice = (ctx,session,text) => resolveAdvice(ctx,session,text,"zh-TW");
 let failed = 0;
 
 function assert(condition, message) {
@@ -244,12 +247,43 @@ function adviceMonthPreserved(advice, ctx) {
       destinationCountry: "韓國",
     },
   };
+  clearDiscoveredCombinationsCache("首爾");
+  const unseeded = mergeTravelContext(session, "6天");
+  const notReady = resolveDestinationAdvice(unseeded.context, unseeded.session, "6天");
+  assert(notReady.pendingQuestion?.type !== "combination_choice", "A3 no grounded candidates must not bypass validation");
+  assert(!notReady.triggerItineraryGeneration, "A3 missing discovery cannot start creation");
+  // Name-only editorial seeds are not resolved Places candidates. Supply an
+  // offline provider fixture through the real cache and validation boundary.
+  const groups = [
+    ["景福宮", "昌德宮", "德壽宮"],
+    ["南山首爾塔", "國立中央博物館", "戰爭紀念館"],
+    ["北漢山國立公園", "奧林匹克公園", "首爾林"],
+  ];
+  const combinations = groups.map((names, group) => {
+    const places = names.map((name, index) => ({
+      name, localizedDisplayName:name, languageCode:"zh-TW",
+      googlePlaceId:`ChIJ_offline_seoul_${group}_${index}`,
+      types:["tourist_attraction"], businessStatus:"OPERATIONAL",
+      coordinates:{lat:37.5 + group * 0.08 + index * 0.01, lng:126.95 + index * 0.02},
+      rating:4.6, userRatingCount:1000,
+    }));
+    return {combinationId:`fixture:${group}`, title:["文化歷史組合","經典景點組合","自然散策組合"][group],theme:"attraction",placeCandidates:places,primaryCandidates:places};
+  });
+  assert(validateCombinationOptions(combinations, "首爾").ok, "A3 offline candidates pass production validation");
+  setCachedDiscoveredCombinations("首爾", combinations);
   const merged = mergeTravelContext(session, "6天");
   const advice = resolveDestinationAdvice(merged.context, merged.session, "6天");
   assert(Boolean(advice.reply), "A3 has reply");
   assert(!/無法取得首爾的景點/.test(advice.reply ?? ""), "A3 no Seoul places failure");
   assert(/建議組合|組合搭配/.test(advice.reply ?? ""), "A3 shows combinations");
   assert(advice.pendingQuestion?.type === "combination_choice", "A3 pending=combination_choice");
+  assert(merged.context.travelMonth === "10", "A3 month preserved");
+  const choiceSession = {...merged.session, travelContext:{...merged.context,...advice.contextPatch},pendingQuestion:advice.pendingQuestion};
+  const chosen = mergeTravelContext(choiceSession,"2");
+  assert(chosen.context.days === 6,"combination index must not overwrite duration");
+  assert(chosen.context.travelMonth === "10","combination index preserves month");
+  clearDiscoveredCombinationsCache("首爾");
+
 }
 
 // Case B: country only → city ask, no month season

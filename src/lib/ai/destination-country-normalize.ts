@@ -207,6 +207,8 @@ export function countryCodeForLabel(label?: string | null): string | undefined {
     const upper = raw.toUpperCase();
     return upper === "UK" ? "GB" : upper;
   }
+  const localized = localizedCountryReference(raw);
+  if (localized) return localized.code;
   const normalized = normalizeDestinationLabel(raw);
   return (
     COUNTRY_CODE_BY_LABEL[normalized] ??
@@ -303,4 +305,28 @@ export function countryEnglishName(country?: string | null): string | undefined 
   };
   if (label && byLabel[label]) return byLabel[label];
   return undefined;
+}
+
+/** Recognize localized country names using the existing supported-country registry. */
+let localizedCountries: Map<string, {country: string; code: string}> | undefined;
+export function localizedCountryReference(text: string): {country: string; code: string} | undefined {
+  if (!localizedCountries) {
+    localizedCountries = new Map();
+    for (const locale of ['en','ja','ko','zh-TW']) {
+      const names = new Intl.DisplayNames([locale], {type:'region'});
+      const isoCandidates = Array.from({length:676}, (_,i) => String.fromCharCode(65+Math.floor(i/26),65+i%26));
+      const canonicalNames = new Intl.DisplayNames(['zh-TW'], {type:'region'});
+      for (const code of isoCandidates) {
+        const country = COUNTRY_LABEL_BY_CODE[code] ?? canonicalNames.of(code);
+        if (!country || country === code) continue;
+        const name = names.of(code);
+        if (name) localizedCountries.set(name.toLocaleLowerCase(), {country,code});
+      }
+    }
+  }
+  return localizedCountries.get(text.trim().toLocaleLowerCase());
+}
+export function localizedCountryName(canonical: string, locale: string): string | undefined {
+  const code = Object.keys(COUNTRY_LABEL_BY_CODE).find(code => COUNTRY_LABEL_BY_CODE[code] === canonical) ?? localizedCountryReference(canonical)?.code;
+  return code ? new Intl.DisplayNames([locale], {type:'region'}).of(code) : undefined;
 }

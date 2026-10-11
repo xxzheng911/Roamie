@@ -1,3 +1,4 @@
+import { multilingualTravelIntent } from "@/lib/ai/travel-language-signals";
 import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
 import { resolveDestinationForCategorySearch } from "@/lib/ai/chat-category-destination";
 import { isBestTravelTimeIntent } from "@/lib/ai/best-travel-time-intent";
@@ -90,6 +91,7 @@ export function isTravelPlanningText(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
 
+  if (multilingualTravelIntent(t)) return true;
   if (isBestTravelTimeIntent(t)) return false;
 
   // Month/season + destination + travel verb always wins (before cuisine false positives).

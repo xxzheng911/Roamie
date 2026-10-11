@@ -1,3 +1,17 @@
+// Run via npm run verify:nearby-runtime-contract. The npm command enables diagnostics
+// before Vite loads any modules; mutating this module's import.meta.env is insufficient.
+import { runWithWorkerRequest, runWithGuardTestContext } from "../src/lib/worker-request-scope.ts";
+const diagnosticEnv = {
+  ABUSE_GUARD_ENFORCEMENT: "true",
+  GOOGLE_PLACES_SERVER_API_KEY: "AIza" + "offline-fixture-only",
+  GOOGLE_API_RATE_LIMITER: { limit: async () => ({ success: true }) },
+  ABUSE_GUARD: { idFromName: name => name, get: () => ({ fetch: async request => {
+    const command = await request.json();
+    return Response.json({ok:true, replay:false, retryAt:0, reason:command.action === "release" ? "released" : "allowed"});
+  } }) },
+};
+const executeExploreSearch = (...args) => runWithWorkerRequest({env:diagnosticEnv}, () =>
+  runWithGuardTestContext({userId:"offline-fixture",ip:"192.0.2.1"}, () => executeExploreSearchRuntime(...args)));
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
@@ -25,7 +39,7 @@ import {
   createRecommendationSession,
 } from "../src/lib/ai/conversation-recommendation-session.ts";
 import { createEmptySession } from "../src/lib/chat-session.ts";
-import { executeExploreSearch } from "../src/lib/places.functions.ts";
+import { executeExploreSearch as executeExploreSearchRuntime } from "../src/lib/places.functions.ts";
 import {
   resolveChatRecommendationCardCount,
   stableChatMessageKey,
@@ -503,11 +517,17 @@ assert.equal(
 const originalFetch = globalThis.fetch;
 const originalConsoleInfo = console.info;
 const providerLogs = [];
+let providerBoundaryCalls = 0;
 console.info = (...args) => {
   providerLogs.push(args);
 };
-globalThis.fetch = async () =>
-  new Response(
+globalThis.fetch = async (input, init) => {
+  providerBoundaryCalls++;
+  assert.equal(new URL(String(input)).hostname, "places.googleapis.com");
+  assert.equal(new URL(String(input)).pathname, "/v1/places:searchText");
+  assert.equal(init.method, "POST");
+  assert.equal(JSON.parse(init.body).textQuery, "高雄左營 早午餐店");
+  return new Response(
     JSON.stringify({
       places: Array.from({ length: 5 }, (_, index) => ({
         id: `places/provider-diag-${index}`,
@@ -523,8 +543,9 @@ globalThis.fetch = async () =>
     }),
     { status: 200, headers: { "Content-Type": "application/json" } },
   );
+};
 try {
-  await executeExploreSearch(
+  const providerResponse = await executeExploreSearch(
     {
       query: "高雄左營 早午餐店",
       lat: 22.6877358,
@@ -542,6 +563,8 @@ try {
     },
     { apiKey: "regression-only-key" },
   );
+  assert.equal(providerResponse.error, null);
+  assert.equal(providerBoundaryCalls, 1, "real provider transport must reach the offline fetch exactly once");
 } finally {
   globalThis.fetch = originalFetch;
   console.info = originalConsoleInfo;

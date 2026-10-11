@@ -1,3 +1,5 @@
+import { displayDestinationForCopy } from "./destination-locale-aliases";
+import { planningContextText } from "@/lib/i18n/planning-context-copy";
 import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
 import type { ChatPlanningSession, PlanningShownCandidate } from "@/lib/chat-session";
 import type { ChatMsg } from "@/lib/chat-history";
@@ -812,6 +814,7 @@ function resolveAcceptPreviousSuggestionsAdvice(
 function resolveDestinationCombinationsAdvice(
   ctx: CanonicalTravelContext,
   session: ChatPlanningSession,
+  locale?: import("@/lib/i18n/types").Locale,
 ): DestinationAdviceResult | null {
   const destination = resolveContextDestination(ctx, session);
   const days = resolveValidTripDays({
@@ -893,6 +896,7 @@ function resolveDestinationCombinationsAdvice(
   });
 
   const suggestion = buildDestinationCombinationSuggestionPayload(destination, days, {
+    locale,
     startDate: hasExactDate ? startDate : undefined,
     endDate: hasExactDate ? endDate : undefined,
     weatherLine: buildDestinationDirectionAck({
@@ -931,6 +935,7 @@ function resolveDestinationCombinationsAdvice(
       reply: buildDestinationRecommendationFailedMessage(
         destination,
         failure?.reason ?? failure?.detail,
+        locale,
       ),
       recommendations: undefined,
       recommendationsTitle: undefined,
@@ -1623,6 +1628,7 @@ function sanitizeCountryCitySelectionReply(reply: string, country: string): stri
  * City options are always rendered one-per-line from structured cityOptions.
  */
 export function buildCountryCitySelectionReply(params: {
+  locale?: import("@/lib/i18n/types").Locale;
   country: string;
   month?: number | string | null;
   seasonalSummary?: string;
@@ -1637,6 +1643,7 @@ export function buildCountryCitySelectionReply(params: {
   const discovered = buildCountryCityOptions({
     country,
     month: params.month,
+    language: params.locale,
     curatedOptions: params.cityOptions.length ? params.cityOptions : advice?.cityOptions,
   });
 
@@ -1720,7 +1727,15 @@ export function buildCountryCitySelectionReply(params: {
     lines.push(COUNTRY_CITY_SELECTION_LAST_FALLBACK_ENDING);
   }
 
-  const reply = sanitizeCountryCitySelectionReply(lines.join("\n"), country);
+  const locale = params.locale ?? "zh-TW";
+  const shown = displayDestinationForCopy(country, undefined, locale);
+  const reply = locale === 'zh-TW' ? sanitizeCountryCitySelectionReply(lines.join("\n"), country)
+    : [...(params.introLines ?? []), planningContextText(monthNum ? 'month' : 'country', locale, shown, monthNum ?? undefined),
+       '', ...cityOptions.map(o => {
+         const shownName = displayDestinationForCopy(o.name, undefined, locale);
+         return `・${o.localizedNames?.[locale] ?? (shownName !== o.name ? shownName : o.originalName ?? o.name)}`;
+       }),
+       '', planningContextText('cityQuestion', locale, shown)].join('\n');
 
   if (STYLE_ONLY_ENDING_RE.test(reply.split("\n").at(-1) ?? "")) {
     logAiPipeline("[COUNTRY_STYLE_ONLY_QUESTION_BLOCKED]", `country=${country}`);
@@ -1769,7 +1784,7 @@ function buildCountryCityCollectAdvice(
   country: string,
   ctx: CanonicalTravelContext,
   _userText: string,
-  opts?: { withMonth?: boolean },
+  opts?: { withMonth?: boolean; locale?: import("@/lib/i18n/types").Locale },
 ): DestinationAdviceResult | null {
   const label = normalizeDestinationLabel(country);
   const monthNum = ctx.travelMonth
@@ -1782,6 +1797,7 @@ function buildCountryCityCollectAdvice(
   // Always use the single country reply builder — never fall through to scenic month.
   // City options and seasonal copy are merged independently.
   const built = buildCountryCitySelectionReply({
+    locale: opts?.locale,
     country: label,
     month: withMonth ? monthNum : null,
     cityOptions: options,
@@ -1983,6 +1999,7 @@ function resolveTripPreferenceReply(
   ctx: CanonicalTravelContext,
   userText: string,
   preferencePending = false,
+  locale?: import("@/lib/i18n/types").Locale,
 ): DestinationAdviceResult | null {
   const preferences = parseTripPreferences(userText);
   if (preferences.length === 0) return null;
@@ -1993,7 +2010,7 @@ function resolveTripPreferenceReply(
   );
   if (!destination || !ctx.days) return null;
 
-  const reply = buildItineraryPlanningReply({ ...ctx, destination }, preferences as TripInterest[]);
+  const reply = buildItineraryPlanningReply({ ...ctx, destination }, preferences as TripInterest[], locale);
   if (!reply) return null;
 
   return {
@@ -2021,6 +2038,7 @@ function resolveTripPreferenceReply(
 function resolveBestTravelTimeAdvice(
   ctx: CanonicalTravelContext,
   userText: string,
+  locale?: import("@/lib/i18n/types").Locale,
 ): DestinationAdviceResult | null {
   if (!isBestTravelTimeIntent(userText) || isCreateItineraryIntent(userText)) return null;
 
@@ -2043,7 +2061,7 @@ function resolveBestTravelTimeAdvice(
 
   if (!resolvedDest) {
     return {
-      reply: "你想問哪個目的地的最佳旅行時間？例如東京、曼谷或墨爾本。",
+      reply: {"zh-TW":"你想問哪個目的地的最佳旅行時間？例如東京、曼谷或墨爾本。",en:"Which destination would you like travel timing advice for?",ja:"どの目的地の旅行時期について知りたいですか？",ko:"어느 목적지의 여행 시기가 궁금하세요?"}[locale ?? "zh-TW"],
       contextPatch: { tripPurpose: "best_time_to_visit" },
     };
   }
@@ -2056,12 +2074,13 @@ function resolveBestTravelTimeAdvice(
     const options = resolveCountryCityOptions(label);
     const curatedBestTime = COUNTRY_ADVICE[label]?.bestTime;
     const seasonalIntro = travelDateExists
-      ? buildTravelDateAssessmentReply(label, ctx, userText)
-      : buildBestTravelTimeReply(label, { skipFollowUpQuestion: true });
-    const introLines = (curatedBestTime?.length ? curatedBestTime : seasonalIntro.split("\n"))
+      ? buildTravelDateAssessmentReply(label, ctx, userText, locale)
+      : buildBestTravelTimeReply(label, { skipFollowUpQuestion: true, locale });
+    const introLines = ((!locale || locale === "zh-TW") && curatedBestTime?.length ? curatedBestTime : seasonalIntro.split("\n"))
       .map((l) => l.trim())
       .filter(Boolean);
     const built = buildCountryCitySelectionReply({
+      locale,
       country: label,
       cityOptions: options,
       introLines,
@@ -2089,8 +2108,8 @@ function resolveBestTravelTimeAdvice(
   }
 
   const reply = travelDateExists
-    ? buildTravelDateAssessmentReply(label, ctx, userText)
-    : buildBestTravelTimeReply(label, { skipFollowUpQuestion: true });
+    ? buildTravelDateAssessmentReply(label, ctx, userText, locale)
+    : buildBestTravelTimeReply(label, { skipFollowUpQuestion: true, locale });
 
   return {
     reply,
@@ -2101,13 +2120,23 @@ function resolveBestTravelTimeAdvice(
   };
 }
 
-export function resolveDestinationAdvice(
+function resolveDestinationAdviceInternal(
   ctx: CanonicalTravelContext,
   session: ChatPlanningSession,
   userText: string,
   locale?: import("@/lib/i18n/types").Locale,
 ): DestinationAdviceResult {
   if (isTripAddPlaceSession(session)) return { reply: null };
+  if (ctx.destinationClarification || (ctx.destinationCandidate && ctx.destinationCandidate.status !== 'resolved')) {
+    const copy = {
+      'zh-TW': ctx.destinationClarification ? '我有保留全部目的地。請先選擇一個主要目的地來規劃這份行程。' : '請確認目的地的城市與國家，或使用目的地搜尋選取地點；確認前我不會猜測城市歸屬。',
+      en: ctx.destinationClarification ? 'I’ve kept all your destinations. Please choose one primary destination for this itinerary.' : 'Please confirm the city and country, or select a destination using destination search. I won’t assume its location before it is verified.',
+      ja: ctx.destinationClarification ? 'すべての目的地を保持しました。この旅程の主な目的地を一つ選んでください。' : '都市と国を確認するか、目的地検索で場所を選んでください。確認前に所在地を推測しません。',
+      ko: ctx.destinationClarification ? '모든 목적지를 보관했어요. 이 일정의 주요 목적지 하나를 선택해 주세요.' : '도시와 국가를 확인하거나 목적지 검색에서 장소를 선택해 주세요. 확인 전에는 위치를 추측하지 않아요.',
+    };
+    return {reply:copy[locale ?? 'zh-TW'],contextPatch:ctx};
+  }
+
 
   if (
     hasCategoryPlaceQuery(userText) &&
@@ -2145,7 +2174,7 @@ export function resolveDestinationAdvice(
   const createAdvice = resolveCreateItineraryAdvice(ctx, session, userText);
   if (createAdvice) return createAdvice;
 
-  const bestTimeAdvice = resolveBestTravelTimeAdvice(ctx, userText);
+  const bestTimeAdvice = resolveBestTravelTimeAdvice(ctx, userText, locale);
   if (bestTimeAdvice) return bestTimeAdvice;
 
   const acceptAdvice = resolveAcceptPreviousSuggestionsAdvice(ctx, session, userText);
@@ -2213,7 +2242,7 @@ export function resolveDestinationAdvice(
           days: readyDays,
           planningDaysConfirmed: true,
         },
-        session,
+        session, locale
       );
       if (comboAdvice) return comboAdvice;
     }
@@ -2252,7 +2281,7 @@ export function resolveDestinationAdvice(
           windowDest,
           { ...workingCtx, destination: windowDest, destinationCountry: windowDest },
           userText,
-          { withMonth: true },
+          { withMonth: true, locale },
         );
         if (countryAdvice) return countryAdvice;
         // Hard block: never fall through to generic month / date collection.
@@ -2266,6 +2295,7 @@ export function resolveDestinationAdvice(
         );
         const blockedLabel = normalizeDestinationLabel(windowDest);
         const blockedBuilt = buildCountryCitySelectionReply({
+          locale,
           country: blockedLabel,
           month: workingCtx.travelMonth,
           cityOptions: resolveCountryCityOptions(blockedLabel, workingCtx.travelMonth),
@@ -2351,7 +2381,7 @@ export function resolveDestinationAdvice(
             days: comboDays,
             planningDaysConfirmed: true,
           },
-          session,
+          session, locale
         );
         if (comboAdvice) return comboAdvice;
       }
@@ -2472,7 +2502,7 @@ export function resolveDestinationAdvice(
       };
       const comboAdvice =
         destLabel && parsedDays && hasDestinationCombinations(destLabel)
-          ? resolveDestinationCombinationsAdvice(datedCtx, session)
+          ? resolveDestinationCombinationsAdvice(datedCtx, session, locale)
           : null;
       if (
         comboAdvice?.reply &&
@@ -2894,7 +2924,7 @@ export function resolveDestinationAdvice(
         };
         const comboAdvice =
           destLabel && hasDestinationCombinations(destLabel)
-            ? resolveDestinationCombinationsAdvice(datedCtx, session)
+            ? resolveDestinationCombinationsAdvice(datedCtx, session, locale)
             : null;
         if (comboAdvice?.reply) {
           return {
@@ -2957,7 +2987,7 @@ export function resolveDestinationAdvice(
 
         const comboAdvice =
           destLabel && hasDestinationCombinations(destLabel)
-            ? resolveDestinationCombinationsAdvice(datedCtx, session)
+            ? resolveDestinationCombinationsAdvice(datedCtx, session, locale)
             : null;
         // Duration reply must never open itinerary / place-failure paths.
         if (
@@ -3110,7 +3140,7 @@ export function resolveDestinationAdvice(
         );
       }
       return {
-        reply: chatRuntimeCopy("cityGoodChoiceDaysExample", locale, { destination: dest }),
+        reply: chatRuntimeCopy("cityGoodChoiceDaysExample", locale, { destination: displayDestinationForCopy(dest,userText,locale ?? "zh-TW") }),
         pendingQuestion: pending,
       };
     }
@@ -3162,11 +3192,12 @@ export function resolveDestinationAdvice(
         if (validDays != null) {
           const comboAdvice = resolveDestinationCombinationsAdvice(
             { ...cityCtx, days: validDays, planningDaysConfirmed: true },
-            { ...session, pendingQuestion: undefined },
+            { ...session, pendingQuestion: undefined }, locale
           );
           if (comboAdvice) return comboAdvice;
           return {
             ...buildCityDaysConfirmedReply(freeCity, validDays, country, {
+              locale,
               weather: cityCtx.weather,
               context: { ...cityCtx, days: validDays, planningDaysConfirmed: true },
             }),
@@ -3209,7 +3240,7 @@ export function resolveDestinationAdvice(
       return followUpReply;
     }
     if (pending.type === "preference_choice") {
-      const preferenceReply = resolveTripPreferenceReply(ctx, userText, true);
+      const preferenceReply = resolveTripPreferenceReply(ctx, userText, true, locale);
       if (preferenceReply?.reply) {
         return preferenceReply;
       }
@@ -3309,7 +3340,7 @@ export function resolveDestinationAdvice(
     const destLabel = normalizeDestinationLabel(planningDestination);
 
     if (days) {
-      const comboAdvice = resolveDestinationCombinationsAdvice(ctx, session);
+      const comboAdvice = resolveDestinationCombinationsAdvice(ctx, session, locale);
       if (comboAdvice) return comboAdvice;
       return {
         reply: `好，我會依${destLabel} ${days} 天的方向繼續幫你安排。`,
@@ -3360,7 +3391,7 @@ export function resolveDestinationAdvice(
     !detectMustVisitIntent(userText) &&
     !detectPlaceRecommendationIntent(userText)
   ) {
-    const comboAdvice = resolveDestinationCombinationsAdvice(ctx, session);
+    const comboAdvice = resolveDestinationCombinationsAdvice(ctx, session, locale);
     if (comboAdvice) return comboAdvice;
   }
 
@@ -3369,7 +3400,7 @@ export function resolveDestinationAdvice(
     return followUpReply;
   }
 
-  const preferenceReply = resolveTripPreferenceReply(ctx, userText, false);
+  const preferenceReply = resolveTripPreferenceReply(ctx, userText, false, locale);
   if (preferenceReply?.reply) {
     return preferenceReply;
   }
@@ -3399,7 +3430,7 @@ export function resolveDestinationAdvice(
         countryDest,
         { ...workingCtx, destination: countryDest, destinationCountry: countryDest },
         userText,
-        { withMonth },
+        { withMonth, locale },
       );
       if (countryAdvice) return countryAdvice;
       logAiPipeline(
@@ -3439,12 +3470,13 @@ export function resolveDestinationAdvice(
         scenicLabel,
         { ...ctx, destination: scenicLabel, destinationCountry: scenicLabel },
         userText,
-        { withMonth: true },
+        { withMonth: true, locale },
       );
       if (countryAdvice) return countryAdvice;
       logAiPipeline("[COUNTRY_REPLY_GENERIC_MONTH_TEMPLATE_BLOCKED]", `country=${scenicLabel}`);
       logAiPipeline("[COUNTRY_DATE_QUESTION_BLOCKED]", `country=${scenicLabel}`);
       const scenicBuilt = buildCountryCitySelectionReply({
+        locale,
         country: scenicLabel,
         month: ctx.travelMonth,
         cityOptions: resolveCountryCityOptions(scenicLabel, ctx.travelMonth),
@@ -3501,7 +3533,7 @@ export function resolveDestinationAdvice(
     };
   }
 
-  const structuredSuggestion = resolveDestinationCombinationsAdvice(ctx, session);
+  const structuredSuggestion = resolveDestinationCombinationsAdvice(ctx, session, locale);
   if (
     structuredSuggestion?.reply &&
     structuredSuggestion.contextPatch?.tripPurpose === "combination_suggestions_offered"
@@ -3592,9 +3624,9 @@ function buildDestinationAdviceReplyBody(
     logChatDestinationContext(resolvedDest);
     logChatBestTravelTimeTriggered(normalizeDestinationLabel(resolvedDest));
     return travelDateExists
-      ? buildTravelDateAssessmentReply(normalizeDestinationLabel(resolvedDest), ctx, userText)
+      ? buildTravelDateAssessmentReply(normalizeDestinationLabel(resolvedDest), ctx, userText, locale)
       : buildBestTravelTimeReply(normalizeDestinationLabel(resolvedDest), {
-          skipFollowUpQuestion: true,
+          skipFollowUpQuestion: true, locale,
         });
   }
 
@@ -3667,7 +3699,7 @@ function buildDestinationAdviceReplyBody(
         parseDestinationFromText(userText);
       if (timeDest) {
         return buildBestTravelTimeReply(normalizeDestinationLabel(timeDest), {
-          skipFollowUpQuestion: true,
+          skipFollowUpQuestion: true, locale,
         });
       }
     }
@@ -3695,6 +3727,7 @@ function buildDestinationAdviceReplyBody(
           return null;
         }
         return buildCityDaysConfirmedReply(destLabel, resolvedDays, country, {
+          locale,
           weather: ctx.weather,
           context: { ...ctx, destination: destLabel, days: resolvedDays },
         }).reply;
@@ -3795,4 +3828,14 @@ function buildDestinationAdviceReplyBody(
   }
 
   return null;
+}
+
+/** Resolver geography survives local advice templates; templates cannot reassign authority. */
+export function resolveDestinationAdvice(ctx: CanonicalTravelContext, session: ChatPlanningSession, userText: string, locale?: import("@/lib/i18n/types").Locale): DestinationAdviceResult {
+  const result = resolveDestinationAdviceInternal(ctx,session,userText,locale);
+  if (ctx.destinationCandidate?.status !== 'resolved' && !(ctx.destinationType === 'country' && ctx.destinationCountryCode)) return result;
+  return {...result,contextPatch:{...result.contextPatch,
+    destination:ctx.destination,destinationCountry:ctx.destinationCountry,destinationCountryCode:ctx.destinationCountryCode,
+    destinationCity:ctx.destinationCity,destinationRegion:ctx.destinationRegion,destinationType:ctx.destinationType,
+    destinationCoordinates:ctx.destinationCoordinates,destinationCandidate:ctx.destinationCandidate}};
 }

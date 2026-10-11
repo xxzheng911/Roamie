@@ -1,3 +1,5 @@
+import { globalPlanningTurn, applyGlobalPlanningContext } from './global-planning-context';
+import { travelMonthSignal } from "./travel-language-signals";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { TripIntentMissingKey } from "@/lib/recommendation/trip-intent";
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
@@ -78,6 +80,11 @@ import { updateSessionPreferenceFromExplicitText } from "@/lib/personalization/r
 export type CanonicalTravelContext = {
   sessionPreference?: import("@/lib/personalization/types").SessionPreferenceV1;
   destination?: string;
+  /** Unverified user text; never coordinates/place authority. */
+  destinationCandidate?: { raw: string; countryHint?: string; status: 'pending' | 'unresolved' | 'conflict' | 'resolved'; locale?: string };
+  destinationInputNames?: string[];
+  destinationClarification?: 'multiple_destinations';
+  travelSeason?: 'spring' | 'summer' | 'autumn' | 'winter';
   /** 國家層級目的地（城市選定後保留） */
   destinationCountry?: string;
   /** ISO country code when resolved (SG / JP / …) */
@@ -338,6 +345,8 @@ function parseDays(text: string): number | undefined {
 }
 
 function parseMonth(text: string): string | undefined {
+  const signal = travelMonthSignal(text);
+  if (signal) return signal;
   if (/下個月|下个月|下月/.test(text)) {
     const next = new Date();
     next.setMonth(next.getMonth() + 1);
@@ -761,7 +770,7 @@ export function parseTravelContextFromText(
   return base;
 }
 
-export function mergeTravelContext(
+function mergeTravelContextLegacy(
   session: ChatPlanningSession,
   userText: string,
   lastAssistantReply?: string,
@@ -955,8 +964,9 @@ export function mergeTravelContext(
     const nextDestNorm = destMerge.destination
       ? normalizeDestinationLabel(destMerge.destination)
       : undefined;
+    const countryRefinement = prev.destinationType === "country" && destMerge.destinationCountry === prev.destinationCountry;
     const destinationSwitched = Boolean(
-      prevDestNorm && nextDestNorm && prevDestNorm !== nextDestNorm && !tripReset.didReset,
+      !countryRefinement && prevDestNorm && nextDestNorm && prevDestNorm !== nextDestNorm && !tripReset.didReset,
     );
 
     // After a destination switch (or explicit new-trip reset), never inherit
@@ -1360,4 +1370,12 @@ export function formatTravelContextForAi(ctx: CanonicalTravelContext): string {
     );
   }
   return lines.join("\n");
+}
+
+/** General language input is merged before legacy geographic heuristics can discard it. */
+export function mergeTravelContext(session: ChatPlanningSession, userText: string, lastAssistantReply?: string): {context: CanonicalTravelContext; session: ChatPlanningSession} {
+  if (session.fromTripAddPlace) return mergeTravelContextLegacy(session,userText,lastAssistantReply);
+  const turn = globalPlanningTurn(session,userText);
+  if (turn) return applyGlobalPlanningContext(session,turn);
+  return mergeTravelContextLegacy(session,userText,lastAssistantReply);
 }

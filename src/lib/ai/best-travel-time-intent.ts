@@ -19,6 +19,10 @@ const ACTIVITY_PREFERENCE_ONLY =
 export function isBestTravelTimeIntent(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
+  if (/\b(?:best (?:time|season|month)(?:s)? (?:to|for)|when (?:is|would be) (?:the )?best time|when (?:should|can) (?:i|we) (?:visit|travel|go))\b/i.test(t)
+    || /(?:旅行|訪問|行く).{0,12}(?:いつ|時期|季節)|(?:いつ|どの季節).{0,12}(?:旅行|行く)|ベストシーズン/.test(t)
+    || /(?:여행|방문).{0,15}(?:언제|시기|계절)|(?:언제|어느 계절).{0,15}(?:여행|가면)|최적의?\s*(?:여행\s*)?시기/.test(t)) return true;
+
 
   if (ACTIVITY_PREFERENCE_ONLY.test(t) && !/(?:什麼時候|什么时候|何时|何時|幾月|几月|比較好|比较好|適合|适合|最佳|什麼去|什么去)/.test(t)) {
     return false;

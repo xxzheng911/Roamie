@@ -1,3 +1,4 @@
+import { displayDestinationForCopy } from "./destination-locale-aliases";
 import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
 import type { Locale } from "@/lib/i18n/types";
 import type { ChatPlanningSession } from "@/lib/chat-session";
@@ -1001,7 +1002,7 @@ export function buildNextStepAfterAdviceSelection(
     }
     if (!days) {
       return {
-        reply: chatRuntimeCopy("cityGoodChoiceDaysAsk", locale, { destination: dest }),
+        reply: chatRuntimeCopy("cityGoodChoiceDaysAsk", locale, { destination: displayDestinationForCopy(dest, undefined, locale ?? "zh-TW") }),
         pendingQuestion: pendingQuestionForAskDays(
           dest,
           pending.destinationCountry ?? ctx.destinationCountry,
@@ -1324,6 +1325,7 @@ export function buildNextStepAfterAdviceSelection(
         days: ctx.days,
       },
       interests,
+      locale,
     );
     if (reply) {
       return {
@@ -1382,7 +1384,7 @@ export function buildNextStepAfterAdviceSelection(
     }
     if (!days) {
       return {
-        reply: chatRuntimeCopy("cityGoodChoiceDaysAsk", locale, { destination: dest }),
+        reply: chatRuntimeCopy("cityGoodChoiceDaysAsk", locale, { destination: displayDestinationForCopy(dest, undefined, locale ?? "zh-TW") }),
         pendingQuestion: pendingQuestionForAskDays(
           dest,
           pending.destinationCountry ?? ctx.destinationCountry,

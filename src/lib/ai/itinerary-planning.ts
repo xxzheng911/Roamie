@@ -1,3 +1,5 @@
+import type { Locale } from "@/lib/i18n/types";
+import { displayDestinationForCopy } from "./destination-locale-aliases";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import {
   coerceTravelDestination,
@@ -341,11 +343,20 @@ export function isReadyForItineraryPlanning(
 export function buildItineraryPlanningReply(
   ctx: CanonicalTravelContext,
   interests: TripInterest[],
+  locale: Locale = "zh-TW",
 ): string | null {
   const label = coerceTravelDestination(ctx.destination);
   if (!label || !ctx.days) return null;
 
   const days = ctx.days;
+  if (locale !== "zh-TW") {
+    const destination = displayDestinationForCopy(label, undefined, locale);
+    return {
+      en: `I’ll plan ${days} days in ${destination} around your preferences. Start with key sights, mix in food or shopping, and leave room for flexible time.\n\nWhich would you prefer?\nA. Build the full ${days}-day itinerary\nB. Recommend places for each day first`,
+      ja: `${destination}の${days}日間をご希望に沿って考えます。主な観光地から始め、食事や買い物を組み合わせ、自由時間も確保します。\n\nどちらがよいですか？\nA. ${days}日間の行程を作成\nB. まず各日のおすすめスポットを紹介`,
+      ko: `${destination} ${days}일 여행을 선호에 맞춰 계획할게요. 주요 명소부터 시작해 음식이나 쇼핑을 곁들이고 여유 시간도 남겨 둘게요.\n\n어느 쪽을 원하세요?\nA. ${days}일 전체 일정 만들기\nB. 먼저 날짜별 추천 장소 보기`,
+    }[locale];
+  }
   const mix = formatTripInterestMix(interests);
 
   if (label === "曼谷" || label.includes("曼谷")) {

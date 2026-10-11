@@ -98,7 +98,12 @@ export function createPendingNearbyLocationRequest(
 }
 
 export function extractExplicitNearbyKeyword(text: string): string | null {
-  const normalized = text.trim().replace(/[？?!！。]+$/g, "");
+  const normalized = text.trim().replace(/[？?!！。.]+$/g, "");
+  const english = normalized.match(/^(?:find|show me|recommend)?\s*(.+?)\s+(?:near me|nearby)$/i);
+  if (english?.[1]) return english[1].trim();
+  const asian = normalized.match(/(?:近く|周辺)(?:で|の)?\s*(.+?)(?:を探して|を探す|を教えて)?$/)
+    ?? normalized.match(/(?:근처|주변)\s*(.+?)(?:\s*추천해.*|\s*찾아.*)$/);
+  if (asian?.[1]) return asian[1].trim();
   const marker = normalized.match(/(?:附近|這附近|这附近|我附近)/);
   if (!marker?.index && marker?.index !== 0) return null;
   const keyword = normalized
@@ -119,7 +124,7 @@ export function canonicalizeExplicitNearbyKeyword(keyword: string): string {
   if (/餐酒|bistro/i.test(value)) return "餐酒館";
   if (/居酒|izakaya/i.test(value)) return "居酒屋";
   if (/早餐|breakfast/i.test(value)) return "早餐店";
-  if (/咖啡|coffee|cafe/i.test(value)) return "咖啡廳";
+  if (/咖啡|coffee|cafe|カフェ|카페/i.test(value)) return "咖啡廳";
   if (/素食|蔬食|vegan|vegetarian/i.test(value)) return "素食餐廳";
   if (/酒吧|pub|bar/i.test(value)) return "酒吧";
   return value;
@@ -135,7 +140,7 @@ export function resolveExplicitNearbyIntent(text: string): {
   const rawKeyword = extractExplicitNearbyKeyword(text);
   if (!rawKeyword) return null;
   const canonicalKeyword = canonicalizeExplicitNearbyKeyword(rawKeyword);
-  const intent: NearbyPlaceIntent = /咖啡|coffee|cafe/i.test(canonicalKeyword)
+  const intent: NearbyPlaceIntent = /咖啡|coffee|cafe|カフェ|카페/i.test(canonicalKeyword)
     ? "cafe"
     : /餐|食|酒|bar|pub|早餐|宵夜|拉麵|燒肉|火鍋|素食|蔬食/i.test(canonicalKeyword)
       ? "restaurant"
@@ -152,7 +157,7 @@ export function nearbySemanticFamilyForKeyword(keyword: string): NearbySemanticF
   if (/酒吧|居酒屋|餐酒館|pub|cocktail\s*bar|wine\s*bar|gastropub|izakaya|\bbar\b/i.test(keyword)) {
     return "nightlife";
   }
-  if (/咖啡|coffee|cafe/i.test(keyword)) return "cafe";
+  if (/咖啡|coffee|cafe|カフェ|카페/i.test(keyword)) return "cafe";
   if (/餐|食|早餐|宵夜|拉麵|燒肉|火鍋|素食|蔬食/i.test(keyword)) return "food";
   return "attraction";
 }

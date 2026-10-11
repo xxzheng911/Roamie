@@ -1,3 +1,5 @@
+import { planningContextText } from "@/lib/i18n/planning-context-copy";
+import { displayDestinationForCopy } from "./destination-locale-aliases";
 import { generationDiscoverySearchScope, discoverySearchStopped, DiscoverySearchStopped } from "./discovery-search-scope";
 import { createCombinationDiscoveryTrace, type CombinationDiscoveryTrace } from "./combination-discovery-trace";
 import { isDevVerboseLog } from "@/lib/dev-verbose-log";
@@ -209,8 +211,10 @@ export const INSUFFICIENT_COMBINATION_PLACES_MESSAGE = "目前暫時無法取得
 export function buildDestinationRecommendationFailedMessage(
   destination: string,
   reason?: string | null,
+  locale: import("@/lib/i18n/types").Locale = "zh-TW",
 ): string {
   const label = normalizeDestinationLabel(destination) || "這個目的地";
+  if (locale !== "zh-TW") return planningContextText("unavailable",locale,displayDestinationForCopy(label,undefined,locale));
   const r = (reason ?? lastDiscoveryFailure?.reason ?? "").toLowerCase();
   const detail = (lastDiscoveryFailure?.detail ?? "").toLowerCase();
   const blob = `${r} ${detail}`;

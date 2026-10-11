@@ -94,7 +94,7 @@
     "verify:home-shortcut-handoff": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-home-shortcut-handoff.mjs",
     "verify:cold-start-nonblocking": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-cold-start-nonblocking.mjs",
     "verify:profile-cold-start-sync-contract": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-profile-cold-start-sync-contract.mjs",
-    "verify:nearby-runtime-contract": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-nearby-runtime-contract.mjs",
+    "verify:nearby-runtime-contract": "VITE_VERBOSE_LOG=1 vite-node --config scripts/vite.verify.config.mjs scripts/verify-nearby-runtime-contract.mjs",
     "verify:nearby-geographic-scope": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-nearby-geographic-scope.mjs",
     "verify:restaurant-render-type-fidelity": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-restaurant-render-type-fidelity.mjs",
     "verify:restaurant-render-metadata-roundtrip": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-restaurant-render-metadata-roundtrip.mjs",

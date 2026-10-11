@@ -1,3 +1,4 @@
+import { multilingualTravelIntent } from "@/lib/ai/travel-language-signals";
 /**
  * Chat Intent Arbitration — priority order for recommendation vs trip planning.
  *
@@ -77,6 +78,7 @@ export function hasActiveRecommendationContext(session: ChatPlanningSession): bo
 export function isExplicitNewTripPlanningText(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
+  if (multilingualTravelIntent(t)) return true;
   if (isCreateItineraryIntent(t)) return true;
   if (EXPLICIT_NEW_TRIP_RE.test(t)) return true;
   // Future travel narrative must beat sticky place_recommendation context.

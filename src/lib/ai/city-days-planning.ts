@@ -148,9 +148,10 @@ export function buildCityDaysConfirmedReply(
   }
 
   const suggestion = buildDestinationCombinationSuggestionPayload(label, days, {
+    locale: options?.locale,
     startDate: hasExactDate ? startDate : undefined,
     endDate: hasExactDate ? endDate : undefined,
-    weatherLine: chatRuntimeCopy("directionAckDays", options?.locale, { destination: label, days }),
+    weatherLine: chatRuntimeCopy("directionAckDays", options?.locale, { destination: displayDestinationForCopy(label, undefined, options?.locale ?? effectiveAppLocale()), days }),
   });
   if (suggestion) {
     return {
@@ -170,6 +171,7 @@ export function buildCityDaysConfirmedReply(
 
   return buildWeatherAwarePlanningReply({
     destination: label,
+    locale: options?.locale,
     days,
     weather: options?.weather,
     context: options?.context,

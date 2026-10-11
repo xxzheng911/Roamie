@@ -1,3 +1,5 @@
+import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import { displayDestinationForCopy } from "./destination-locale-aliases";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import { normalizeRecommendationItem } from "@/lib/ai/types";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
@@ -314,6 +316,7 @@ function toStructuredForValidation(
 export function getDestinationCombinations(
   destination: string,
   opts?: {
+    locale?: import("@/lib/i18n/types").Locale;
     allowThemeFallback?: boolean;
     countryHint?: string | null;
     tripDays?: number | null;
@@ -322,7 +325,7 @@ export function getDestinationCombinations(
 ): DestinationCombination[] {
   const label = normalizeDestinationLabel(destination);
 
-  const locale = effectiveAppLocale();
+  const locale = opts?.locale ?? effectiveAppLocale();
   const cached = getCachedDiscoveredCombinations(label, undefined, undefined, { locale });
   if (cached?.length) {
     const fromCache = cached
@@ -431,10 +434,10 @@ export function flattenDestinationCombinationPlaces(destination: string): string
 /** Persist combination options as structured session data (never text-only). */
 export function buildOfferedCombinationsForSession(
   destination: string,
+  locale: import("@/lib/i18n/types").Locale = effectiveAppLocale(),
 ): NonNullable<import("@/lib/ai/travel-context").CanonicalTravelContext["offeredCombinations"]> {
   const label = normalizeDestinationLabel(destination);
-  const cached = getCachedDiscoveredCombinations(label);
-  const locale = effectiveAppLocale();
+  const cached = getCachedDiscoveredCombinations(label,undefined,undefined,{locale});
   if (cached?.length) {
     return cached.map((combo, index) => {
       const primary = combo.primaryCandidates?.length
@@ -524,10 +527,12 @@ function formatTravelDateRangeLine(
   startDate?: string | null,
   endDate?: string | null,
   tentative?: boolean,
+  locale: import("@/lib/i18n/types").Locale = "zh-TW",
 ): string | null {
   const start = formatDisplayDate(startDate);
   const end = formatDisplayDate(endDate);
-  const prefix = tentative ? "暫定旅行日期" : "旅行日期";
+  const labels = {"zh-TW":["旅行日期","暫定旅行日期"],en:["Travel dates","Tentative travel dates"],ja:["旅行日程","仮の旅行日程"],ko:["여행 날짜","잠정 여행 날짜"]};
+  const prefix = labels[locale][tentative ? 1 : 0];
   if (start && end) return `${prefix}：${start}～${end}`;
   if (start) return `${prefix}：${start}`;
   return null;
@@ -537,6 +542,7 @@ export function buildDestinationCombinationSuggestionPayload(
   destination: string,
   days: number,
   opts?: {
+    locale?: import("@/lib/i18n/types").Locale;
     startDate?: string | null;
     endDate?: string | null;
     weatherLine?: string | null;
@@ -550,13 +556,13 @@ export function buildDestinationCombinationSuggestionPayload(
   },
 ): DestinationCombinationSuggestionPayload | null {
   const label = normalizeDestinationLabel(destination);
-  const locale = effectiveAppLocale();
+  const locale = opts?.locale ?? effectiveAppLocale();
   const usedTitles = new Set<string>();
-  const offeredSource = buildOfferedCombinationsForSession(label);
+  const offeredSource = buildOfferedCombinationsForSession(label,locale);
   const combos = (
     opts?.forceCombinations?.length
       ? opts.forceCombinations
-      : getDestinationCombinations(label, { tripDays: days })
+      : getDestinationCombinations(label, { tripDays: days, locale })
   ).map((c, sourceIndex) => {
     const places = localizeCombinationPlaceNames([...c.places], locale);
     const title = isMechanicalCombinationTitle(c.title)
@@ -625,7 +631,7 @@ export function buildDestinationCombinationSuggestionPayload(
 
   logChatDestinationScopeLock(label);
 
-  const dateLine = formatTravelDateRangeLine(opts?.startDate, opts?.endDate, opts?.tentativeDates);
+  const dateLine = formatTravelDateRangeLine(opts?.startDate, opts?.endDate, opts?.tentativeDates, locale);
 
   const normalizeKey = (value: string | undefined) =>
     (value ?? "").trim().toLocaleLowerCase().replace(/\s+/g, "");
@@ -686,10 +692,11 @@ export function buildDestinationCombinationSuggestionPayload(
   });
 
   if (displayedOfferedCombinations.length < 2) return null;
+  const shownDestination = displayDestinationForCopy(label,undefined,locale);
   const header = [
-    opts?.weatherLine?.trim() || `好，我先記下 ${label} ${days} 天的行程方向。`,
+    opts?.weatherLine?.trim() || chatRuntimeCopy("directionAckDays",locale,{destination:shownDestination,days}),
     "",
-    `以下是${label}的建議組合搭配，你可以選一組或多組混搭：`,
+    locale === "zh-TW" ? `以下是${label}的建議組合搭配，你可以選一組或多組混搭：` : chatRuntimeCopy("combinationNext",locale),
     "",
     ...displayedOfferedCombinations.map(
       (combo, index) =>
@@ -697,7 +704,7 @@ export function buildDestinationCombinationSuggestionPayload(
     ),
     "",
     ...(dateLine ? [dateLine, ""] : []),
-    "回覆你比較有興趣的組合，我來幫你生成行程。",
+    ...(locale === "zh-TW" ? ["回覆你比較有興趣的組合，我來幫你生成行程。"] : []),
   ];
 
   logAiPipeline(

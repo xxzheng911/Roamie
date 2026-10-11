@@ -1,3 +1,4 @@
+import { localizedCountryReference, localizedCountryName } from "./destination-country-normalize";
 /**
  * Locale / alias normalization for travel destinations.
  * Maps English, kana, and common variants → canonical zh labels used by the app.
@@ -6,6 +7,18 @@
 
 /** Kana / romaji / English variants → canonical destination label */
 const CITY_LOCALE_ALIASES: Record<string, string> = {
+  "chiang mai": "清邁",
+  チェンマイ: "清邁",
+  치앙마이: "清邁",
+  プーケット: "普吉島",
+  푸켓: "普吉島",
+  サムイ島: "蘇梅島",
+  코사무이: "蘇梅島",
+  バンコク: "曼谷",
+  방콕: "曼谷",
+  도쿄: "東京",
+  오사카: "大阪",
+  서울: "首爾",
   // Japan
   tokyo: "東京",
   "tokyo city": "東京",
@@ -138,11 +151,11 @@ export function applyCityLocaleAlias(label: string): string {
   if (withoutCity !== lower && CITY_LOCALE_ALIASES[withoutCity]) {
     return CITY_LOCALE_ALIASES[withoutCity]!;
   }
-  return raw;
+  return localizedCountryReference(raw)?.country ?? raw;
 }
 
 const LATIN_TRAVEL_ALIAS =
-  /\b(?:i['’]d like to go to|i would like to go to|i want to go to|i['’]m going to|let['’]s go to|planning a trip to|plan a trip to|travel to|going to|go to|visit)\s+([a-z][a-z .'-]{0,80})/i;
+  /\b(?:i['’]d like to go to|i would like to go to|i want to go to|(?:i['’]m|i am|we['’]re|we are) (?:going|travell?ing) to|let['’]s go to|planning a trip to|plan a trip to|travel to|going to|go to|visit)\s+([a-z][a-z .'-]{0,80})/i;
 
 /**
  * Existing alias table only. Unknown place names are not guessed or translated.
@@ -151,9 +164,20 @@ const LATIN_TRAVEL_ALIAS =
 export function extractKnownAliasDestination(
   text: string,
 ): { canonical: string; surface: string } | undefined {
+  const direct = applyCityLocaleAlias(text);
+  if (direct !== text.trim()) return {canonical:direct, surface:text.trim()};
+  const asian = text.match(/(?:月に|월에)\s*(.+?)(?:へ|に|으로|로|에)\s*旅行|(?:월에)\s*(.+?)(?:으로|로|에)\s*여행/);
+  if (asian) {
+    const surface = (asian[1] ?? asian[2]).trim();
+    const canonical = applyCityLocaleAlias(surface);
+    if (canonical !== surface) return {canonical,surface};
+  }
   const match = text.match(LATIN_TRAVEL_ALIAS);
   const tail = match?.[1]?.trim();
   if (!tail) return undefined;
+  const countryText = tail.replace(/\s+(?:in|for|this|next)\b.*$/i, '').replace(/[.!?]+$/, '').trim();
+  const country = localizedCountryReference(countryText);
+  if (country) return {canonical:country.country, surface:countryText};
   const aliases = Object.keys(CITY_LOCALE_ALIASES)
     .filter((key) => /^[a-z0-9][a-z0-9 .'-]*$/i.test(key))
     .sort((a, b) => b.length - a.length);
@@ -172,8 +196,14 @@ export function displayDestinationForCopy(
   userText: string | undefined,
   locale: "zh-TW" | "en" | "ja" | "ko",
 ): string {
-  if (locale === "zh-TW" || !userText) return canonical;
-  const extracted = extractKnownAliasDestination(userText);
+  if (locale === "zh-TW") return canonical;
+  const country = localizedCountryName(canonical, locale);
+  if (country) return country;
+  const aliases = Object.entries(CITY_LOCALE_ALIASES).filter(([,value]) => value === canonical);
+  const script = locale === 'ja' ? /[\u3040-\u30ff]/ : locale === 'ko' ? /[\uac00-\ud7a3]/ : /^[a-z]/;
+  const alias = aliases.find(([key]) => script.test(key))?.[0];
+  if (alias) return locale === 'en' ? alias.replace(/\b\w/g, c => c.toUpperCase()) : alias;
+  const extracted = userText ? extractKnownAliasDestination(userText) : undefined;
   return extracted?.canonical === canonical ? extracted.surface : canonical;
 }
 

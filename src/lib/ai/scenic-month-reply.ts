@@ -1,3 +1,5 @@
+import { planningContextText } from "@/lib/i18n/planning-context-copy";
+import { displayDestinationForCopy } from "./destination-locale-aliases";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
@@ -338,7 +340,11 @@ export function buildScenicMonthPlanningResult(params: {
     `suggestedWindow=${bits.suggestedWindow}`,
   );
 
-  const body = lines.join("\n");
+  const locale = params.locale ?? "zh-TW";
+  const body = locale === 'zh-TW' ? lines.join("\n") : [
+    planningContextText('month',locale,displayDestinationForCopy(label, params.userText, locale),monthNum ?? undefined),
+    '', chatRuntimeCopy('dateAskLine',locale),
+  ].join('\n');
   const suggestedStartDate = monthNum ? midMonthIsoDate(monthNum) : undefined;
 
   return {

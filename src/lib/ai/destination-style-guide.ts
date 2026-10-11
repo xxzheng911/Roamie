@@ -5,6 +5,7 @@ import {
 } from "@/lib/ai/trip-planning-context";
 import {
   getDestinationCombinations,
+  hasDestinationCombinations,
   isSuggestionInDestinationScope,
 } from "@/lib/ai/destination-combination-suggestions";
 

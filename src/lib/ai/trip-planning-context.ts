@@ -1,3 +1,7 @@
+import { localizedCountryReference } from "./destination-country-normalize";
+import { isCalendarOnly } from "./planning-calendar-signals";
+import { safeDestinationCandidate, travelDestinationCandidates } from "./travel-language-signals";
+import { multilingualTravelIntent } from "@/lib/ai/travel-language-signals";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { TripLocation } from "@/lib/location/types";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
@@ -165,7 +169,7 @@ export const KNOWN_COUNTRIES =
 
 export function isKnownCountryLabel(name: string): boolean {
   const n = normalizeCityLabel(name);
-  return KNOWN_COUNTRIES.test(n);
+  return KNOWN_COUNTRIES.test(n) || Boolean(localizedCountryReference(n));
 }
 
 const KNOWN_COUNTRY_NAMES = [
@@ -332,6 +336,7 @@ export function isFutureTripPlanningStatement(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
 
+  if (multilingualTravelIntent(t)) return true;
   // Explicit place-category asks are not trip planning narratives.
   if (
     /(?:推薦|有沒有|有什麼|哪些|想找|找).{0,10}(?:餐廳|咖啡|景點|美食|夜市|酒吧|商圈|店)/.test(t) ||
@@ -494,7 +499,7 @@ export function coerceTravelDestination(name: string | undefined | null): string
 /** 提問語、代詞、動詞片語 — 不可當目的地 */
 export function isValidParsedDestinationLabel(name: string): boolean {
   const n = name.trim();
-  if (n.length < 2) return false;
+  if (!safeDestinationCandidate(n) || isCalendarOnly(n)) return false;
   if (isCategoryNonDestinationLabel(n)) return false;
   if (NON_DESTINATION_LABELS.has(n)) return false;
   if (/^(哪|什麼|什么|何人|何處|何处|附近|這|这|那|幾|何時|何时|怎麼|怎么|如何)/.test(n)) {
@@ -505,14 +510,6 @@ export function isValidParsedDestinationLabel(name: string): boolean {
     return false;
   }
   if (splitKnownParentAreaLabel(n)) return true;
-  if (
-    n.length > 4 &&
-    !isKnownTouristCityLabel(n) &&
-    !isKnownCountryLabel(n) &&
-    !isKnownScenicLabel(n)
-  ) {
-    return false;
-  }
   return true;
 }
 
@@ -711,6 +708,10 @@ export function parseDestinationFromText(text: string): string | undefined {
     const t = text.trim();
     if (!t) return undefined;
 
+    if (isCalendarOnly(t)) return undefined;
+    const globalCandidates = travelDestinationCandidates(t);
+    if (globalCandidates.length > 1) return undefined;
+    if (globalCandidates.length === 1) return normalizeDestinationLabel(globalCandidates[0]);
     const itineraryDest = extractItineraryDestinationFromText(t);
     if (itineraryDest) return itineraryDest;
 

@@ -1,3 +1,4 @@
+import { resolveGlobalPlanningCandidate, isGlobalResolutionCurrent } from "@/lib/ai/global-planning-context";
 import { createExplicitCreateLoading } from "@/lib/ai/explicit-create-loading";
 import { isPlacesRateLimited as discoveryCooldownActive } from "@/lib/places-api-guard";
 import { createCombinationDiscoveryTrace } from "@/lib/ai/combination-discovery-trace";
@@ -811,6 +812,8 @@ function Chat() {
   } | null>(null);
   const selectionRecommendationInFlightRef = useRef(false);
   const selectionGenerateInFlightRef = useRef(false);
+  const globalResolutionEpochRef = useRef(0);
+  useEffect(() => () => { globalResolutionEpochRef.current++; }, []);
   const activeGenerationRequestIdRef = useRef<string | null>(null);
   const generatedPlanHandoffRef = useRef(createGeneratedPlanHandoff());
   const consumedPlanCreationRef = useRef<string | undefined>(undefined);
@@ -8512,6 +8515,24 @@ function Chat() {
           }
         : mergeTravelContext(nextSession, trimmed, lastAssistantReply);
     nextSession = merged.session;
+    const globalResolutionEpoch = ++globalResolutionEpochRef.current;
+    const globalResolutionSession = sessionRef.current;
+    if (merged.context.destinationCandidate?.status === 'pending') {
+      nextSession = await resolveGlobalPlanningCandidate(nextSession, locale, async query => {
+        const response = await geocodeLocationFn({data:{query,destinationName:query,locale,disableLocaleRegionBias:true,placesFallback:false}});
+        return {location:response.location,rawResultCount:response.providerResult.rawResultCount};
+      });
+      if (!isGlobalResolutionCurrent(globalResolutionEpoch,globalResolutionEpochRef.current,globalResolutionSession,sessionRef.current)) return;
+      merged.session = nextSession;
+      merged.context = nextSession.travelContext ?? merged.context;
+    }
+    if (merged.context.destinationClarification || (merged.context.destinationCandidate && merged.context.destinationCandidate.status !== 'resolved')) {
+      const turn = processAdviceTurn(trimmed,nextSession,merged.context,undefined,locale);
+      const next: ChatMsg[] = [...msgs,{role:'user',content:displayMessage}];
+      setMsgs(next); setText(''); scrollToUserMessage(next.length-1);
+      await completeAdviceTurn(turn,nextSession,merged.context,next);
+      return;
+    }
     if (isBudgetRefinementText(trimmed)) {
       nextSession = applyBudgetRefinementToSession(trimmed, {
         ...nextSession,

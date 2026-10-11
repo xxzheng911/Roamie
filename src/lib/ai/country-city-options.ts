@@ -24,6 +24,8 @@ export type CountryCityOptionType = "city" | "region" | "island";
 
 export type CountryCityOption = {
   name: string;
+  originalName?: string;
+  localizedNames?: Partial<Record<Locale, string>>;
   type: CountryCityOptionType;
   country: string;
   /** Short trait line (~10–24 chars); rendered as 「・name：summary」. */
@@ -307,7 +309,7 @@ function normalizeOneOption(
   if (!name) return null;
   const type = toOptionType(opt.type);
   const summary = String(opt.summary ?? "").trim() || defaultSummaryForType(type);
-  return { name, type, country, summary };
+  return { name, type, country, summary, originalName: opt.originalName ?? opt.name, localizedNames: opt.localizedNames };
 }
 
 export function normalizeCountryCityOptions(
@@ -395,6 +397,8 @@ export function validateCountryCityOptions(
       type: opt.type,
       country: label,
       summary: String(opt.summary).trim(),
+      originalName: opt.originalName,
+      localizedNames: opt.localizedNames,
     });
   }
 

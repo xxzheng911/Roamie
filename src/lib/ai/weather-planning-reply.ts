@@ -1,3 +1,6 @@
+import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import { displayDestinationForCopy } from "./destination-locale-aliases";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
@@ -45,6 +48,7 @@ function pendingQuestionForRefreshRecommendations(
  */
 export function buildWeatherAwarePlanningReply(params: {
   destination: string;
+  locale?: import("@/lib/i18n/types").Locale;
   days: number;
   weather?: WeatherSummary | null;
   context?: CanonicalTravelContext;
@@ -68,7 +72,8 @@ export function buildWeatherAwarePlanningReply(params: {
 
   if (hasDestinationCombinations(label)) {
     const suggestion = buildDestinationCombinationSuggestionPayload(label, days, {
-      weatherLine: `好，我先記下 ${label} ${days} 天的行程方向。`,
+      locale: params.locale,
+      weatherLine: chatRuntimeCopy("directionAckDays",params.locale,{destination:displayDestinationForCopy(label,undefined,params.locale ?? effectiveAppLocale()),days}),
       startDate: hasExactDate ? startDate : undefined,
       endDate: hasExactDate ? endDate : undefined,
     });
@@ -100,7 +105,7 @@ export function buildWeatherAwarePlanningReply(params: {
   );
 
   return {
-    reply: buildDestinationRecommendationFailedMessage(label),
+    reply: buildDestinationRecommendationFailedMessage(label,undefined,params.locale),
     pendingQuestion: pendingQuestionForRefreshRecommendations(
       label,
       params.destinationCountry,

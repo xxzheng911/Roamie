@@ -46,7 +46,7 @@ function isTripMealRequest(text: string): boolean {
 export function userExplicitlyWantsNearbyPlaces(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
-  return /(附近|這一帶|这一带|現在|今天|當下|我這邊|我附近|離我|離這裡|离这里)/.test(t);
+  return /(near me|nearby|周辺|近く|근처|주변|附近|這一帶|这一带|現在|今天|當下|我這邊|我附近|離我|離這裡|离这里)/i.test(t);
 }
 
 /** 聊聊使用者意圖（優先於通用旅遊模板） */
