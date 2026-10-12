@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef } from "react";
-import { coverSourceType, traceCover } from "@/lib/saved-trip/cover-runtime-diagnostics";
+import { coverSourceType, traceCover, type CoverSurface } from "@/lib/saved-trip/cover-runtime-diagnostics";
 import { resolveTripCoverUrl, type TripCoverFields } from "@/lib/saved-trip/cover";
 import { FadeInImage } from "@/components/media/FadeInImage";
 import { cn } from "@/lib/utils";
@@ -15,6 +15,8 @@ type Props = TripCoverFields & {
   /** @deprecated 請改用 coverImageUrl / aiGeneratedCoverImageUrl */
   src?: string | null;
   category?: string | null;
+  /** Debug diagnostics only: which screen renders this cover. */
+  coverSurface?: CoverSurface;
 };
 
 /** 行程封面圖：自訂 → 預設 → AI → Roamie 預設 */
@@ -28,6 +30,7 @@ export function TripCoverImage({
   coverSource,
   mood,
   category,
+  coverSurface = "other",
   loading,
   resolutionPending,
   className,
@@ -50,7 +53,7 @@ export function TripCoverImage({
       : src?.trim() || resolveTripCoverUrl({ mood: mood ?? category }));
 
   const correlationId = useId();
-  const trace = { correlationId, sourceType: isCoverCustomized ? "custom" as const : coverSourceType(resolved) };
+  const trace = { correlationId, surface: coverSurface, sourceType: isCoverCustomized ? "custom" as const : coverSourceType(resolved) };
   const previous = useRef<{ url: string; pending: boolean } | undefined>(undefined);
   const pending = Boolean(resolutionPending && !isCoverCustomized);
   useEffect(() => {

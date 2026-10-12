@@ -74,6 +74,14 @@ export type TransitLegAdvice = {
   transportDisplayText?: string;
   /** 對應 buildLegRouteFingerprint，用於 leg_already_covered 判斷 */
   routeCacheFingerprint?: string;
+  /**
+   * Chat save only: the exact endpoints the save-time Routes request used, so a later
+   * failed sync can prove identity before the display layer reuses this duration.
+   */
+  savedRouteEndpoints?: {
+    origin: { lat: number; lng: number; placeId?: string };
+    destination: { lat: number; lng: number; placeId?: string };
+  };
   /** Persist the existing negative-cache deadline across itinerary reopen. */
   routeRetryAfter?: number;
   /**

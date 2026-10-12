@@ -1,6 +1,7 @@
 import type { LatLng } from "@/lib/google-routes-fetch";
 import type { RoutesTravelMode } from "@/lib/routes/types";
 import { isGooglePlaceId } from "@/lib/place-detail-handoff";
+import { normalizeCountryReference } from "@/lib/ai/destination-country-normalize";
 
 export type DirectionsLocationInput = {
   coords?: LatLng | null;
@@ -46,7 +47,14 @@ export function formatDirectionsLatLng(coords: LatLng): string {
 }
 
 /** Google Directions `region` bias（避免日本行程誤用 tw） */
+/** Google's country component is localized (日本 / Japan / 일본); resolve it, never the App locale. */
+function isJapanCountryReference(value: string): boolean {
+  const country = value.split(/[,，]/).pop()?.trim();
+  return Boolean(country) && normalizeCountryReference(country).countryCode === "JP";
+}
+
 export function resolveDirectionsRegion(countryOrContext?: string | null): string {
+  if (countryOrContext && isJapanCountryReference(countryOrContext)) return "jp";
   const s = (countryOrContext ?? "").toLowerCase();
   if (/日本|japan|\bjp\b|東京|tokyo|大阪|osaka|京都|kyoto|北海道|沖繩|okinawa|名古屋|橫濱|yokohama|福岡|fukuoka|札幌|sapporo/.test(s)) {
     return "jp";

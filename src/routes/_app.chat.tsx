@@ -19,7 +19,7 @@ import { hasPendingTripCreationHandoff, bindTripCreationAuthority, type TripCrea
 import { logTripRuntime, type TripEntryType } from "@/lib/ai/trip-runtime-diagnostic";
 import { logTripLifecycle, type TripLifecycleFailure } from "@/lib/ai/trip-lifecycle-diagnostic";
 import { resolveDestinationAuthority } from "@/lib/location/destination-authority";
-import { publishTripCover } from "@/lib/saved-trip/cover-live-state";
+import { publishTripCover, publishTripRouteEnrichment } from "@/lib/saved-trip/cover-live-state";
 import { chatLoadingCopy, chatRuntimeCopy, isChatRuntimeCopy, isChatRuntimeCopyPrefix, type ChatLoadingPhase } from "@/lib/chat-runtime-copy";
 import { chatShortcutContract } from "@/lib/chat-shortcut-chips";
 import { chatSessionForLocale } from "@/lib/chat-session";
@@ -716,6 +716,7 @@ import {
   generateLocalRecommendationFallback,
 } from "@/lib/ai/local-recommendation-fallback";
 import { getTripLegsWithDurations, travelLabelToRoutesMode } from "@/services/routesService";
+import { buildSavedTripTransitLegs } from "@/lib/saved-trip/saved-trip-transit-legs";
 import { applyPlanTripDetails } from "@/lib/plan-form-trip-payload";
 import { attachCoreTripToPayload, toCoreTrip, type CoreTrip } from "@/lib/trip/core-trip";
 import { getImmediateTripCoverImage, getTripCoverImage, tripCoverDestinationInput } from "@/services/placeImageService";
@@ -11413,9 +11414,9 @@ function Chat() {
 
       const itineraryStops = coalesceItineraryItems(itinerary.itinerary);
       logItineraryItemsCoalesced(itineraryStops.length);
-      const legPlaces = itineraryStops
-        .filter((p) => p.lat != null && p.lng != null)
-        .map((p) => ({ lat: p.lat as number, lng: p.lng as number }));
+      // Saved legs pair with exactly the stops the Routes request used.
+      const legStops = itineraryStops.filter((p) => p.lat != null && p.lng != null);
+      const legPlaces = legStops.map((p) => ({ lat: p.lat as number, lng: p.lng as number }));
       // Directions and remote cover are recoverable enrichment. Persist the
       // authoritative itinerary first, then enrich the same saved row in background.
       const routeLegs: Awaited<ReturnType<typeof getTripLegsWithDurations>> = [];
@@ -11442,15 +11443,10 @@ function Chat() {
               : workingSession.transportation === "機車"
                 ? "scooter"
                 : "walk",
-          transitLegs: Object.fromEntries(
-            routeLegs.map((leg, idx) => [
-              `${itineraryStops[idx]?.placeName ?? idx}→${itineraryStops[idx + 1]?.placeName ?? idx + 1}`,
-              {
-                headline: `${leg.distanceMeters}m`,
-                durationMinutes: leg.durationMinutes,
-                distanceMeters: leg.distanceMeters,
-              },
-            ]),
+          transitLegs: buildSavedTripTransitLegs(
+            legStops,
+            routeLegs,
+            travelLabelToRoutesMode(workingSession.transportation ?? "步行"),
           ),
         },
       };
@@ -11675,33 +11671,22 @@ function Chat() {
         .then(async ([legsResult, coverResult]) => {
           const enrichedLegs = legsResult.status === "fulfilled" ? legsResult.value : [];
           const enrichedCover = coverResult.status === "fulfilled" ? coverResult.value : cover;
-          const persistedPayload = saved.payload as RoamiePayloadV2;
-          const enrichedPayload: RoamiePayloadV2 = {
-            ...persistedPayload,
-            aiGeneratedCoverImageUrl: enrichedCover.url,
-            tripSettings: {
-              ...persistedPayload.tripSettings,
-              transitLegs: Object.fromEntries(
-                enrichedLegs.map((leg, idx) => [
-                  `${itineraryStops[idx]?.placeName ?? idx}→${itineraryStops[idx + 1]?.placeName ?? idx + 1}`,
-                  {
-                    headline: `${leg.distanceMeters}m`,
-                    durationMinutes: leg.durationMinutes,
-                    distanceMeters: leg.distanceMeters,
-                  },
-                ]),
-              ),
-            },
-          };
-          const updatedCoverRow = await updateTripMeta(
+          // Never rewrite the whole payload from the save-time snapshot: the open editor may
+          // already have newer edits. Legs go to the editor (add-only merge → its autosave);
+          // cover columns are the display authority and stay a narrow meta update.
+          publishTripRouteEnrichment(
             saved.id,
-            {
-              cover_image: enrichedCover.url,
-              cover_source: enrichedCover.source,
-              cover_query: enrichedCover.query,
-            },
-            enrichedPayload,
+            buildSavedTripTransitLegs(
+              legStops,
+              enrichedLegs,
+              travelLabelToRoutesMode(workingSession.transportation ?? "步行"),
+            ),
           );
+          const updatedCoverRow = await updateTripMeta(saved.id, {
+            cover_image: enrichedCover.url,
+            cover_source: enrichedCover.source,
+            cover_query: enrichedCover.query,
+          });
           if (!updatedCoverRow) publishTripCover(saved, "fallback");
         })
         .catch((error) => {

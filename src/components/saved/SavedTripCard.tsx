@@ -39,6 +39,7 @@ export function SavedTripCard({ trip: inputTrip, shareSlot, deleteSlot }: Props)
         <div className="flex gap-3">
           <div className="h-[5.5rem] w-[5.5rem] shrink-0 overflow-hidden rounded-2xl">
             <TripCoverImage
+              coverSurface="saved_card"
               key={`${trip.id}-cover-${trip.updatedAt}`}
               displayCoverImage={resolveCoreTripCoverDisplayUrl(trip)}
               coverImageUrl={null}

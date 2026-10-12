@@ -453,12 +453,17 @@ export async function fetchRouteWithDirectionFallbacks(
     locationContext: ctx.query.locationContext,
     regionCode: ctx.query.region,
   };
-  const chain = allowModeFallback
+  // Japan transit is a Google Maps deeplink (route-duration-providers), never an
+  // automatic Directions fallback for a walk/drive leg.
+  const skipAutoTransit = preferredMode !== "TRANSIT" && ctx.query.region === "jp";
+  const fallbackAllowed = (m: RoutesTravelMode) => !(skipAutoTransit && m === "TRANSIT");
+  const chain = (allowModeFallback
     ? buildFallbackModeChain(preferredMode, straightM, null, chainOpts)
-    : [preferredMode];
+    : [preferredMode]).filter(fallbackAllowed);
   const attempted: RoutesTravelMode[] = [];
   const rawFailures: RouteApiFailureTelemetry[] = [];
   let lastAvailable: string[] | undefined;
+  let rateLimited = false;
   const originName = ctx.query.logLegKey?.split("→")[0]?.split("§").pop();
   const destinationName = ctx.query.logLegKey?.split("→")[1];
 
@@ -519,7 +524,10 @@ export async function fetchRouteWithDirectionFallbacks(
       telemetry: failureTelemetry,
     });
     // Switching modes cannot resolve a shared rate/budget denial.
-    if (result.statusCode === 429 || failureTelemetry.httpStatus === 429) break;
+    if (result.statusCode === 429 || failureTelemetry.httpStatus === 429) {
+      rateLimited = true;
+      break;
+    }
     if (result.availableTravelModes?.length) {
       lastAvailable = result.availableTravelModes;
     }
@@ -537,12 +545,17 @@ export async function fetchRouteWithDirectionFallbacks(
         chainOpts,
       );
       for (const m of expanded) {
-        if (!chain.includes(m)) chain.push(m);
+        if (!chain.includes(m) && fallbackAllowed(m)) chain.push(m);
       }
     }
   }
 
-  const failReason = allowModeFallback ? "zero_results" : "mode_unavailable";
+  // A shared rate/budget denial is not evidence that no route exists.
+  const failReason = rateLimited
+    ? "rate_limited"
+    : allowModeFallback
+      ? "zero_results"
+      : "mode_unavailable";
   warnRouteOnce(
     `fallback_result|${ctx.cacheKey}|${attempted.join(",")}`,
     `[ROUTE_FALLBACK_RESULT] legKey=${ctx.scope.legKey} requestedMode=${preferredMode} attemptedModes=${attempted.join(",")} allowFallback=${allowModeFallback} resolvedMode=none success=false finalLocalReason=${failReason} rawFailureKinds=${rawFailures.map((failure) => failure.failureKind).join(",")} rawGoogleStatuses=${rawFailures.map((failure) => failure.googleStatus).join(",")} durationMinutes=n/a`,

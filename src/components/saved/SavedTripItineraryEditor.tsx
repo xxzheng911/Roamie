@@ -1,6 +1,15 @@
 import { tripTitleDisplay } from "@/lib/trip/title-display";
 import { itineraryDestinationDisplay } from "@/lib/native-qa-display";
-import { applyTripCover, coverRevision } from "@/lib/saved-trip/cover-live-state";
+import {
+  applyTripCover,
+  coverRevision,
+  coverStateForLiveUpdate,
+  getTripRouteEnrichment,
+  mergeTripRouteEnrichment,
+  TRIP_ROUTE_ENRICHMENT_EVENT,
+} from "@/lib/saved-trip/cover-live-state";
+import { coverLiveDecision, traceCoverLiveDecision } from "@/lib/saved-trip/cover-runtime-diagnostics";
+import { selectDisplayTransitLeg } from "@/lib/saved-trip/saved-trip-transit-legs";
 import { useLiveTripCover } from "@/lib/saved-trip/use-live-cover";
 import { LOCALIZED_ACTION_GRID, LOCALIZED_ACTION_BUTTON } from "@/lib/localized-action-layout";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -290,6 +299,13 @@ type Props = {
   ignoreRealtimeUntilRef?: React.MutableRefObject<number>;
 };
 
+
+/** Add-only merge of verified background route legs; same reference when unchanged. */
+function withTripRouteEnrichment(settings: TripPlanSettings, tripId: string): TripPlanSettings {
+  const merged = mergeTripRouteEnrichment(settings.transitLegs, getTripRouteEnrichment(tripId));
+  return merged === settings.transitLegs ? settings : { ...settings, transitLegs: merged };
+}
+
 export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, initialDay, ignoreRealtimeUntilRef }: Props) {
   const { t: uiT } = useI18n();
 
@@ -548,28 +564,58 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
     setIsCoverCustomized(remoteView.isCoverCustomized);
     setCoverSource(stored.cover_source);
     setSettings(
-      remotePayload.tripSettings ?? {
-        startTime: coalesceItineraryItems(remotePayload.itinerary)[0]?.time?.slice(0, 5) ?? "10:00",
-        transport: "walk",
-        legMinutes: {},
-        legTransport: {},
-      },
+      withTripRouteEnrichment(
+        remotePayload.tripSettings ?? {
+          startTime: coalesceItineraryItems(remotePayload.itinerary)[0]?.time?.slice(0, 5) ?? "10:00",
+          transport: "walk",
+          legMinutes: {},
+          legTransport: {},
+        },
+        stored.id,
+      ),
     );
     setItems([...coalesceItineraryItems(remotePayload.itinerary)]);
     markSynced(remotePayload);
     lastAppliedRemoteAtRef.current = stored.updated_at;
     console.info("[TRIP_REALTIME] applied remote state", stored.id);
   }, [stored, markSynced, ignoreRealtimeUntilRef]);
+  // Background Routes enrichment (published after save) joins the open editor add-only;
+  // the editor's own autosave then persists it, so a later save can no longer erase it.
+  useEffect(() => {
+    const merge = () => setSettings((prev) => withTripRouteEnrichment(prev, stored.id));
+    const onEnriched = (event: Event) => {
+      if ((event as CustomEvent<{ tripId?: string }>).detail?.tripId === stored.id) merge();
+    };
+    window.addEventListener(TRIP_ROUTE_ENRICHMENT_EVENT, onEnriched);
+    merge(); // Replay an enrichment that completed before this editor mounted.
+    return () => window.removeEventListener(TRIP_ROUTE_ENRICHMENT_EVENT, onEnriched);
+  }, [stored.id]);
   // Same-client cover mutations bypass only the generic row echo guard.
   // Keep itinerary/title/settings state untouched, including active local edits.
+  const displayedAiCoverRef = useRef<string | null>(null);
   useLayoutEffect(() => {
-    if (!liveCover || coverRevision(stored.updated_at) > coverRevision(liveCover.updatedAt)) return;
-    const view = normalizeStoredTrip(applyTripCover(stored));
+    // Debug-only decision record (VITE_DEBUG_DIAGNOSTICS); mirrors the gate below.
+    const incoming = liveCover ? normalizeStoredTrip(applyTripCover(stored)) : null;
+    traceCoverLiveDecision(coverLiveDecision({
+      surface: "trip_detail",
+      live: liveCover,
+      storedRevision: coverRevision(stored.updated_at),
+      liveRevision: liveCover ? coverRevision(liveCover.updatedAt) : 0,
+      currentUrl: displayedAiCoverRef.current,
+      incomingUrl: incoming?.isCoverCustomized ? incoming.customCoverImageUrl : incoming?.aiGeneratedCoverImageUrl,
+      incomingCustomized: Boolean(incoming?.isCoverCustomized),
+    }));
+    // A newer row (this client's own save echo is skipped by the realtime guard) already
+    // carries the persisted cover columns; the version guard lives in applyTripCover.
+    const coverRow = coverStateForLiveUpdate(stored, liveCover);
+    if (!coverRow) return;
+    const view = normalizeStoredTrip(coverRow);
     setCustomCoverImageUrl(view.customCoverImageUrl);
     setAiCoverImageUrl(view.aiGeneratedCoverImageUrl);
     setIsCoverCustomized(view.isCoverCustomized);
-    setCoverSource(liveCover.fields.cover_source);
+    setCoverSource(coverRow.cover_source);
   }, [liveCover, stored]);
+  displayedAiCoverRef.current = aiCoverImageUrl;
   const automaticCoverPending = liveCover?.resolution === "pending" &&
     coverRevision(stored.updated_at) <= coverRevision(liveCover.updatedAt) && !initialView.isCoverCustomized;
 
@@ -1773,6 +1819,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
       <div ref={tripCoverRef} className="trip-detail-cover">
         <div className="relative aspect-[3/2] w-full overflow-hidden">
           <TripCoverImage
+            coverSurface="trip_detail"
             key={
               tripCoverDisplayUrl?.startsWith("blob:")
                 ? tripCoverDisplayUrl
@@ -1986,7 +2033,10 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
                           item.placeName || item.title,
                         )
                       : null;
-                  const transit = transitKey ? settings.transitLegs?.[transitKey] : undefined;
+                  const transit =
+                    prev != null && transitKey
+                      ? selectDisplayTransitLeg(settings.transitLegs, activeDay.dateKey, prev, item)
+                      : undefined;
                   // SoT: picker shows resolvedMode, not stale preference.
                   const transport = displayTransportLabelForLeg(transit, preferenceTransport);
                   const showJapanTransitMaps =

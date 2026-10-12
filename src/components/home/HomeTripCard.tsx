@@ -23,6 +23,7 @@ export function HomeTripCard({ trip }: Props) {
     >
       <div className="relative aspect-[16/10] overflow-hidden">
         <TripCoverImage
+              coverSurface="home_card"
           key={`${trip.id}-cover-${trip.updatedAt}`}
           displayCoverImage={resolveCoreTripCoverDisplayUrl(trip)}
           coverImageUrl={null}

@@ -1,4 +1,5 @@
 import type { StoredItinerary } from "@/lib/itinerary-storage";
+import type { TransitLegAdvice } from "@/lib/transit/types";
 
 export const SAVED_TRIPS_CHANGED_EVENT = "roamie:saved-trips-changed";
 export type CoverFields = Pick<
@@ -79,4 +80,67 @@ export function applyTripCover<T extends CoverFields & { id: string; updated_at:
   const update = covers.get(row.id);
   if (!update || coverRevision(row.updated_at) > coverRevision(update.updatedAt)) return row;
   return { ...row, ...update.fields };
+}
+
+/**
+ * Cover row the open editor should show after a live update (null = no live update).
+ * applyTripCover keeps the version guard: an older live patch never overrides a newer
+ * row, and a newer row (e.g. this client's own save echo) contributes its own persisted
+ * cover columns instead of being dropped.
+ */
+export function coverStateForLiveUpdate<T extends CoverFields & { id: string; updated_at: string }>(
+  row: T,
+  live: TripCoverUpdate | null | undefined = covers.get(row.id),
+): T | null {
+  return live ? applyTripCover(row) : null;
+}
+
+// Background Routes enrichment for an open trip, same session-only replay lifecycle as
+// covers. Its own event channel: saved/home lists must not reload for it.
+export const TRIP_ROUTE_ENRICHMENT_EVENT = "roamie:trip-route-enrichment";
+const routeEnrichments = new Map<string, Record<string, TransitLegAdvice>>();
+
+function trustedEnrichedLeg(key: string, leg: TransitLegAdvice | undefined): boolean {
+  if (!leg || key.includes("§")) return false; // day-scoped keys belong to Directions sync
+  const mode = leg.resolvedMode ?? leg.transportMode;
+  const slot = mode === "WALK" ? "walk" : mode === "DRIVE" ? "drive" : mode === "TRANSIT" ? "transit" : null;
+  const minutes = slot ? leg.estimates?.[slot] : leg.durationMinutes;
+  return Boolean(
+    leg.savedRouteEndpoints &&
+    leg.routeStatus === "ok" &&
+    leg.durationSource === "directions" &&
+    typeof minutes === "number" && Number.isFinite(minutes) && minutes > 0,
+  );
+}
+
+/** Publish verified save-time legs for one trip; unverified legs are dropped. */
+export function publishTripRouteEnrichment(
+  tripId: string,
+  legs: Record<string, TransitLegAdvice>,
+): void {
+  const trusted = Object.fromEntries(
+    Object.entries(legs).filter(([key, leg]) => trustedEnrichedLeg(key, leg)),
+  );
+  if (!Object.keys(trusted).length) return;
+  routeEnrichments.set(tripId, { ...(routeEnrichments.get(tripId) ?? {}), ...trusted });
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(TRIP_ROUTE_ENRICHMENT_EVENT, { detail: { tripId } }));
+  }
+}
+
+export const getTripRouteEnrichment = (tripId: string) => routeEnrichments.get(tripId);
+
+/**
+ * Add-only merge into the editor's transitLegs: never overwrites an existing key (day-scoped
+ * sync results keep their status and routeRetryAfter; user/edited legs win). Returns the same
+ * reference when nothing changes, so duplicate events cannot trigger another autosave.
+ */
+export function mergeTripRouteEnrichment(
+  current: Record<string, TransitLegAdvice> | undefined,
+  enrichment: Record<string, TransitLegAdvice> | undefined,
+): Record<string, TransitLegAdvice> | undefined {
+  if (!enrichment) return current;
+  const additions = Object.entries(enrichment).filter(([key]) => !current?.[key]);
+  if (!additions.length) return current;
+  return { ...(current ?? {}), ...Object.fromEntries(additions) };
 }

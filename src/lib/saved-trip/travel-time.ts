@@ -39,13 +39,13 @@ function minutesForResolvedMode(leg: TransitLegAdvice): number | null {
     return null;
   }
   if (resolved === "TRANSIT") {
-    return leg.estimates.transit ?? (leg.durationMinutes > 0 ? leg.durationMinutes : null);
+    return leg.estimates?.transit ?? (leg.durationMinutes > 0 ? leg.durationMinutes : null);
   }
   if (resolved === "DRIVE" || resolved === "TWO_WHEELER") {
-    return leg.estimates.drive ?? (leg.durationMinutes > 0 ? leg.durationMinutes : null);
+    return leg.estimates?.drive ?? (leg.durationMinutes > 0 ? leg.durationMinutes : null);
   }
   if (resolved === "WALK" || resolved === "BICYCLE") {
-    return leg.estimates.walk ?? (leg.durationMinutes > 0 ? leg.durationMinutes : null);
+    return leg.estimates?.walk ?? (leg.durationMinutes > 0 ? leg.durationMinutes : null);
   }
   return leg.durationMinutes > 0 ? leg.durationMinutes : null;
 }
@@ -85,13 +85,13 @@ function estimateMinutesForRoutesMode(
   mode: RoutesTravelMode,
 ): number | null {
   if (mode === "WALK" || mode === "BICYCLE") {
-    return leg.estimates.walk ?? null;
+    return leg.estimates?.walk ?? null;
   }
   if (mode === "DRIVE" || mode === "TWO_WHEELER") {
-    return leg.estimates.drive ?? null;
+    return leg.estimates?.drive ?? null;
   }
   if (mode === "TRANSIT") {
-    return leg.estimates.transit ?? null;
+    return leg.estimates?.transit ?? null;
   }
   return null;
 }
@@ -122,19 +122,19 @@ export function durationSourceForLeg(
     if (
       leg.transportStatus === "ok" &&
       leg.transportMode === "TRANSIT" &&
-      leg.estimates.transit != null
+      leg.estimates?.transit != null
     ) {
       return "TRANSIT";
     }
     return "NONE";
   }
   if (/步行|走路|walk/i.test(t)) {
-    if (leg.estimates.walk != null) return "WALK";
+    if (leg.estimates?.walk != null) return "WALK";
     if (leg.transportFallbackMode) return "ESTIMATE";
     return "NONE";
   }
   if (/開車|drive|自駕|租車|計程車|共乘|taxi/i.test(t)) {
-    if (leg.estimates.drive != null) return "DRIVE";
+    if (leg.estimates?.drive != null) return "DRIVE";
     if (leg.transportFallbackMode) return "ESTIMATE";
     return "NONE";
   }
