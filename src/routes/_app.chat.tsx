@@ -651,6 +651,7 @@ import {
   resolveDestinationApproxCenter,
 } from "@/lib/ai/destination-geocode";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
+import { resolveSelectedCombinationAuthority } from "@/lib/ai/selected-combination-authority";
 import {
   isPlanningTurnActive,
   processAdviceTurn,
@@ -8183,6 +8184,17 @@ function Chat() {
       setMsgs(next);
       setText("");
       scrollToUserMessage(next.length - 1);
+      // Selected-only authority: rebuild the user's combo places from the offered snapshot.
+      // If the selected ids can no longer be confirmed, ask to reselect instead of guessing.
+      const selectionAuthority = ctx.selectedCombinationIds?.length
+        ? resolveSelectedCombinationAuthority(ctx, destination)
+        : null;
+      if (selectionAuthority && !selectionAuthority.ok) {
+        logAiPipeline("[REGENERATE_SELECTION_REJECTED]", `reason=${selectionAuthority.reason}`);
+        setMsgs([...next, { role: "assistant", content: chatRuntimeCopy("reselectCombination", locale) }]);
+        persistSession({ ...session, pendingQuestion: undefined });
+        return;
+      }
       const regenId = `gen_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
       // Full reset: planner / validator / repair / delivery / combination / workspace planning.
       // Keep destination, dates, days, and user combo IDs — do not reuse pipeline caches.
@@ -8200,9 +8212,14 @@ function Chat() {
         unresolvedNearbyExtensions: ctx.unresolvedNearbyExtensions,
         offeredCombinations: ctx.offeredCombinations,
         planningTripStyle: ctx.planningTripStyle,
-        // Explicitly do not carry failed-run combination / place caches.
-        selectedCombinationPlaceNames: undefined,
-        excludedCombinationPlaceNames: undefined,
+        // Explicitly do not carry failed-run combination / place caches; the user's
+        // selection is re-derived from the offered snapshot, not from style titles.
+        selectedCombinationPlaceNames: selectionAuthority?.ok
+          ? selectionAuthority.allowlist.allowedPlaceNames
+          : undefined,
+        excludedCombinationPlaceNames: selectionAuthority?.ok
+          ? selectionAuthority.allowlist.exclusiveExcludedPlaceNames
+          : undefined,
         partiallyResolvedPlaces: undefined,
         failedCombinationIds: undefined,
         lastItineraryFailure: undefined,

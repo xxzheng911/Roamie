@@ -1,6 +1,6 @@
 import { displayMetadataMatchesLabel, sameDisplayCountry, type DestinationDisplayMetadata } from "./destination-display-metadata";
 import { globalPlanningTurn, applyGlobalPlanningContext } from './global-planning-context';
-import { travelMonthSignal } from "./travel-language-signals";
+import { travelDestinationCandidates, travelMonthSignal } from "./travel-language-signals";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { TripIntentMissingKey } from "@/lib/recommendation/trip-intent";
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
@@ -67,7 +67,10 @@ import {
 } from "@/lib/ai/chat-conversation-state";
 import { isCreateItineraryIntent } from "@/lib/ai/chat-context-intent";
 import { parseItineraryPlanModeIntent } from "@/lib/ai/itinerary-planning";
-import { parseTravelDateRangeFromText } from "@/lib/ai/parse-travel-date-range";
+import {
+  parseTravelDateRangeFromText,
+  stripTravelDateRangeFromText,
+} from "@/lib/ai/parse-travel-date-range";
 import { enrichTripDatesInContext } from "@/lib/ai/ai-trip-style";
 import {
   resolveDestinationScopeFields,
@@ -502,7 +505,16 @@ function parseTravelConstraints(text: string): Partial<CanonicalTravelContext> {
 
 function parseDestinationFromTurn(text: string, skipDestParse: boolean): string | undefined {
   if (skipDestParse) return undefined;
-  return resolveDestinationAreaScope(text)?.displayLabel ?? resolveDestinationFromText(text);
+  // Dates are parsed from the full turn separately; the destination must not include them.
+  const body = stripTravelDateRangeFromText(text);
+  if (body !== text.trim()) {
+    // 「11/25-11/30に東京へ行きます」: resolve the single extracted candidate, not the sentence.
+    const candidates = travelDestinationCandidates(text);
+    const fromCandidate =
+      candidates.length === 1 ? resolveDestinationFromText(candidates[0]!) : undefined;
+    if (fromCandidate) return fromCandidate;
+  }
+  return resolveDestinationAreaScope(body)?.displayLabel ?? resolveDestinationFromText(body);
 }
 
 function mergeDestinationFields(

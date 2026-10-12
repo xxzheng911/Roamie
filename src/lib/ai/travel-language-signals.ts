@@ -1,3 +1,4 @@
+import { stripTravelDateRangeFromText } from "@/lib/ai/parse-travel-date-range";
 /** Lexical signals only; all locales use the existing arbitration/planner. */
 const months = ['january','february','march','april','may','june','july','august','september','october','november','december'];
 export function travelMonthSignal(text: string): string | undefined {
@@ -29,17 +30,24 @@ export function safeDestinationCandidate(text: string): boolean {
   return text.length >= 2 && text.length <= 100 && /^[\p{L}\p{M}\s.'’\-]+$/u.test(text)
     && !/ignore|instruction|system|prompt|https?|明年|今年|来年|내년|next |month|days?|weeks?|weather|旅行|行程|推薦|recommend|please|thank|hello|你好/i.test(text);
 }
-export function travelDestinationCandidates(text: string): string[] {
+export function travelDestinationCandidates(input: string): string[] {
+  // A date range is calendar data owned by parseTravelDateRangeFromText, never part of a name.
+  const text = stripTravelDateRangeFromText(input);
+  const dated = text !== input.trim();
   let raw: string | undefined;
-  if (multilingualTravelIntent(text)) {
+  if (multilingualTravelIntent(text) || dated) {
     raw = text.match(/\b(?:going|go|travell?ing|travel|trip|holiday|vacation)\s+(?:to|in)\s+(.+)/i)?.[1]
       ?? text.match(/\b(?:visiting|visit|explore)\s+(.+)/i)?.[1]
       ?? text.match(/(?:想去|要去|去)\s*(.+?)(?:旅行|旅遊|玩|自由行|[。！]|$)/)?.[1]
       ?? text.match(/(?:安排|規劃)\s*(?:[一二三四五六七八九十\d]+週)?(.+?)(?:自由行|旅行)/)?.[1]
       ?? text.match(/(?:に|で)\s*(.+?)(?:へ|を)\s*(?:旅行|観光)/)?.[1]
       ?? text.match(/^(.+?)(?:へ|を)\s*(?:旅行|観光)/)?.[1]
-      ?? text.match(/(?:에|봄에|겨울에)\s*(.+?)(?:(?:으로|로)\s*여행|\s+여행)/)?.[1];
+      ?? text.match(/(?:에|봄에|겨울에)\s*(.+?)(?:(?:으로|로)\s*여행|\s+여행)/)?.[1]
+      ?? text.match(/^(?:に|で)?\s*(.+?)(?:へ|に)\s*(?:行きます|行く|行きたい)/)?.[1]
+      ?? text.match(/^(.+?)(?:(?:으로|로)\s*여행|\s+여행)/)?.[1];
   }
+  // 「Tokyo 11/25-11/30」: the remainder after the dates is the bare destination text.
+  if (!raw && dated && safeDestinationCandidate(text)) raw = text;
   if (!raw && /[+＋]|\s+(?:and|と|및)\s+/.test(text)) raw = text;
   if (!raw) return [];
   raw = raw.replace(/\s+(?:in|for|this|next)\b.*$/i, '').replace(/[.!?。！]+$/, '').trim();

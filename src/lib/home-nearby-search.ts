@@ -712,6 +712,9 @@ export async function loadHomeNearbyPicks(
   return registerHomeNearbyLoadInFlight(cacheKey, promise);
 }
 
+/** Client-side skips that never reached the provider. */
+const HOME_LOCAL_GUARD_SKIP = /^(?:cooldown_skipped|guard_skipped|stale_generation|aborted)$/;
+
 async function loadHomeNearbyPicksInner(
   ctx: {
     userLocation: { lat: number; lng: number };
@@ -729,17 +732,26 @@ async function loadHomeNearbyPicksInner(
   options?: LoadHomeNearbyPicksOptions,
 ): Promise<HomeNearbyPick[]> {
   // Retain failures across existing fallback waves without changing their call policy.
+  // The first provider failure is the root cause; later waves only see the local
+  // cooldown it started (cooldown_skipped), which must not overwrite it.
   let providerFailure: unknown = null;
+  const isLocalSkip = (failure: unknown) =>
+    HOME_LOCAL_GUARD_SKIP.test(failure instanceof Error ? failure.message : String(failure));
+  const noteFailure = (failure: unknown) => {
+    if (!providerFailure || (isLocalSkip(providerFailure) && !isLocalSkip(failure))) {
+      providerFailure = failure;
+    }
+  };
   const searchPlacesFn = ctx.searchPlacesFn;
   ctx = {
     ...ctx,
     searchPlacesFn: async (args) => {
       try {
         const result = await withSearchTimeout(searchPlacesFn(args));
-        if (result.error) providerFailure = new Error(result.error);
+        if (result.error) noteFailure(new Error(result.error));
         return result;
       } catch (error) {
-        providerFailure = error;
+        noteFailure(error);
         throw error;
       }
     },

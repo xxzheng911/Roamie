@@ -5,6 +5,7 @@ import type { CanonicalTravelContext } from './travel-context';
 import { travelDestinationCandidates, safeDestinationCandidate, multilingualTravelIntent, nearbyLanguageSignal } from './travel-language-signals';
 import { planningCalendarSignals, isCalendarOnly } from './planning-calendar-signals';
 import { parseDayCountFromText } from '@/lib/parse-chinese-duration';
+import { parseTravelDateRangeFromText } from './parse-travel-date-range';
 import { localizedCountryReference, normalizeCountryReference } from './destination-country-normalize';
 import { isKnownDestinationLabel, normalizeDestinationLabel } from './trip-planning-context';
 import { isResolvedDestination } from '@/lib/location/destination-authority';
@@ -14,7 +15,9 @@ export function globalPlanningTurn(session: ChatPlanningSession, text: string): 
   if (nearbyLanguageSignal(text)) return;
   const prev = session.travelContext ?? {interests:[]};
   const duration = parseDayCountFromText(text);
-  const dates = {...planningCalendarSignals(text, new Date(), session.tripDestination?.timezone),...(duration ? {days:duration} : {})};
+  const range = parseTravelDateRangeFromText(text);
+  const dates = {...planningCalendarSignals(text, new Date(), session.tripDestination?.timezone),...(duration ? {days:duration} : {}),
+    ...(range.startDate && range.endDate ? {startDate:range.startDate,endDate:range.endDate,...(range.days ? {days:range.days} : {})} : {})};
   const active = Boolean(prev.destination || prev.destinationCandidate || prev.destinationClarification);
   let names = travelDestinationCandidates(text);
   const explicitChange = /^(?:instead|change (?:the )?destination to|switch to|改去|改成|換成|目的地改成)/i.test(text.trim());

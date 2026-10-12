@@ -643,6 +643,24 @@ const EMBEDDED_DESTINATION_LABELS = [
   "蒙古",
 ].sort((a, b) => b.length - a.length);
 
+/**
+ * True when another listed label overlaps `label` and starts earlier in `text`.
+ * 「日本東京都」contains 京都 inside 東京都; list order alone would resolve Tokyo as Kyoto.
+ */
+export function isShadowedEmbeddedLabel(
+  text: string,
+  label: string,
+  labels: readonly string[],
+): boolean {
+  const index = text.indexOf(label);
+  if (index < 0) return false;
+  return labels.some((other) => {
+    if (other === label) return false;
+    const otherIndex = text.indexOf(other);
+    return otherIndex >= 0 && otherIndex < index && otherIndex + other.length > index;
+  });
+}
+
 export function extractEmbeddedDestinationFromText(text: string): string | undefined {
   const t = text.trim();
   if (!t) return undefined;
@@ -657,6 +675,7 @@ export function extractEmbeddedDestinationFromText(text: string): string | undef
 
   for (const label of EMBEDDED_DESTINATION_LABELS) {
     if (!t.includes(label)) continue;
+    if (isShadowedEmbeddedLabel(t, label, EMBEDDED_DESTINATION_LABELS)) continue;
     const accepted = acceptParsedDestination(label);
     if (accepted) return accepted;
   }

@@ -52,7 +52,119 @@ export type CombinationCandidatePool = {
 const poolMemo = new Map<string, CombinationCandidatePool[]>();
 
 function poolMemoKey(destination: string, selectedCombinationIds: number[]): string {
-  return `${destination.trim()}|${selectedCombinationIds.join(",")}`;
+  // Pools built under one generation's offers must never be reused by another.
+  const token = activeOfferedIdentity?.token ?? 0;
+  return `${token}|${destination.trim()}|${selectedCombinationIds.join(",")}`;
+}
+
+type OfferedIdentityPlace = {
+  name: string;
+  originalName?: string;
+  localizedDisplayName?: string;
+  googlePlaceId?: string;
+  latitude?: number;
+  longitude?: number;
+  types?: string[];
+  primaryType?: string | null;
+  rating?: number | null;
+};
+
+export type OfferedCombinationIdentity = {
+  readonly token: number;
+  readonly destination: string;
+  readonly combinations: ReadonlyMap<number, { title: string; places: OfferedIdentityPlace[] }>;
+};
+
+let offeredIdentityToken = 0;
+/** Set only inside withOfferedCombinationIdentity; never held across an await. */
+let activeOfferedIdentity: OfferedCombinationIdentity | null = null;
+
+/**
+ * Generation-owned snapshot of the offers the user chose from. The discovery cache is
+ * index-based: after a rebuild the same id can hold different places.
+ */
+export function createOfferedCombinationIdentity(
+  destination: string,
+  offered?: Array<{ id: number; title: string; places: OfferedIdentityPlace[] }>,
+): OfferedCombinationIdentity | null {
+  if (!offered?.length) return null;
+  return {
+    token: ++offeredIdentityToken,
+    destination: normalizePlaceNameKey(destination),
+    combinations: new Map(offered.map((c) => [c.id, { title: c.title, places: c.places }])),
+  };
+}
+
+/**
+ * Run a synchronous pool read against one generation's snapshot, then restore.
+ * Interleaved generations each re-activate their own identity, so none can observe another's.
+ */
+export function withOfferedCombinationIdentity<T>(
+  identity: OfferedCombinationIdentity | null,
+  read: () => T,
+): T {
+  const previous = activeOfferedIdentity;
+  activeOfferedIdentity = identity;
+  try {
+    const result = read();
+    if (result && typeof (result as { then?: unknown }).then === "function") {
+      throw new Error("withOfferedCombinationIdentity requires a synchronous read");
+    }
+    return result;
+  } finally {
+    activeOfferedIdentity = previous;
+  }
+}
+
+function offeredPin(destination: string, id: number) {
+  const identity = activeOfferedIdentity;
+  if (!identity || identity.destination !== normalizePlaceNameKey(destination)) return null;
+  return identity.combinations.get(id) ?? null;
+}
+
+/** True when the cached combination for `id` no longer holds every place offered under it. */
+export function isCombinationIdDriftedFromOffered(destination: string, id: number): boolean {
+  const pin = offeredPin(destination, id);
+  if (!pin?.places.length) return false;
+  const cached = getStructuredCombinationByIndex(destination, id)?.placeCandidates ?? [];
+  const keys = new Set<string>();
+  for (const c of cached) {
+    if (c.googlePlaceId?.trim()) keys.add(c.googlePlaceId.trim());
+    for (const name of [c.name, c.originalName, c.localizedDisplayName]) {
+      if (name?.trim()) keys.add(normalizePlaceNameKey(name));
+    }
+  }
+  return !pin.places.every(
+    (p) =>
+      (p.googlePlaceId?.trim() && keys.has(p.googlePlaceId.trim())) ||
+      [p.name, p.originalName, p.localizedDisplayName].some(
+        (name) => name?.trim() && keys.has(normalizePlaceNameKey(name)),
+      ),
+  );
+}
+
+function offeredPinnedPool(destination: string, id: number): CombinationCandidatePool | null {
+  if (!isCombinationIdDriftedFromOffered(destination, id)) return null;
+  const pin = offeredPin(destination, id)!;
+  const primary: CombinationPlaceCandidate[] = pin.places.map((p) => ({
+    name: p.originalName ?? p.name,
+    googlePlaceId: p.googlePlaceId,
+    searchCandidateId: p.googlePlaceId ?? `name:${p.originalName ?? p.name}`,
+    coordinates:
+      p.latitude != null && p.longitude != null ? { lat: p.latitude, lng: p.longitude } : undefined,
+    types: p.types ?? [],
+    primaryType: p.primaryType,
+    rating: p.rating,
+  }));
+  logAiPipeline("[COMBINATION_POOL_OFFERED_PIN]", `combinationId=${id}`, "reason=cache_drift");
+  return {
+    combinationId: id,
+    title: pin.title,
+    theme: resolveThemeKeyFromTitle(pin.title),
+    primary,
+    fallback: [],
+    all: primary,
+  };
 }
 
 /** Resolve primary + fallback pools for selected combinations (prefer Places discovery cache). */
@@ -69,6 +181,8 @@ export function resolveSelectedCombinationPools(
 
   const light = getDestinationCombinations(destination);
   const pools = selectedCombinationIds.map((id) => {
+    const pinned = offeredPinnedPool(destination, id);
+    if (pinned) return pinned;
     const structured = getStructuredCombinationByIndex(destination, id);
     const lightCombo = light[id - 1];
     const title = structured?.title ?? lightCombo?.title ?? `組合 ${id}`;
@@ -213,7 +327,7 @@ export function matchSelectedCombinationIdsForPlace(
     const combos = getDestinationCombinations(destination);
     for (const id of selectedCombinationIds) {
       const combo = combos[id - 1];
-      if (!combo) continue;
+      if (!combo || isCombinationIdDriftedFromOffered(destination, id)) continue;
       if (combo.places.some((p) => placeNameMatchesCandidate(placeName, p))) {
         matched.push(id);
       }
@@ -1223,7 +1337,7 @@ export function expandAllowlistNamesFromPools(
   if (cached) {
     for (const id of selectedCombinationIds) {
       const combo = cached[id - 1];
-      if (!combo) continue;
+      if (!combo || isCombinationIdDriftedFromOffered(destination, id)) continue;
       for (const c of combo.placeCandidates) {
         const key = normalizePlaceNameKey(c.name);
         if (!key || seen.has(key)) continue;

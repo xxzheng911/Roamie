@@ -1,5 +1,17 @@
 import { computeInclusiveItineraryDays } from "@/lib/ai/itinerary-days";
 
+const TRAVEL_DATE_RANGE_PATTERN =
+  /((?:\d{4}[\/\-年])?\d{1,2}[\/\-月]\d{1,2})\s*[~～至到\-—–]\s*((?:\d{4}[\/\-年])?\d{1,2}[\/\-月]\d{1,2})/;
+
+/**
+ * Remove a date range that parseTravelDateRangeFromText accepts, so destination parsing
+ * sees 「Tokyo」 instead of 「Tokyo 11/25-11/30」. Dates stay owned by the parser below.
+ */
+export function stripTravelDateRangeFromText(text: string, refDate = new Date()): string {
+  if (!parseTravelDateRangeFromText(text, refDate).endDate) return text;
+  return text.replace(TRAVEL_DATE_RANGE_PATTERN, " ").replace(/\s+/g, " ").trim();
+}
+
 /** Parse date ranges like 11/15~11/16 or 2026-11-15~11-16 into ISO dates and day count. */
 export function parseTravelDateRangeFromText(
   text: string,
@@ -8,9 +20,7 @@ export function parseTravelDateRangeFromText(
   const t = text.trim();
   if (!t) return {};
 
-  const rangeMatch = t.match(
-    /((?:\d{4}[\/\-年])?\d{1,2}[\/\-月]\d{1,2})\s*[~～至到\-—–]\s*((?:\d{4}[\/\-年])?\d{1,2}[\/\-月]\d{1,2})/,
-  );
+  const rangeMatch = t.match(TRAVEL_DATE_RANGE_PATTERN);
   if (!rangeMatch?.[1] || !rangeMatch[2]) {
     // A complete numeric calendar date is explicit; month-only/duration text is not.
     const single = t.match(/(?:^|[^\d])(\d{4}[\/\-年]\d{1,2}[\/\-月]\d{1,2})(?:日|$|[^\d])/);

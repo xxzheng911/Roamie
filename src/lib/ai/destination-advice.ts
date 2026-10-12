@@ -11,6 +11,7 @@ import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import { normalizeRecommendationItem } from "@/lib/ai/types";
 import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
+import { resolveSelectedCombinationAuthority } from "@/lib/ai/selected-combination-authority";
 import {
   isCountryCityInquiryText,
   isDestinationAdviceText,
@@ -494,6 +495,8 @@ function buildAllowlistFromLockedContext(
       selectionSource: ctx.selectionSource,
     };
   }
+  const authority = resolveSelectedCombinationAuthority(ctx, dest);
+  if (authority.ok) return authority.allowlist;
   return (
     buildCombinationAllowlistFromTitles(
       dest,

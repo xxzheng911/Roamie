@@ -47,6 +47,15 @@ import { recordAnalyticsEvent } from "@/lib/analytics/record";
 import { useI18n } from "@/hooks/use-i18n";
 import { searchPlaces } from "@/lib/places.functions";
 import { createUnifiedSearchPlacesFn } from "@/lib/places-search-unified";
+import { isPlacesRateLimited } from "@/lib/places-api-guard";
+import {
+  getPlacesRateProtectionState,
+  isPlacesRateProtectionActive,
+} from "@/lib/ai/places-cost-cache/rate-protection";
+import {
+  completeHomeNearbyRetryCycle,
+  createHomeNearbyAutoRetry,
+} from "@/lib/home-nearby-transient-retry";
 import {
   loadHomeNearbyPicks,
   homeNearbyLoadPeriodKey,
@@ -442,6 +451,18 @@ function Home() {
 
   const nearbyRetryInflightRef = useRef(false);
   const nearbyRequestVersionRef = useRef(0);
+  // One automatic recovery for a transient guard 503 per Home load cycle (see module).
+  const nearbyAutoRetryRef = useRef<ReturnType<typeof createHomeNearbyAutoRetry> | null>(null);
+  nearbyAutoRetryRef.current ??= createHomeNearbyAutoRetry({
+    setTimer: (fn, ms) => window.setTimeout(fn, ms),
+    clearTimer: (handle) => window.clearTimeout(handle as number),
+    now: () => Date.now(),
+    isGuardActive: () => isPlacesRateLimited() || isPlacesRateProtectionActive(),
+    guardUntil: () => (isPlacesRateProtectionActive() ? getPlacesRateProtectionState().until : 0),
+    isVisible: () => typeof document === "undefined" || document.visibilityState !== "hidden",
+    onOutcome: (outcome) => console.info("[HOME_NEARBY_AUTO_RETRY]", { retryOutcome: outcome }),
+  });
+  useEffect(() => () => nearbyAutoRetryRef.current?.cancel(), []);
   useLayoutEffect(() => {
     return () => { nearbyRequestVersionRef.current += 1; };
   }, []);
@@ -555,6 +576,7 @@ function Home() {
         logHomeNearbyRequestSkipped("in_flight");
         return;
       }
+      if (caller === "retry") nearbyAutoRetryRef.current?.cancel();
 
       const requestVersion = ++nearbyRequestVersionRef.current;
       nearbyRetryInflightRef.current = false;
@@ -797,6 +819,7 @@ function Home() {
           if (!isCurrent()) return;
           resultCount = picks.length;
           if (picks.length > 0) {
+            completeHomeNearbyRetryCycle(loadKey);
             applyPicks(picks, "final");
           } else if (!hasNearbyPicksRef.current) {
             setNearbyRenderStateLogged("empty");
@@ -811,11 +834,29 @@ function Home() {
           console.warn("[Roamie Home] nearby picks failed", e);
           const reason = e instanceof Error ? e.message : String(e);
           logHomeNearbyRequestError("home_load_failed", reason);
+          const recovery = nearbyAutoRetryRef.current!.onFailure({
+            cycleKey: loadKey,
+            message: reason,
+            hasPicks: hasNearbyPicksRef.current,
+            isCurrentCycle: () => effectiveLocationRef.current?.locationKey === eff.locationKey,
+            hasPicksNow: () => hasNearbyPicksRef.current,
+            inFlight: () => nearbyRetryInflightRef.current,
+            run: () => {
+              const current = effectiveLocationRef.current;
+              if (current) void loadNearbyPicksRef.current?.("auto_retry", current, { forceRefresh: true });
+            },
+          });
           console.info("[HOME_NEARBY_REQUEST_ERROR]", {
             elapsedMs: Date.now() - perfSession.startedAt,
             requestId: perfSession.requestId,
             geographicScope: loadKey,
             error: reason,
+            originalHttpStatus: recovery.originalHttpStatus,
+            originalErrorCode: recovery.originalErrorCode,
+            cooldownRemaining: recovery.cooldownRemainingMs,
+            retryEligible: recovery.retryEligible,
+            retryScheduled: recovery.retryScheduled,
+            retryAttempted: caller === "auto_retry",
           });
           logHomeNearbyRefreshFailed(reason, hasNearbyPicksRef.current);
           markHomeNearbyRefreshFailed();
@@ -871,6 +912,8 @@ function Home() {
       locationSourceForPerf,
     ],
   );
+  const loadNearbyPicksRef = useRef(loadNearbyPicks);
+  loadNearbyPicksRef.current = loadNearbyPicks;
 
   const handleMoodSelect = (moodId: HomeMoodId) => {
     const next = selectedMood === moodId ? null : moodId;

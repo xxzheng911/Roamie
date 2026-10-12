@@ -5,6 +5,7 @@ import {
   isKnownCountryLabel,
   isKnownScenicLabel,
   isKnownTouristCityLabel,
+  isShadowedEmbeddedLabel,
   isValidParsedDestinationLabel,
   normalizeDestinationLabel,
   splitKnownParentAreaLabel,
@@ -117,6 +118,7 @@ export function extractItineraryDestinationFromText(text: string): string | unde
 
   for (const label of EMBEDDED_ITINERARY_DESTINATIONS) {
     if (!t.includes(label)) continue;
+    if (isShadowedEmbeddedLabel(t, label, EMBEDDED_ITINERARY_DESTINATIONS)) continue;
     const accepted = acceptItineraryDestination(label);
     if (accepted) return accepted;
   }
@@ -143,7 +145,7 @@ export function sanitizeDestinationForGeocode(raw: string): string {
   if (extracted) return extracted;
 
   for (const label of EMBEDDED_ITINERARY_DESTINATIONS) {
-    if (trimmed.includes(label)) {
+    if (trimmed.includes(label) && !isShadowedEmbeddedLabel(trimmed, label, EMBEDDED_ITINERARY_DESTINATIONS)) {
       const accepted = acceptItineraryDestination(label);
       if (accepted) return accepted;
     }
