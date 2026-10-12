@@ -17,6 +17,7 @@ type Props = {
   className?: string;
   /** 地點搜尋等：點選即關閉，不顯示底部按鈕 */
   hideFooter?: boolean;
+  modal?: boolean;
 };
 
 /** Roamie 底部選擇器外殼：奶油色、圓角、取消／確定 */
@@ -32,6 +33,7 @@ export function RoamiePickerSheet({
   cancelLabel,
   className,
   hideFooter = false,
+  modal = false,
 }: Props) {
   const { t } = useI18n();
   const confirm = confirmLabel ?? t("picker.confirm");
@@ -49,7 +51,7 @@ export function RoamiePickerSheet({
   };
 
   return (
-    <Drawer open={open} onOpenChange={onOpenChange} modal={false}>
+    <Drawer open={open} onOpenChange={onOpenChange} modal={modal}>
       <DrawerContent
         className={cn(
           "z-[60] mx-auto max-w-lg rounded-t-[1.75rem] border-0 bg-cream shadow-[0_-8px_40px_rgba(40,30,20,0.12)] [&>div:first-child]:hidden",

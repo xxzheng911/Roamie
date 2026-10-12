@@ -2345,6 +2345,9 @@ export type AiDayPlanItem = {
   userRatingCount?: number | null;
   types?: string[] | null;
   /** Pre-localization / local-script name */
+  englishName?: string;
+  localizedNames?: Partial<Record<string,string>>;
+  sourceLocale?: string;
   originalName?: string;
   /** App-locale UI display name (SoT) */
   localizedDisplayName?: string;
@@ -2452,6 +2455,9 @@ export function composedPlansToAiDayPlan(params: {
         rating: place.rating ?? null,
         userRatingCount: place.userRatingCount ?? null,
         types: place.types ?? null,
+        englishName: place.englishName ?? undefined,
+        localizedNames: place.localizedNames,
+        sourceLocale: place.sourceLocale ?? undefined,
         originalName: (place.originalName ?? place.name ?? entry.name ?? "").trim(),
         localizedDisplayName: displayName,
         languageCode: place.languageCode ?? undefined,
@@ -2508,6 +2514,7 @@ export function dayPlanItemToRecommendation(
     userRatingCount: item.userRatingCount ?? null,
     types: item.types ?? undefined,
     localizedDisplayName: display,
+    englishName: item.englishName, localizedNames: item.localizedNames, sourceLocale: item.sourceLocale,
     originalName: item.originalName,
     languageCode: item.languageCode,
     localizationSource: item.localizationSource,
@@ -2641,6 +2648,7 @@ export function buildItineraryFromDayPlan(
       dayIndex: dayNumber - 1,
       sortIndex: item.orderIndex,
       order: item.orderIndex,
+      englishName: item.englishName, localizedNames: item.localizedNames, sourceLocale: item.sourceLocale,
       originalName: item.originalName || item.name,
       localizedDisplayName: display,
       languageCode: item.languageCode,

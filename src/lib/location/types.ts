@@ -1,5 +1,7 @@
 /** 表單／行程規劃用的完整地點（Google Places） */
 export type TripLocation = {
+  /** Display-only names bound to this resolved place; never resolver input. */
+  destinationDisplay?: import("@/lib/ai/destination-display-metadata").DestinationDisplayMetadata;
   placeId: string;
   country: string;
   city: string;

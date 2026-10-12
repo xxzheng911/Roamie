@@ -1,3 +1,4 @@
+import { hasDeliverableCombinationCount, hasDeliverablePlaceIdentity } from "./combination-deliverability";
 import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
 import { displayDestinationForCopy } from "./destination-locale-aliases";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
@@ -29,7 +30,6 @@ import {
 } from "@/lib/ai/destination-discovery-queries";
 import { hasValidTripDuration } from "@/lib/ai/trip-duration-guard";
 import {
-  applyNearbyRegionPolicyToCombinations,
   isNearbyRegionThemeTitle,
 } from "@/lib/ai/region-adjacency";
 import { localizeCombinationPlaceNames } from "@/lib/ai/combination-localization-gate";
@@ -342,6 +342,8 @@ export function getDestinationCombinations(
                 placeId: c.googlePlaceId,
                 canonicalPlaceId: c.googlePlaceId,
                 englishName: c.englishName,
+                localizedNames: c.localizationSource === "google_locale" && c.languageCode
+                  ? { [c.languageCode]: c.localizedDisplayName || c.name } : undefined,
               },
               locale,
             );
@@ -361,13 +363,9 @@ export function getDestinationCombinations(
       })
       .filter((combo) => combo.places.length >= 2);
 
-    return applyNearbyRegionPolicyToCombinations(label, fromCache, {
-      tripDays: opts?.tripDays,
-      includeFarther: Boolean(opts?.includeFartherNearby),
-      forceInclude: opts?.tripDays == null,
-      maxCandidates: opts?.tripDays == null ? 5 : undefined,
-      countryHint: opts?.countryHint,
-    });
+    // These are resolved provider places, not region-name seeds. A localized
+    // theme title cannot replace or remove their geographic identities.
+    return fromCache;
   }
 
   const combos = buildDynamicDestinationCombinations(label, {
@@ -454,6 +452,8 @@ export function buildOfferedCombinationsForSession(
               placeId: c.googlePlaceId,
               canonicalPlaceId: c.googlePlaceId,
               englishName: c.englishName,
+                localizedNames: c.localizationSource === "google_locale" && c.languageCode
+                  ? { [c.languageCode]: c.localizedDisplayName || c.name } : undefined,
             },
             locale,
           );
@@ -559,12 +559,18 @@ export function buildDestinationCombinationSuggestionPayload(
   const locale = opts?.locale ?? effectiveAppLocale();
   const usedTitles = new Set<string>();
   const offeredSource = buildOfferedCombinationsForSession(label,locale);
+  const verifiedSource = !opts?.forceCombinations?.length &&
+    getCachedDiscoveredCombinations(label, undefined, undefined, { locale });
   const combos = (
     opts?.forceCombinations?.length
       ? opts.forceCombinations
+      : verifiedSource ? offeredSource.map(c => ({ title: c.title, places: c.places.map(p => p.localizedDisplayName || p.name) }))
       : getDestinationCombinations(label, { tripDays: days, locale })
   ).map((c, sourceIndex) => {
-    const places = localizeCombinationPlaceNames([...c.places], locale);
+    const entries = verifiedSource
+      ? offeredSource[sourceIndex].places.map(p => ({ name: p.localizedDisplayName || p.name, id: p.googlePlaceId }))
+      : localizeCombinationPlaceNames([...c.places], locale).map(name => ({name, id: undefined as string | undefined}));
+    const places = entries.map(p => p.name);
     const title = isMechanicalCombinationTitle(c.title)
       ? deriveCombinationThemeTitle(
           places.map((name) => ({ name, localizedDisplayName: name })),
@@ -572,13 +578,13 @@ export function buildDestinationCombinationSuggestionPayload(
         )
       : localizeCombinationThemeTitle(c.title, locale);
     usedTitles.add(title);
-    return { title, places, sourceIndex };
+    return { title, places, entries, sourceIndex };
   });
   if (!combos.length) return null;
 
   // Structured data only — never surface category placeholders as places.
   for (const combo of combos) {
-    combo.places = combo.places.filter((place) => {
+    combo.entries = combo.entries.filter(({name: place}) => {
       if (dropGenericCombinationLabel(place)) return false;
       if (isGenericDestinationPlaceholder(place, label)) {
         logAiPipeline(
@@ -600,6 +606,7 @@ export function buildDestinationCombinationSuggestionPayload(
       }
       return true;
     });
+    combo.places = combo.entries.map(p => p.name);
   }
 
   // Prefer ≥3 combos with ≥3 real places; degrade to ≥2 real-place combos.
@@ -616,7 +623,7 @@ export function buildDestinationCombinationSuggestionPayload(
             c.places.length >= 2 || (isNearbyRegionThemeTitle(c.title) && c.places.length >= 1),
         );
   // Absolute floor: deliver ≥2 usable combinations when real places exist.
-  if (softDisplay.length < 2) {
+  if (!hasDeliverableCombinationCount(softDisplay)) {
     logAiPipeline(
       "[COMBINATION_DELIVERY_SUMMARY]",
       `destination=${label}`,
@@ -638,16 +645,20 @@ export function buildDestinationCombinationSuggestionPayload(
   const displayedOfferedCombinations = softDisplay.flatMap((combo, groupIndex) => {
     const sourceGroup = offeredSource[combo.sourceIndex];
     const groupId = groupIndex + 1;
-    const places = combo.places.flatMap((name, sourceCandidateIndex) => {
+    const usedIds = new Set<string>();
+    const places = combo.entries.flatMap(({name, id}, sourceCandidateIndex) => {
       const key = normalizeKey(name);
-      const sourcePlace = sourceGroup?.places.find((candidate) =>
+      const sourcePlace = verifiedSource
+        ? sourceGroup?.places.find(candidate => candidate.googlePlaceId === id)
+        : sourceGroup?.places.find((candidate) =>
         [candidate.name, candidate.originalName, candidate.localizedDisplayName].some(
           (alias) => normalizeKey(alias) === key,
         ),
       );
       // A raw label is not a selectable itinerary candidate. Discovery has
       // already run for this flow; never promote a name-only fallback.
-      if (!sourcePlace || !isHardGooglePlaceId(sourcePlace.googlePlaceId)) return [];
+      if (!sourcePlace || !hasDeliverablePlaceIdentity(sourcePlace.googlePlaceId, sourcePlace.latitude, sourcePlace.longitude) || usedIds.has(sourcePlace.googlePlaceId!)) return [];
+      usedIds.add(sourcePlace.googlePlaceId!);
       const resolvedName = resolvePlaceDisplayName(name, locale);
       return [
         {
@@ -691,7 +702,7 @@ export function buildDestinationCombinationSuggestionPayload(
     ];
   });
 
-  if (displayedOfferedCombinations.length < 2) return null;
+  if (!hasDeliverableCombinationCount(displayedOfferedCombinations)) return null;
   const shownDestination = displayDestinationForCopy(label,undefined,locale);
   const header = [
     opts?.weatherLine?.trim() || chatRuntimeCopy("directionAckDays",locale,{destination:shownDestination,days}),

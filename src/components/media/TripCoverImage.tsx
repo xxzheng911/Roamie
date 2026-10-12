@@ -1,3 +1,5 @@
+import { useEffect, useId, useRef } from "react";
+import { coverSourceType, traceCover } from "@/lib/saved-trip/cover-runtime-diagnostics";
 import { resolveTripCoverUrl, type TripCoverFields } from "@/lib/saved-trip/cover";
 import { FadeInImage } from "@/components/media/FadeInImage";
 import { cn } from "@/lib/utils";
@@ -47,6 +49,19 @@ export function TripCoverImage({
         })
       : src?.trim() || resolveTripCoverUrl({ mood: mood ?? category }));
 
+  const correlationId = useId();
+  const trace = { correlationId, sourceType: isCoverCustomized ? "custom" as const : coverSourceType(resolved) };
+  const previous = useRef<{ url: string; pending: boolean } | undefined>(undefined);
+  const pending = Boolean(resolutionPending && !isCoverCustomized);
+  useEffect(() => {
+    traceCover(trace, "COVER_SOURCE_SELECTED", resolved, pending ? "pending" : "loading");
+    if (previous.current) {
+      traceCover(trace, "COVER_ASYNC_UPDATE", resolved, pending ? "pending" : "loading",
+        previous.current.url !== resolved ? "source_changed" : "loading_state_changed");
+    }
+    previous.current = { url: resolved, pending };
+  }, [resolved, pending, isCoverCustomized, correlationId]);
+
   if (resolutionPending && !isCoverCustomized) {
     return <div className={cn("relative overflow-hidden bg-secondary", className)} aria-busy="true">
       <div className="absolute inset-0 animate-pulse bg-secondary/80" aria-hidden />
@@ -56,6 +71,7 @@ export function TripCoverImage({
   return (
     <FadeInImage
       src={resolved}
+      coverTrace={trace}
       alt={alt}
       loading={loading}
       priority

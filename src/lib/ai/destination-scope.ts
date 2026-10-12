@@ -1,3 +1,5 @@
+import { normalizeCountryReference } from "./destination-country-normalize";
+import type { ResolvedTripDestination } from "./resolved-trip-destination";
 import {
   isKnownCountryLabel,
   isKnownTouristCityLabel,
@@ -18,10 +20,32 @@ export type DestinationScopeFields = {
   destinationRegion?: string;
 };
 
+/** Accept only an identity-bearing, destination/country-matched resolver result.
+ * Display aliases and bare coordinates are not scope authority. */
+export function matchedCombinationScope(
+  name: string,
+  scope?: ResolvedTripDestination | null,
+  countryHint?: string | null,
+): ResolvedTripDestination | undefined {
+  if (!scope || normalizeDestinationLabel(scope.label) !== normalizeDestinationLabel(name) ||
+      !scope.placeId?.trim() || !scope.countryCode || !scope.country ||
+      !Number.isFinite(scope.latitude) || Math.abs(scope.latitude!) > 90 ||
+      !Number.isFinite(scope.longitude) || Math.abs(scope.longitude!) > 180 ||
+      scope.type === "unknown") return;
+  if (countryHint) {
+    const expected = normalizeCountryReference(countryHint);
+    const actual = normalizeCountryReference(scope.country, scope.countryCode);
+    if ((expected.countryCode ?? expected.country) !== (actual.countryCode ?? actual.country)) return;
+  }
+  return scope;
+}
+
 /** Country-level labels that require a city/region before Places / combinations. */
-export function isCountryLevelDestination(name: string | null | undefined): boolean {
+export function isCountryLevelDestination(name: string | null | undefined, scope?: ResolvedTripDestination | null): boolean {
   if (!name?.trim()) return false;
   const label = normalizeDestinationLabel(name);
+  const trusted = matchedCombinationScope(label, scope);
+  if (trusted) return trusted.type === "country";
   if (splitKnownParentAreaLabel(label)) return false;
   const entity = resolveDestinationEntity(label);
   // City-states are valid Places destinations (city label == country label).
@@ -36,10 +60,10 @@ export function isCountryLevelDestination(name: string | null | undefined): bool
  * True when Places discovery / combination generation may run.
  * Country without a city must never run city-radius Places search.
  */
-export function canDiscoverDestinationPlaces(name: string | null | undefined): boolean {
+export function canDiscoverDestinationPlaces(name: string | null | undefined, scope?: ResolvedTripDestination | null): boolean {
   if (!name?.trim()) return false;
-  if (isCountryLevelDestination(name)) return false;
-  const entity = resolveDestinationEntity(name);
+  if (isCountryLevelDestination(name, scope)) return false;
+  const entity = matchedCombinationScope(name, scope) ?? resolveDestinationEntity(name);
   return (
     entity.type === "city" ||
     entity.type === "city_state" ||
@@ -117,9 +141,9 @@ export function resolveDestinationScopeFields(
 
   return {
     destinationName: label,
-    destinationType: "city",
+    destinationType: entity.type,
     destinationCountry: country,
-    destinationCity: label,
+    destinationCity: entity.type === "unknown" ? undefined : label,
   };
 }
 

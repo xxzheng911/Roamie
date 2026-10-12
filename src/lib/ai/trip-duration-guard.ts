@@ -132,14 +132,14 @@ export function hasResolvedDestination(
 ): boolean {
   const resolved = resolvePlanningDestination(context, context.session);
   if (!resolved?.label) return false;
-  if (resolved.type === "country" || isCountryLevelDestination(resolved.label)) {
+  if (resolved.type === "country" || isCountryLevelDestination(resolved.label, resolved)) {
     return false;
   }
   if (hasCompleteResolvedDestination(resolved)) return true;
   // Discoverable entity with countryCode — coords may hydrate from approx/scope shortly after.
   if (
     resolved.countryCode &&
-    canDiscoverDestinationPlaces(resolved.label) &&
+    canDiscoverDestinationPlaces(resolved.label, resolved) &&
     resolved.type !== "country" &&
     resolved.type !== "unknown"
   ) {
@@ -149,7 +149,7 @@ export function hasResolvedDestination(
   if (
     resolved.scopeLocked &&
     resolved.countryCode &&
-    canDiscoverDestinationPlaces(resolved.label)
+    canDiscoverDestinationPlaces(resolved.label, resolved)
   ) {
     return true;
   }
@@ -210,7 +210,7 @@ export function evaluateCombinationDiscoveryGuard(
   if (!hasDestination) {
     const raw = resolved?.label ?? context.destination?.trim();
     let reason: CombinationDiscoveryGuardResult["reason"] = "missing_destination";
-    if (raw && isCountryLevelDestination(raw)) {
+    if (raw && isCountryLevelDestination(raw, resolved)) {
       reason = "country_level_destination";
     } else if (labelOnlyDesync) {
       reason = "destination_state_desync";

@@ -1,3 +1,5 @@
+import { tripTitleDisplay } from "@/lib/trip/title-display";
+import { itineraryDestinationDisplay } from "@/lib/native-qa-display";
 import { applyTripCover, coverRevision } from "@/lib/saved-trip/cover-live-state";
 import { useLiveTripCover } from "@/lib/saved-trip/use-live-cover";
 import { LOCALIZED_ACTION_GRID, LOCALIZED_ACTION_BUTTON } from "@/lib/localized-action-layout";
@@ -1760,10 +1762,10 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
 
   const tripDateRange = inferTripDates(items, settings);
   // Display projection only: editable payload, user title and notes are untouched.
-  const localizedTripTitle = isTitleCustomized ? tripTitle : uiT("destinationEditorial.generated_trip_title", {
-    destination: tripView.destination === "尚未設定" ? "" : tripView.destination,
-    days: dayGroups.filter((day) => !day.isUnassigned).length || payload.days || 1,
-  }).trim();
+  const localizedTripTitle = tripTitleDisplay({ title: tripTitle, custom: isTitleCustomized, destinationLocation: payload.destinationLocation,
+    destination: tripView.destination === "尚未設定" ? undefined : tripView.destination,
+    days: dayGroups.filter((day) => !day.isUnassigned).length || payload.days,
+  }, locale);
 
   return (
     <>
@@ -1876,7 +1878,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
       <div className="px-5 pt-3">
         <TripOutfitCard
           destination={
-            tripView.destination !== "尚未設定" ? tripView.destination : outfitDestination
+            itineraryDestinationDisplay(tripView.destination !== "尚未設定" ? tripView.destination : outfitDestination, locale, payload.destinationLocation)
           }
           dateRange={tripView.dateRange}
           weatherSummary={outfitFields.weatherSummary}
@@ -2001,6 +2003,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
                         <TripLegTransportConnector
                           transport={transport}
                           travelTimeLabel={formatLegTravelTimeLabel(transit, preferenceTransport, {
+                            locale,
                             loading:
                               transitLoading &&
                               !showJapanTransitMaps &&

@@ -1,3 +1,6 @@
+import { traceCombinationAdviceReturn, type AdviceReturnObservation } from "./combination-selection-diagnostics";
+import { resolvePlanningDestination } from "./resolved-trip-destination";
+import { resolveCandidateDisplay } from "./destination-localization";
 import { displayDestinationForCopy } from "./destination-locale-aliases";
 import { planningContextText } from "@/lib/i18n/planning-context-copy";
 import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
@@ -77,7 +80,7 @@ import {
   logDestinationCityRequired,
   logTripIntentScopeSummary,
 } from "@/lib/ai/destination-scope";
-import { resolveSuggestedTripDates } from "@/lib/ai/resolve-suggested-trip-dates";
+import { resolveSuggestedTripDates, suggestedTripDateContextPatch } from "@/lib/ai/resolve-suggested-trip-dates";
 import {
   hasUserSpecifiedTravelMonth,
   isBestSeasonQuestion,
@@ -362,6 +365,25 @@ export function applyAdviceResultToSession(
         },
       }
     : session;
+
+  const combinationFailed = advice.contextPatch?.tripPurpose === "combination_discovery_failed" ||
+    (advice.pendingQuestion?.type === "ask_preference" &&
+      advice.pendingQuestion.options.includes(REFRESH_DESTINATION_RECOMMENDATIONS_OPTION));
+  if (combinationFailed) {
+    return {
+      ...withContext,
+      pendingQuestion: advice.pendingQuestion,
+      lastResolvedPendingQuestion: undefined,
+      adviceSelectionThisTurn: undefined,
+      tripCreationAuthority: undefined,
+      selectedPlaces: [],
+      travelContext: {
+        ...(withContext.travelContext ?? {interests: []}),
+        offeredCombinations: [], selectedCombinationIds: [], selectedCombinationPlaceNames: [], excludedCombinationPlaceNames: [], selectionSource: undefined,
+        tripPurpose: "combination_discovery_failed",
+      },
+    };
+  }
 
   if (advice.planningShownCandidates?.length) {
     return {
@@ -815,6 +837,7 @@ function resolveDestinationCombinationsAdvice(
   ctx: CanonicalTravelContext,
   session: ChatPlanningSession,
   locale?: import("@/lib/i18n/types").Locale,
+  observation?: AdviceReturnObservation,
 ): DestinationAdviceResult | null {
   const destination = resolveContextDestination(ctx, session);
   const days = resolveValidTripDays({
@@ -836,6 +859,7 @@ function resolveDestinationCombinationsAdvice(
     pendingQuestion: session.pendingQuestion,
     session,
   });
+  if (observation) observation.guardReason = guard.reason;
   logCombinationDiscoveryGuard(guard, destination);
   if (!guard.allowed || !destination || days == null) {
     if (guard.reason === "missing_trip_duration") {
@@ -850,7 +874,7 @@ function resolveDestinationCombinationsAdvice(
     return null;
   }
 
-  if (!canDiscoverDestinationPlaces(destination) || isCountryLevelDestination(destination)) {
+  if (!canDiscoverDestinationPlaces(destination, guard.resolvedDestination) || isCountryLevelDestination(destination, guard.resolvedDestination)) {
     logCountryLevelPlacesBlocked(destination, "city_required");
     return null;
   }
@@ -864,12 +888,14 @@ function resolveDestinationCombinationsAdvice(
     startDate: ctx.startDate,
     endDate: ctx.endDate,
     suggestedStartDate: ctx.suggestedStartDate,
+    dateProvenance: ctx.dateProvenance,
     travelMonth: ctx.travelMonth,
   });
   const startDate = suggestedDates?.startDate ?? ctx.startDate;
   const endDate = suggestedDates?.endDate ?? ctx.endDate;
 
   const hasExactDate =
+    suggestedDates?.confirmed === true &&
     Boolean(startDate) &&
     /^\d{4}-\d{2}-\d{2}$/.test(startDate!.trim()) &&
     Boolean(endDate) &&
@@ -955,8 +981,7 @@ function resolveDestinationCombinationsAdvice(
         destinationCity: scopePatch?.destinationCity ?? ctx.destinationCity,
         destinationRegion: scopePatch?.destinationRegion ?? ctx.destinationRegion,
         days,
-        startDate,
-        endDate,
+        ...(suggestedDates ? suggestedTripDateContextPatch(suggestedDates) : {}),
         tripPurpose: "combination_discovery_failed",
         conversationState: "awaiting_preference",
         lastItineraryFailure: failure
@@ -1023,8 +1048,7 @@ function resolveDestinationCombinationsAdvice(
         : ctx.destinationRegion,
       destinationCountry: resolvedCountry,
       days,
-      startDate,
-      endDate,
+      ...(suggestedDates ? suggestedTripDateContextPatch(suggestedDates) : {}),
       tripPurpose: "combination_suggestions_offered",
       conversationState: "awaiting_preference",
       planningStage: "recommendations_generated",
@@ -1211,7 +1235,7 @@ const COUNTRY_ADVICE: Record<string, CountryAdvice> = {
     cities: "河內、峴港，還是胡志明",
     cityOptions: [
       { name: "河內", type: "city", summary: "古城、咖啡與人文散步" },
-      { name: "峴港", type: "city", summary: "海灘、中部風景與度假感" },
+      { name: "峴港", localizationIdentity: { bindingId: "editorial-vn-city-001" }, type: "city", summary: "海灘、中部風景與度假感" },
       { name: "胡志明", type: "city", summary: "都會節奏、美食與夜生活" },
     ],
   },
@@ -1717,7 +1741,7 @@ export function buildCountryCitySelectionReply(params: {
     lines.push("可以先從這幾個城市／地區考慮：");
     lines.push("");
     for (const opt of cityOptions) {
-      lines.push(`・${opt.name}：${opt.summary}`);
+      lines.push(`・${resolveCandidateDisplay(opt, "zh-TW").name}：${opt.summary}`);
     }
     lines.push("");
     lines.push(COUNTRY_CITY_SELECTION_ENDING);
@@ -1732,8 +1756,9 @@ export function buildCountryCitySelectionReply(params: {
   const reply = locale === 'zh-TW' ? sanitizeCountryCitySelectionReply(lines.join("\n"), country)
     : [...(params.introLines ?? []), planningContextText(monthNum ? 'month' : 'country', locale, shown, monthNum ?? undefined),
        '', ...cityOptions.map(o => {
-         const shownName = displayDestinationForCopy(o.name, undefined, locale);
-         return `・${o.localizedNames?.[locale] ?? (shownName !== o.name ? shownName : o.originalName ?? o.name)}`;
+         const display = resolveCandidateDisplay(o, locale);
+         logAiPipeline('[DESTINATION_LOCALIZATION]', { locale, source: display.source, reason: display.reason });
+         return `・${display.name}`;
        }),
        '', planningContextText('cityQuestion', locale, shown)].join('\n');
 
@@ -1874,7 +1899,7 @@ function buildCountryCityCollectAdvice(
       destinationType: "country",
       destinationCity: undefined,
       offeredDestinationOptions: buildDestinationOptionsFromCityList(
-        options.map((o) => ({ name: o.name, type: o.type, country: o.country })),
+        options,
         label,
       ),
       ...(withMonth && monthNum ? { travelMonth: ctx.travelMonth } : {}),
@@ -2124,7 +2149,8 @@ function resolveDestinationAdviceInternal(
   ctx: CanonicalTravelContext,
   session: ChatPlanningSession,
   userText: string,
-  locale?: import("@/lib/i18n/types").Locale,
+  locale: import("@/lib/i18n/types").Locale | undefined,
+  observation: AdviceReturnObservation,
 ): DestinationAdviceResult {
   if (isTripAddPlaceSession(session)) return { reply: null };
   if (ctx.destinationClarification || (ctx.destinationCandidate && ctx.destinationCandidate.status !== 'resolved')) {
@@ -2229,7 +2255,7 @@ function resolveDestinationAdviceInternal(
       readyDest &&
       readyDays &&
       hasExactDates &&
-      canDiscoverDestinationPlaces(readyDest) &&
+      canDiscoverDestinationPlaces(readyDest, resolvePlanningDestination({...workingCtx, destination:readyDest}, session)) &&
       hasDestinationCombinations(readyDest) &&
       workingCtx.tripPurpose !== "combination_suggestions_offered" &&
       workingCtx.tripPurpose !== "route_combination_selected" &&
@@ -2369,7 +2395,7 @@ function resolveDestinationAdviceInternal(
       if (
         comboDest &&
         comboDays &&
-        canDiscoverDestinationPlaces(comboDest) &&
+        canDiscoverDestinationPlaces(comboDest, resolvePlanningDestination({...workingCtx, destination:comboDest}, session)) &&
         hasDestinationCombinations(comboDest) &&
         workingCtx.tripPurpose !== "combination_suggestions_offered" &&
         workingCtx.tripPurpose !== "route_combination_selected"
@@ -2489,7 +2515,7 @@ function resolveDestinationAdviceInternal(
         ? resolveMustVisitAdvice({ ...ctx, destination: dest }, userText)
         : null;
 
-    if (session.lastResolvedPendingQuestion.type === "ask_days") {
+    if (isAskDaysPending(session.lastResolvedPendingQuestion)) {
       const parsedDays =
         Number(session.adviceSelectionThisTurn) ||
         parseDayCountFromText(session.adviceSelectionThisTurn);
@@ -2502,7 +2528,7 @@ function resolveDestinationAdviceInternal(
       };
       const comboAdvice =
         destLabel && parsedDays && hasDestinationCombinations(destLabel)
-          ? resolveDestinationCombinationsAdvice(datedCtx, session, locale)
+          ? resolveDestinationCombinationsAdvice(datedCtx, session, locale, observation)
           : null;
       if (
         comboAdvice?.reply &&
@@ -2524,6 +2550,8 @@ function resolveDestinationAdviceInternal(
           "[DIRECT_ITINERARY_GENERATION_BLOCKED]",
           "reason=duration_reply_requires_combination_selection",
         );
+        observation.branchCode = "consumed_duration_structured";
+        observation.next = next;
         return {
           reply: comboAdvice.reply,
           pendingQuestion: comboAdvice.pendingQuestion,
@@ -2544,6 +2572,8 @@ function resolveDestinationAdviceInternal(
         };
       }
       // No Places-backed combinations yet — do not pad with category labels.
+      observation.branchCode = "consumed_duration_fallback";
+      observation.next = next;
       return {
         reply: next.reply,
         pendingQuestion: next.pendingQuestion,
@@ -2573,13 +2603,12 @@ function resolveDestinationAdviceInternal(
       };
     }
 
-    return {
-      reply: next.reply,
-      pendingQuestion: next.pendingQuestion,
-      recommendations: mustVisit?.recommendations,
-      recommendationsTitle:
-        mustVisit && dest ? `${normalizeDestinationLabel(dest)}必去推薦` : undefined,
-      contextPatch:
+    observation.branchCode = "resolved_selection_return";
+    observation.next = next;
+    // A rendered combination menu and its offeredCombinations travel together.
+    const nextComboPatch =
+      next.pendingQuestion?.type === "combination_choice" ? next.contextPatch : undefined;
+    const selectionPatch: Partial<CanonicalTravelContext> | undefined =
         session.lastResolvedPendingQuestion.type === "preference_choice"
           ? {
               selectedInterests: session.adviceSelectionThisTurn.split(",") as TripInterest[],
@@ -2646,7 +2675,14 @@ function resolveDestinationAdviceInternal(
                           session.lastResolvedPendingQuestion.destinationCountry ??
                           ctx.destinationCountry,
                       }
-                    : undefined,
+                    : undefined;
+    return {
+      reply: next.reply,
+      pendingQuestion: next.pendingQuestion,
+      recommendations: mustVisit?.recommendations,
+      recommendationsTitle:
+        mustVisit && dest ? `${normalizeDestinationLabel(dest)}必去推薦` : undefined,
+      contextPatch: nextComboPatch ? { ...selectionPatch, ...nextComboPatch } : selectionPatch,
     };
   }
 
@@ -2714,9 +2750,7 @@ function resolveDestinationAdviceInternal(
       ) {
         // Grammar matched but parsePendingOptionSelection failed — nudge again
         return {
-          reply: dest
-            ? `我還不確定你想用哪幾組。請回覆組合編號（例如 1、3），或說「可以幫我生成」讓我混搭全部組合。`
-            : `我還不確定你想用哪幾組。請回覆組合編號，或說「可以幫我生成」。`,
+          reply: chatRuntimeCopy(dest ? "combinationSelectionNudge" : "combinationSelectionNudgeShort", locale),
           pendingQuestion: pending,
         };
       }
@@ -2727,9 +2761,7 @@ function resolveDestinationAdviceInternal(
       ) {
         // Ambiguous non-place reply while waiting — keep pending, soft nudge
         return {
-          reply: dest
-            ? `我還不確定你想用哪幾組。請回覆組合編號（例如 1、3），或說「可以幫我生成」讓我混搭全部組合。`
-            : `我還不確定你想用哪幾組。請回覆組合編號，或說「可以幫我生成」。`,
+          reply: chatRuntimeCopy(dest ? "combinationSelectionNudge" : "combinationSelectionNudgeShort", locale),
           pendingQuestion: pending,
         };
       }
@@ -2836,6 +2868,8 @@ function resolveDestinationAdviceInternal(
       }
 
       const next = advanceAfterPendingSelection(selected, pending, workingCtx, locale);
+      observation.branchCode = "pending_selection_return";
+      observation.next = next;
       return {
         reply: next.reply,
         pendingQuestion: next.pendingQuestion,
@@ -2880,15 +2914,20 @@ function resolveDestinationAdviceInternal(
                       }
                     : pending.type === "ask_preference"
                       ? contextPatchForPreferenceSelection(selected, pending)
-                      : pending.type === "ask_days"
+                      : isAskDaysPending(pending)
                         ? {
+                            // Preserve the existing renderer's structured options and stage.
+                            // Never regenerate options or retain a previous failed offer.
+                            ...next.contextPatch,
+                            offeredCombinations: next.contextPatch?.offeredCombinations ?? [],
+                            selectedCombinationIds: [],
                             days: Number(selected) || parseDayCountFromText(selected),
                             destination: pending.baseDestination ?? ctx.destination,
                             destinationCountry:
                               pending.destinationCountry ?? ctx.destinationCountry,
                             planningDaysConfirmed: true,
-                            tripPurpose: "duration_selected",
-                            conversationState: "awaiting_preference",
+                            tripPurpose: next.contextPatch?.tripPurpose ?? "duration_selected",
+                            conversationState: next.contextPatch?.conversationState ?? "awaiting_preference",
                           }
                         : selected === "daily_recommendations"
                           ? {
@@ -2924,9 +2963,11 @@ function resolveDestinationAdviceInternal(
         };
         const comboAdvice =
           destLabel && hasDestinationCombinations(destLabel)
-            ? resolveDestinationCombinationsAdvice(datedCtx, session, locale)
+            ? resolveDestinationCombinationsAdvice(datedCtx, session, locale, observation)
             : null;
         if (comboAdvice?.reply) {
+          observation.branchCode = "unconsumed_duration_structured";
+          observation.next = comboAdvice;
           return {
             reply: comboAdvice.reply,
             pendingQuestion: comboAdvice.pendingQuestion,
@@ -2954,6 +2995,7 @@ function resolveDestinationAdviceInternal(
           startDate: workingCtx.startDate,
           endDate: workingCtx.endDate,
           suggestedStartDate: workingCtx.suggestedStartDate,
+          dateProvenance: workingCtx.dateProvenance,
           travelMonth: workingCtx.travelMonth,
         });
         const datedCtx: CanonicalTravelContext = {
@@ -2963,9 +3005,7 @@ function resolveDestinationAdviceInternal(
           planningDaysConfirmed: true,
           ...(suggested && !workingCtx.startDate
             ? {
-                startDate: suggested.startDate,
-                endDate: suggested.endDate,
-                suggestedStartDate: suggested.startDate,
+                ...suggestedTripDateContextPatch(suggested),
               }
             : {}),
         };
@@ -2987,7 +3027,7 @@ function resolveDestinationAdviceInternal(
 
         const comboAdvice =
           destLabel && hasDestinationCombinations(destLabel)
-            ? resolveDestinationCombinationsAdvice(datedCtx, session, locale)
+            ? resolveDestinationCombinationsAdvice(datedCtx, session, locale, observation)
             : null;
         // Duration reply must never open itinerary / place-failure paths.
         if (
@@ -3010,6 +3050,8 @@ function resolveDestinationAdviceInternal(
             "[DIRECT_ITINERARY_GENERATION_BLOCKED]",
             "reason=duration_reply_requires_combination_selection",
           );
+          observation.branchCode = "unconsumed_duration_structured";
+          observation.next = comboAdvice;
           return {
             reply: comboAdvice.reply,
             pendingQuestion: comboAdvice.pendingQuestion,
@@ -3026,9 +3068,7 @@ function resolveDestinationAdviceInternal(
               selectedCombinationIds: [],
               ...(suggested && !workingCtx.startDate
                 ? {
-                    startDate: suggested.startDate,
-                    endDate: suggested.endDate,
-                    suggestedStartDate: suggested.startDate,
+                    ...suggestedTripDateContextPatch(suggested),
                   }
                 : {}),
             },
@@ -3056,6 +3096,8 @@ function resolveDestinationAdviceInternal(
             "template=trip_summary_or_direct_choice",
             "source=advanceAfterPendingSelection",
           );
+          observation.branchCode = "parsed_duration_legacy_blocked";
+          observation.next = next;
           // Soft acknowledge + re-ask combinations, never place-failure copy.
           return {
             reply: [
@@ -3083,14 +3125,14 @@ function resolveDestinationAdviceInternal(
               selectedCombinationIds: [],
               ...(suggested && !workingCtx.startDate
                 ? {
-                    startDate: suggested.startDate,
-                    endDate: suggested.endDate,
-                    suggestedStartDate: suggested.startDate,
+                    ...suggestedTripDateContextPatch(suggested),
                   }
                 : {}),
             },
           };
         }
+        observation.branchCode = "parsed_duration_fallback";
+        observation.next = next;
         return {
           reply: next.reply,
           pendingQuestion: next.pendingQuestion,
@@ -3114,9 +3156,7 @@ function resolveDestinationAdviceInternal(
               : {}),
             ...(suggested && !workingCtx.startDate
               ? {
-                  startDate: suggested.startDate,
-                  endDate: suggested.endDate,
-                  suggestedStartDate: suggested.startDate,
+                  ...suggestedTripDateContextPatch(suggested),
                 }
               : {}),
           },
@@ -3832,7 +3872,9 @@ function buildDestinationAdviceReplyBody(
 
 /** Resolver geography survives local advice templates; templates cannot reassign authority. */
 export function resolveDestinationAdvice(ctx: CanonicalTravelContext, session: ChatPlanningSession, userText: string, locale?: import("@/lib/i18n/types").Locale): DestinationAdviceResult {
-  const result = resolveDestinationAdviceInternal(ctx,session,userText,locale);
+  const observation: AdviceReturnObservation = {branchCode: "other_advice_return"};
+  const result = resolveDestinationAdviceInternal(ctx,session,userText,locale,observation);
+  traceCombinationAdviceReturn(session, observation, result);
   if (ctx.destinationCandidate?.status !== 'resolved' && !(ctx.destinationType === 'country' && ctx.destinationCountryCode)) return result;
   return {...result,contextPatch:{...result.contextPatch,
     destination:ctx.destination,destinationCountry:ctx.destinationCountry,destinationCountryCode:ctx.destinationCountryCode,

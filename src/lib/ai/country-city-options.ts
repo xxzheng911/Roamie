@@ -1,3 +1,4 @@
+import type { LocalizationIdentity } from "./destination-localization";
 import { translate } from "@/lib/i18n/translate";
 import type { Locale } from "@/lib/i18n/types";
 /**
@@ -24,7 +25,10 @@ export type CountryCityOptionType = "city" | "region" | "island";
 
 export type CountryCityOption = {
   name: string;
+  localizationIdentity?: LocalizationIdentity;
   originalName?: string;
+  englishName?: string;
+  sourceLocale?: string;
   localizedNames?: Partial<Record<Locale, string>>;
   type: CountryCityOptionType;
   country: string;
@@ -61,6 +65,7 @@ const OPTION_TYPE_SET = new Set<CountryCityOptionType>(["city", "region", "islan
 
 type StructuredSeed = {
   name: string;
+  localizationIdentity?: LocalizationIdentity;
   type: CountryCityOptionType;
   country: string;
   summaryKey: string;
@@ -92,7 +97,7 @@ const STRUCTURED_COUNTRY_DESTINATIONS: StructuredSeed[] = [
   { name: "長灘島", type: "island", country: "菲律賓", summaryKey: "summary_af6fce87ff" },
   { name: "巴拉望", type: "region", country: "菲律賓", summaryKey: "summary_2dcf57ede7" },
   { name: "河內", type: "city", country: "越南", summaryKey: "summary_ba971b844c" },
-  { name: "峴港", type: "city", country: "越南", summaryKey: "summary_a0e78969cf" },
+  { name: "峴港", localizationIdentity: { bindingId: "editorial-vn-city-001" }, type: "city", country: "越南", summaryKey: "summary_a0e78969cf" },
   { name: "胡志明", type: "city", country: "越南", summaryKey: "summary_4067666b37" },
   { name: "會安", type: "city", country: "越南", summaryKey: "summary_f054cf8ff9" },
   { name: "峇里島", type: "island", country: "印尼", summaryKey: "summary_96ede32b2e" },
@@ -169,9 +174,9 @@ const STRUCTURED_COUNTRY_DESTINATIONS: StructuredSeed[] = [
   { name: "琉森", type: "city", country: "瑞士", summaryKey: "summary_816ccbdc70" },
   { name: "日內瓦", type: "city", country: "瑞士", summaryKey: "summary_05361cfe3d" },
   { name: "因特拉肯", type: "region", country: "瑞士", summaryKey: "summary_5e944d6f3b" },
-  { name: "里斯本", type: "city", country: "葡萄牙", summaryKey: "summary_f63a461301" },
-  { name: "波爾圖", type: "city", country: "葡萄牙", summaryKey: "summary_27fa9358d0" },
-  { name: "阿爾加維", type: "region", country: "葡萄牙", summaryKey: "summary_1c008a4e4c" },
+  { name: "里斯本", localizationIdentity: { bindingId: "editorial-pt-city-001" }, type: "city", country: "葡萄牙", summaryKey: "summary_f63a461301" },
+  { name: "波爾圖", localizationIdentity: { bindingId: "editorial-pt-city-002" }, type: "city", country: "葡萄牙", summaryKey: "summary_27fa9358d0" },
+  { name: "阿爾加維", localizationIdentity: { bindingId: "editorial-pt-region-001" }, type: "region", country: "葡萄牙", summaryKey: "summary_1c008a4e4c" },
   { name: "雅典", type: "city", country: "希臘", summaryKey: "summary_f9aaa9f4c2" },
   { name: "聖托里尼", type: "island", country: "希臘", summaryKey: "summary_d59753ab31" },
   { name: "克里特島", type: "island", country: "希臘", summaryKey: "summary_9a8279be19" },
@@ -205,9 +210,9 @@ const STRUCTURED_COUNTRY_DESTINATIONS: StructuredSeed[] = [
   { name: "都柏林", type: "city", country: "愛爾蘭", summaryKey: "summary_3038dc0a3c" },
   { name: "戈爾韋", type: "city", country: "愛爾蘭", summaryKey: "summary_b5d44cbdd5" },
   { name: "科克", type: "city", country: "愛爾蘭", summaryKey: "summary_5f92556d10" },
-  { name: "雷克雅未克", type: "city", country: "冰島", summaryKey: "summary_430fe6a660" },
-  { name: "藍湖", type: "region", country: "冰島", summaryKey: "summary_f665a5a85d" },
-  { name: "南部海岸", type: "region", country: "冰島", summaryKey: "summary_5b8c40a60f" },
+  { name: "雷克雅未克", localizationIdentity: { bindingId: "editorial-is-city-001" }, type: "city", country: "冰島", summaryKey: "summary_430fe6a660" },
+  { name: "藍湖", localizationIdentity: { bindingId: "editorial-is-attraction-001" }, type: "region", country: "冰島", summaryKey: "summary_f665a5a85d" },
+  { name: "南部海岸", localizationIdentity: { bindingId: "editorial-is-route-001" }, type: "region", country: "冰島", summaryKey: "summary_5b8c40a60f" },
   { name: "伊斯坦堡", type: "city", country: "土耳其", summaryKey: "summary_083441a514" },
   { name: "卡帕多奇亞", type: "region", country: "土耳其", summaryKey: "summary_7bb947bc68" },
   { name: "安塔利亞", type: "city", country: "土耳其", summaryKey: "summary_fbe76f71db" },
@@ -309,7 +314,7 @@ function normalizeOneOption(
   if (!name) return null;
   const type = toOptionType(opt.type);
   const summary = String(opt.summary ?? "").trim() || defaultSummaryForType(type);
-  return { name, type, country, summary, originalName: opt.originalName ?? opt.name, localizedNames: opt.localizedNames };
+  return { name, type, country, summary, originalName: opt.originalName ?? opt.name, localizedNames: opt.localizedNames, englishName: opt.englishName, sourceLocale: opt.sourceLocale, localizationIdentity: opt.localizationIdentity };
 }
 
 export function normalizeCountryCityOptions(
@@ -398,7 +403,7 @@ export function validateCountryCityOptions(
       country: label,
       summary: String(opt.summary).trim(),
       originalName: opt.originalName,
-      localizedNames: opt.localizedNames,
+      localizedNames: opt.localizedNames, englishName: opt.englishName, sourceLocale: opt.sourceLocale, localizationIdentity: opt.localizationIdentity,
     });
   }
 
@@ -411,6 +416,7 @@ function queryStructuredDestinations(country: string): CountryCityOption[] {
     (d) => normalizeDestinationLabel(d.country) === label,
   ).map((d) => ({
     name: normalizeDestinationLabel(d.name),
+    localizationIdentity: d.localizationIdentity,
     type: d.type,
     country: label,
     summary: translate("zh-TW", `destinationEditorial.${d.summaryKey}`),
@@ -638,7 +644,7 @@ export function projectCountryCitySummaries(options: CountryCityOption[], langua
 /** All editorial records, independent of the 3–5 option selection limit. */
 export function structuredDestinationOptions(locale: Locale): CountryCityOption[] {
   return projectCountryCitySummaries(STRUCTURED_COUNTRY_DESTINATIONS.map((seed) => ({
-    name: normalizeDestinationLabel(seed.name), country: normalizeDestinationLabel(seed.country),
+    name: normalizeDestinationLabel(seed.name), localizationIdentity: seed.localizationIdentity, country: normalizeDestinationLabel(seed.country),
     type: seed.type, summary: "",
   })), locale);
 }

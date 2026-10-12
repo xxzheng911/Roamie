@@ -1,3 +1,4 @@
+import { hasNumericStyleAuthority, isNumericSelection } from "./numeric-selection-authority";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { ChatMsg } from "@/lib/chat-history";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
@@ -79,6 +80,7 @@ export function shouldTriggerTripStylePlanning(
 ): boolean {
   const travel = ctx ?? session.travelContext ?? { interests: [] };
   const style = parseAskTripStyleSelection(userText);
+  if (isNumericSelection(userText) && (!style || !hasNumericStyleAuthority(session, style))) return false;
   if (!style && !resolveTripStyleFromContext(travel, session)) return false;
   if (!resolveConversationDestination(travel, session)) return false;
   if (!hasConfirmedTripDays(travel, session)) return false;
@@ -126,6 +128,7 @@ export function isStyleReselectTurn(
 ): TripStyleKey | null {
   const style = parseStyleReselectMessage(userText);
   if (!style) return null;
+  if (isNumericSelection(userText) && !hasNumericStyleAuthority(session, style)) return null;
   if (!isPlanGenerated(session, ctx) && !hasActiveTripPlanningSession(session, ctx)) return null;
   return style;
 }

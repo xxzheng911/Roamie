@@ -2,6 +2,21 @@ import type { Locale } from "./types";
 
 export const nativeQaMessages: Record<Locale, Record<string, string>> = {
   "zh-TW": {
+    "generatedStopsSummary": "依你選的 {count} 個地點排成 {days} 天行程。",
+    "exactTripDates": "你預計旅行 {days} 天。請提供確定的出發日期（YYYY/MM/DD）。",
+    "confirmTripDates": "你預計旅行 {days} 天。有確定的旅行日期嗎？請輸入日期，或回覆「使用建議日期」。",
+    "suggestedTripDates": "暫定建議日期：{start}～{end}。確認後才會開始建立行程。",
+    "directionsCompact": "路線",
+    "arriveCompact": "抵達",
+    "stayMinutesCompact": "停留 {minutes}分",
+    "stayHoursCompact": "停留 {hours}時",
+    "stayHoursMinutesCompact": "停留 {hours}時{minutes}分",
+    "legDuration": "{mode} 約 {minutes} 分鐘",
+    "legWalkDuration": "步行約 {minutes} 分鐘",
+    "legLoading": "交通時間載入中",
+    "legUnavailable": "暫時無法取得交通時間",
+    "legEstimated": "（估算）",
+
     "hotel": "住宿推薦",
     "flight": "機票推薦",
     "package": "套裝行程",
@@ -64,6 +79,21 @@ export const nativeQaMessages: Record<Locale, Record<string, string>> = {
     "nextTomorrow": "明日 {time} 開始營業"
   },
   "en": {
+    "generatedStopsSummary": "A {days}-day itinerary based on your {count} selected places.",
+    "exactTripDates": "You're planning a {days}-day trip. Please enter your departure date (YYYY/MM/DD).",
+    "confirmTripDates": "You're planning a {days}-day trip. Do you have exact travel dates? Enter a date, or reply “use suggested dates”.",
+    "suggestedTripDates": "Provisional suggested dates: {start}–{end}. Creation starts only after confirmation.",
+    "directionsCompact": "Directions",
+    "arriveCompact": "Arrive",
+    "stayMinutesCompact": "Stay {minutes}m",
+    "stayHoursCompact": "Stay {hours}h",
+    "stayHoursMinutesCompact": "Stay {hours}h {minutes}m",
+    "legDuration": "About {minutes} min · {mode}",
+    "legWalkDuration": "About {minutes} min on foot",
+    "legLoading": "Loading travel time",
+    "legUnavailable": "Travel time unavailable",
+    "legEstimated": " (estimated)",
+
     "hotel": "Places to stay",
     "flight": "Flights",
     "package": "Travel packages",
@@ -126,6 +156,21 @@ export const nativeQaMessages: Record<Locale, Record<string, string>> = {
     "nextTomorrow": "Opens tomorrow at {time}"
   },
   "ja": {
+    "generatedStopsSummary": "選択した{count}か所を巡る{days}日間の旅程です。",
+    "exactTripDates": "{days}日間の旅行ですね。出発日を入力してください（YYYY/MM/DD）。",
+    "confirmTripDates": "{days}日間の旅行ですね。確定した旅行日を入力するか、「提案された日程を使う」と返信してください。",
+    "suggestedTripDates": "仮の日程案：{start}〜{end}。確認後に旅程を作成します。",
+    "directionsCompact": "経路",
+    "arriveCompact": "到着",
+    "stayMinutesCompact": "滞在 {minutes}分",
+    "stayHoursCompact": "滞在 {hours}時間",
+    "stayHoursMinutesCompact": "滞在 {hours}時間{minutes}分",
+    "legDuration": "{mode} 約{minutes}分",
+    "legWalkDuration": "徒歩約{minutes}分",
+    "legLoading": "移動時間を読み込み中",
+    "legUnavailable": "移動時間を取得できません",
+    "legEstimated": "（推定）",
+
     "hotel": "宿泊施設",
     "flight": "航空券",
     "package": "パッケージツアー",
@@ -188,6 +233,21 @@ export const nativeQaMessages: Record<Locale, Record<string, string>> = {
     "nextTomorrow": "明日{time}開店"
   },
   "ko": {
+    "generatedStopsSummary": "선택한 장소 {count}곳을 바탕으로 구성한 {days}일 여행 일정입니다.",
+    "exactTripDates": "{days}일 여행입니다. 출발 날짜를 입력해 주세요 (YYYY/MM/DD).",
+    "confirmTripDates": "{days}일 여행을 계획 중입니다. 확정된 날짜를 입력하거나 “추천 날짜 사용”이라고 답해 주세요.",
+    "suggestedTripDates": "임시 추천 날짜: {start}~{end}. 확인 후 일정을 생성합니다.",
+    "directionsCompact": "길찾기",
+    "arriveCompact": "도착",
+    "stayMinutesCompact": "체류 {minutes}분",
+    "stayHoursCompact": "체류 {hours}시간",
+    "stayHoursMinutesCompact": "체류 {hours}시간 {minutes}분",
+    "legDuration": "{mode} 약 {minutes}분",
+    "legWalkDuration": "도보 약 {minutes}분",
+    "legLoading": "이동 시간 불러오는 중",
+    "legUnavailable": "이동 시간을 확인할 수 없습니다",
+    "legEstimated": " (예상)",
+
     "hotel": "숙소 추천",
     "flight": "항공권 추천",
     "package": "패키지 여행",

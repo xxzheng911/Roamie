@@ -239,6 +239,8 @@ function localizeCandidate(
       name: candidate.localizedDisplayName || candidate.name,
       originalName,
       englishName: candidate.englishName,
+      localizedNames: candidate.localizationSource === "google_locale" && candidate.languageCode
+        ? { [candidate.languageCode]: candidate.localizedDisplayName || candidate.name } : undefined,
       placeId: candidate.googlePlaceId,
       canonicalPlaceId: candidate.googlePlaceId,
       types: candidate.types,
@@ -648,7 +650,7 @@ export function applyCombinationLocalizationGate(
       : gated.every((c) =>
           (c.placeCandidates ?? []).every((p) => {
             const name = (p.effectiveDisplayName || p.localizedDisplayName || p.name || "").trim();
-            return Boolean(name) && isReadablePlaceNameForLocale(name, locale);
+            return Boolean(name) && !isUnreadablePlaceName(name);
           }),
         ) &&
         (locale === "zh-TW" ? true : readableRatio >= MIN_READABLE_RATIO_NON_ZH * 0.75);
@@ -778,8 +780,6 @@ export function localizeCombinationPlaceNames(
       const english = (resolved.englishName ?? "").trim();
       if (english && isReadablePlaceNameForLocale(english, locale)) {
         display = english;
-      } else {
-        continue;
       }
     }
 

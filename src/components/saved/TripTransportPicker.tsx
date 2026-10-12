@@ -39,6 +39,7 @@ export function TripTransportPicker({ value, onChange, variant = "global", class
           <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
         </button>
         <RoamiePickerSheet
+          modal
           open={open}
           onOpenChange={setOpen}
           title={uiT("productionUi.pf0fab85822")}
@@ -74,6 +75,7 @@ export function TripTransportPicker({ value, onChange, variant = "global", class
         <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
       </button>
       <RoamiePickerSheet
+          modal
         open={open}
         onOpenChange={setOpen}
         title={uiT("productionUi.pf0fab85822")}

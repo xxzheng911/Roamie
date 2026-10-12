@@ -1,3 +1,4 @@
+import { matchesSelectionOwner } from "./numeric-selection-authority";
 import { displayDestinationForCopy } from "./destination-locale-aliases";
 import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
 import type { Locale } from "@/lib/i18n/types";
@@ -86,6 +87,7 @@ const FLEXIBLE_REPLY_RE =
   /^(都可以|都行|不限|沒特別|沒有特別|隨意|你推|都行吧|隨便|任何|沒有偏好|沒偏好)$/;
 
 export type PendingQuestionType =
+  | "date_confirmation"
   | "trip_style_choice"
   | "region_choice"
   | "duration_choice"
@@ -104,7 +106,9 @@ export type ItineraryNextStepOption = "full_itinerary" | "daily_recommendations"
 export const USE_DEFAULT_ROUTES = "__use_default_routes__";
 
 export type PendingQuestion = {
+  selectionOwner?: import("./numeric-selection-authority").SelectionOwner;
   type: PendingQuestionType;
+  dateConfirmation?: import("./trip-date-confirmation").PendingTripDateConfirmation;
   options: string[];
   baseDestination?: string;
   destinationCountry?: string;
@@ -510,7 +514,7 @@ export function parsePendingOptionSelection(
 
   if (pending.type === "ask_trip_style") {
     const style = parseAskTripStyleSelection(t);
-    if (style) return style;
+    if (style && pending.options.includes(style)) return style;
   }
 
   if (pending.type === "combination_choice") {
@@ -633,6 +637,9 @@ export function applyDestinationPendingSelection(
     return { session, contextPatch: {} };
   }
 
+  if (["ask_trip_style", "combination_choice"].includes(pending.type) && !matchesSelectionOwner(session, pending)) {
+    return { session, contextPatch: {} };
+  }
   const selected = parsePendingOptionSelection(text, pending);
   if (!selected) {
     return { session, contextPatch: {} };

@@ -1,3 +1,4 @@
+import { observeCombinationHelper } from './combination-selection-diagnostics';
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import { buildWeatherAwarePlanningReply, buildWeatherConstraintAcknowledgement } from "@/lib/ai/weather-planning-reply";
@@ -20,6 +21,7 @@ export { logChatContextUpdate, logChatNextStep } from "@/lib/ai/chat-debug-log";
 
 export type PlanningSlot =
   | "destination"
+  | "dates"
   | "days"
   | "preference"
   | "trip_style"
@@ -30,6 +32,7 @@ export type PlanningSlot =
   | "flexible_style";
 
 const PENDING_SLOT_MAP: Record<PendingQuestion["type"], PlanningSlot> = {
+  date_confirmation: "dates",
   ask_days: "days",
   duration_choice: "days",
   ask_preference: "preference",
@@ -183,6 +186,7 @@ export function buildPlanningOfflineReply(
   userText?: string,
   locale?: import("@/lib/i18n/types").Locale,
 ): string | null {
+  observeCombinationHelper(session, null);
   const dest = coerceTravelDestination(
     ctx.destination ??
       session.tripPlanningContext?.destination ??
@@ -241,6 +245,7 @@ export function buildPlanningOfflineReply(
       weather: ctx.weather,
       context: ctx,
     });
+    observeCombinationHelper(session, planned.contextPatch?.offeredCombinations?.length ?? 0);
     return planned.reply;
   }
 
@@ -250,5 +255,6 @@ export function buildPlanningOfflineReply(
     weather: ctx.weather,
     context: ctx,
   });
+  observeCombinationHelper(session, planned.contextPatch?.offeredCombinations?.length ?? 0);
   return planned.reply;
 }

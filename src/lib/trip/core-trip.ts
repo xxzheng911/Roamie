@@ -1,3 +1,4 @@
+import { tripTitleDisplay } from "@/lib/trip/title-display";
 import type { GeneratedLocaleContract } from "@/lib/generated-locale";
 import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
 import { translate } from "@/lib/i18n/translate";
@@ -33,7 +34,7 @@ export type CoreTrip = GeneratedLocaleContract & {
   customCoverImageUrl: string | null;
   aiGeneratedCoverImageUrl: string | null;
   isCoverCustomized: boolean;
-  destinationPlace: { name: string; placeId?: string } | null;
+  destinationPlace: { name: string; placeId?: string; country?: string; location?: import("@/lib/location/types").TripLocation } | null;
   originPlace: { name: string; placeId?: string } | null;
   startDate: string;
   endDate: string;
@@ -50,11 +51,8 @@ export type CoreTrip = GeneratedLocaleContract & {
 
 export function resolveCoreTripTitle(trip: CoreTrip, locale: Locale = effectiveAppLocale()): string {
   if (trip.isTitleCustomized && trip.customTitle?.trim()) return trip.customTitle;
-  // Saved titles remain authoritative even when an offline snapshot omits locale metadata.
-  if (trip.title?.trim()) return trip.title;
-  return translate(locale, "destinationEditorial.generated_trip_title", {
-    destination: trip.destinationPlace?.name ?? "", days: trip.days,
-  }).trim();
+  return tripTitleDisplay({ title: trip.title, custom: trip.isTitleCustomized,
+    destination: trip.destinationPlace?.location ? `${trip.destinationPlace.location.country} · ${trip.destinationPlace.location.city}` : trip.destinationPlace?.country && trip.destinationPlace.name && !trip.destinationPlace.name.includes(" · ") ? `${trip.destinationPlace.country} · ${trip.destinationPlace.name}` : trip.destinationPlace?.name, days: trip.days, destinationLocation: trip.destinationPlace?.location }, locale);
 }
 
 export function resolveCoreTripCoverImage(trip: CoreTrip): string {
@@ -101,7 +99,7 @@ export function toCoreTrip(row: StoredItinerary, opts?: { isOwner?: boolean }): 
       isTitleCustomized: Boolean(row.is_title_customized),
       ...coverFieldsFromStored(row),
       destinationPlace: payload.destinationLocation
-        ? { name: payload.destinationLocation.displayLabel ?? payload.destinationLocation.city, placeId: payload.destinationLocation.placeId }
+        ? { name: payload.destinationLocation.displayLabel ?? payload.destinationLocation.city, placeId: payload.destinationLocation.placeId, country: payload.destinationLocation.country, location: payload.destinationLocation }
         : payload.destination
           ? { name: payload.destination }
           : null,

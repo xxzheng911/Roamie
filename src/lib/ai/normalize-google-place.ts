@@ -1,3 +1,4 @@
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import type { PlaceResult } from "@/lib/place-result";
 import type { PlaceHoursData } from "@/lib/filter-available-places";
 import { applyNormalizedOpeningToPlaceResult } from "@/lib/normalized-opening-status";
@@ -13,7 +14,11 @@ export type GooglePlaceRaw = {
   place_id?: string | null;
   googlePlaceId?: string | null;
   name?: string | null;
-  displayName?: { text?: string | null } | null;
+  displayName?: { text?: string | null; languageCode?: string | null } | null;
+  originalName?: string | null;
+  englishName?: string | null;
+  localizedNames?: Partial<Record<string, string>>;
+  sourceLocale?: string | null;
   formattedAddress?: string | null;
   shortFormattedAddress?: string | null;
   vicinity?: string | null;
@@ -131,10 +136,21 @@ export function normalizeGooglePlace(
   const primaryType = raw.primaryType?.trim().toLowerCase() || null;
   const hours = resolveRawHours(raw);
   const locale = options?.locale ?? effectiveAppLocale();
+  const existingNames = id && id === normalizeGooglePlaceId(options?.existing?.id) ? options?.existing : undefined;
+  const sourceLocale = raw.displayName?.languageCode?.trim() || raw.sourceLocale?.trim() || undefined;
+  const localizedNames = { ...existingNames?.localizedNames, ...raw.localizedNames };
+  // A request locale is not evidence that the returned name uses that language.
+  if (id && raw.displayName?.text?.trim() && sourceLocale) localizedNames[sourceLocale] = raw.displayName.text.trim();
+  const englishName = raw.englishName?.trim() || localizedNames.en ||
+    (sourceLocale && /^en(?:-|$)/i.test(sourceLocale) ? raw.displayName?.text?.trim() : undefined) || existingNames?.englishName || undefined;
+  const originalName = raw.originalName?.trim() || existingNames?.originalName || name;
   const resolvedName = resolvePlaceDisplayName(
     {
       name,
-      originalName: name,
+      originalName,
+      englishName,
+      localizedNames,
+      sourceLocale,
       placeId: id || options?.existing?.id || undefined,
       canonicalPlaceId: id || options?.existing?.id || undefined,
       primaryType,
@@ -143,11 +159,25 @@ export function normalizeGooglePlace(
     locale,
   );
 
+  devVerboseInfo("[PLACE_ADDRESS_TRACE]", {
+    stage: "normalize",
+    locale,
+    addressOrigin: options?.existing?.address != null ? "existing_address"
+      : raw.formattedAddress != null ? "formatted_address"
+      : raw.address != null ? "raw_address"
+      : raw.vicinity != null ? "vicinity" : "short_or_missing",
+    existingAddressPresent: options?.existing?.address != null,
+    formattedAddressPresent: Boolean(raw.formattedAddress),
+    formattedAddressHasHan: /[\u3400-\u9fff]/u.test(raw.formattedAddress ?? ""),
+  });
   const base: PlaceResult = {
     ...(options?.existing ?? {}),
     id: id || options?.existing?.id || "",
     name: resolvedName.localizedDisplayName,
     originalName: resolvedName.originalName,
+    englishName,
+    localizedNames,
+    sourceLocale,
     localizedDisplayName: resolvedName.localizedDisplayName,
     languageCode: resolvedName.languageCode,
     localizationSource: resolvedName.localizationSource,

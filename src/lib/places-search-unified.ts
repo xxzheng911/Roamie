@@ -14,11 +14,14 @@ import {
   hasPlacesClientFallbackAttempted,
   markPlacesClientFallbackAttempted,
   markPlacesSearchFailed,
+  releasePlacesClientFallbackAttempt,
 } from "@/lib/places-search-dedupe";
 import { logPlacesApiSkipDuplicate, logPlacesApiCall } from "@/lib/places-diagnostics";
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import { isPlacesRateLimited } from "@/lib/places-api-guard";
 import { normalizePlacesSearchResult } from "@/lib/places-search-normalize";
+
+const LOCAL_GUARD_SKIPS = new Set(["cooldown_skipped", "guard_skipped", "stale_generation", "aborted"]);
 
 async function runClientSearch(
   args: Parameters<SearchPlacesFn>[0],
@@ -47,6 +50,10 @@ async function runClientSearch(
     const clientResult = normalizePlacesSearchResult(
       await executeExploreSearch({ ...args.data, placesAttemptKind: attemptKind }, { apiKey: mapsKey }),
     );
+    // Local guard skips (places.functions soft-fail) never reached the provider.
+    if (!session && !clientResult.places.length && LOCAL_GUARD_SKIPS.has(clientResult.error ?? "")) {
+      releasePlacesClientFallbackAttempt(key);
+    }
     return clientResult;
   } catch (e) {
     if (session?.controller.signal.aborted)

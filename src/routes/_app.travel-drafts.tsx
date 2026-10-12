@@ -1,3 +1,4 @@
+import { workspaceTitleDisplay } from "@/lib/trip/title-display";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { requireAuthenticatedRoute } from "@/lib/require-auth";
 import { ChevronLeft, Trash2 } from "lucide-react";
@@ -18,6 +19,7 @@ import { useI18n } from "@/hooks/use-i18n";
 import { usePlusUpgrade } from "@/hooks/use-plus-upgrade";
 import {
   deleteConversationWorkspace,
+  loadConversationWorkspace,
   hydrateConversationWorkspaces,
   listConversationWorkspaces,
   mergeRemoteConversationWorkspaces,
@@ -33,7 +35,7 @@ export const Route = createFileRoute("/_app/travel-drafts")({
 const PAGE_SIZE = 20;
 
 function TravelDraftsPage() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const navigate = useNavigate();
   const { user } = useAuth();
   const { hasPlusAccess, subscriptionHydrated } = useAccess();
@@ -218,7 +220,7 @@ function TravelDraftsPage() {
           <ul className="travel-drafts-list shrink-0 rounded-3xl border border-border bg-card shadow-soft">
             {drafts.map((draft, i) => {
               const title =
-                draft.title || draft.destination || t("trip.travelDraft");
+                workspaceTitleDisplay(loadConversationWorkspace(draft.workspaceId, userId), draft.title || draft.destination || t("trip.travelDraft"), locale);
               return (
                 <li
                   key={draft.workspaceId}

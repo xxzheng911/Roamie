@@ -1,3 +1,4 @@
+import { traceCover, type CoverTraceContext } from "@/lib/saved-trip/cover-runtime-diagnostics";
 import { useEffect, useRef, useState } from "react";
 import { recordPlacesPhotoUrlLoad } from "@/lib/places-api-stats";
 import { isImageLoadFailed, markImageLoadFailed } from "@/lib/image-url-failure-cache";
@@ -28,6 +29,8 @@ export function invalidateLoadedImageCache(url: string | null | undefined): void
 }
 
 type Props = {
+  /** Optional Saved Trip observation only; no effect on other image callers. */
+  coverTrace?: CoverTraceContext;
   src: string | null | undefined;
   alt?: string;
   loading?: boolean;
@@ -49,6 +52,7 @@ export function FadeInImage({
   fallbackSrc,
   priority = false,
   waitForDecode = false,
+  coverTrace,
 }: Props) {
   const stable = src ? stableSrcKey(src) : "";
   const [loaded, setLoaded] = useState(() => Boolean(src && loadedSrcCache.has(stable)));
@@ -57,9 +61,16 @@ export function FadeInImage({
   const prevStable = useRef(stable);
   const currentSrc = useRef(src);
   currentSrc.current = src;
+  const currentDisplaySrc = useRef(displaySrc);
+  currentDisplaySrc.current = displaySrc;
+
+  useEffect(() => {
+    if (displaySrc) traceCover(coverTrace, "COVER_IMAGE_LOAD_START", displaySrc, "loading");
+  }, [displaySrc, coverTrace?.correlationId]);
 
   useEffect(() => {
     if (!src) {
+      traceCover(coverTrace, "COVER_FALLBACK_APPLIED", fallbackSrc, loading ? "pending" : "fallback", "missing_url");
       setLoaded(false);
       setDisplaySrc(
         loading
@@ -91,11 +102,13 @@ export function FadeInImage({
       const safeFallback =
         resolvePlaceImageUrl(fallbackSrc ?? null) ?? getLocalPlaceImageFallback();
       if (safeFallback && !isImageLoadFailed(safeFallback)) {
+        traceCover(coverTrace, "COVER_FALLBACK_APPLIED", safeFallback, "fallback", !safeSrc ? "invalid_url" : "failed_url_cache");
         setDisplaySrc(safeFallback);
         setUsedFallback(true);
         setLoaded(loadedSrcCache.has(stableSrcKey(safeFallback)));
         return;
       }
+      traceCover(coverTrace, "COVER_IMAGE_LOAD_FAILURE", src, "failed", "fallback_exhausted");
       setDisplaySrc(null);
       setUsedFallback(false);
       setLoaded(true);
@@ -125,6 +138,8 @@ export function FadeInImage({
             if (waitForDecode && typeof image.decode === "function") {
               try { await image.decode(); } catch { /* onLoad remains authoritative on decode rejection */ }
             }
+            const current = currentSrc.current === sourceAtLoad && currentDisplaySrc.current === displaySrc && image.isConnected;
+            traceCover(coverTrace, "COVER_IMAGE_LOAD_SUCCESS", displaySrc, "loaded", current ? "none" : "stale_callback", current);
             if (waitForDecode && (currentSrc.current !== sourceAtLoad || !image.isConnected)) return;
             if (displaySrc) {
               loadedSrcCache.add(displaySrc);
@@ -134,6 +149,8 @@ export function FadeInImage({
             setLoaded(true);
           }}
           onError={() => {
+            const current = currentSrc.current === src && currentDisplaySrc.current === displaySrc;
+            traceCover(coverTrace, "COVER_IMAGE_LOAD_FAILURE", displaySrc, "failed", current ? "image_error" : "stale_callback", current);
             markImageLoadFailed(displaySrc);
             const safeFallback =
               resolvePlaceImageUrl(fallbackSrc ?? null) ?? getLocalPlaceImageFallback();
@@ -146,6 +163,7 @@ export function FadeInImage({
               setLoaded(true);
               return;
             }
+            traceCover(coverTrace, "COVER_FALLBACK_APPLIED", safeFallback, "fallback", "image_error", current);
             setUsedFallback(true);
             setDisplaySrc(safeFallback);
             setLoaded(false);

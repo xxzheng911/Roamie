@@ -4,6 +4,7 @@
  */
 
 export type CachedLocalizedPlaceName = {
+  inputSignature?: string;
   placeId?: string;
   canonicalPlaceId?: string;
   originalName: string;

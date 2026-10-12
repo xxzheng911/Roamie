@@ -1,3 +1,4 @@
+import { attachDestinationDisplay } from "./destination-display-metadata";
 import { finalizePlanningContextAuthority } from "./planning-context-authority";
 import type { ChatPlanningSession } from '@/lib/chat-session';
 import type { CanonicalTravelContext } from './travel-context';
@@ -85,7 +86,7 @@ export async function resolveGlobalPlanningCandidate(session: ChatPlanningSessio
   }
   if (status !== 'resolved' || !location) return {...session,travelContext:{...ctx,destinationCandidate:{...candidate,status,locale}}};
   const label = location.city || location.region || location.formattedName;
-  return {...session,tripDestination:location,preferredArea:label,
+  return {...session,tripDestination:attachDestinationDisplay(location, location.destinationDisplay ?? ctx.destinationDisplay),preferredArea:label,
     pendingQuestion:{type:'ask_days',options:[],baseDestination:label,destinationCountry:location.country},
     lastResolvedPendingQuestion:undefined,
     tripPlanningContext:session.tripPlanningContext ? {...session.tripPlanningContext,destination:label} : undefined,

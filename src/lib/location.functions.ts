@@ -103,7 +103,7 @@ type AddressComponent = {
 
 type RawPlaceDetails = {
   id?: string;
-  displayName?: { text?: string };
+  displayName?: { text?: string; languageCode?: string };
   formattedAddress?: string;
   location?: { latitude: number; longitude: number };
   addressComponents?: AddressComponent[];
@@ -181,7 +181,7 @@ function resolveSublocality(components: AddressComponent[] | undefined): string 
   );
 }
 
-function rawToTripLocation(raw: RawPlaceDetails, placeId: string): TripLocation | null {
+export function rawToTripLocation(raw: RawPlaceDetails, placeId: string): TripLocation | null {
   const types = [...(raw.types ?? []), ...(raw.primaryType ? [raw.primaryType] : [])];
   if (!isGeographicPlaceTypes(types)) return null;
 
@@ -202,6 +202,13 @@ function rawToTripLocation(raw: RawPlaceDetails, placeId: string): TripLocation 
   if (isRejectedTripLocationLabel(formattedName)) return null;
 
   return {
+    destinationDisplay: displayName && raw.displayName?.languageCode && (displayName === city || (!city && displayName === region)) ? {
+      name: displayName, country: country || city, type: city ? "city" : "region",
+      originalName: displayName, sourceLocale: raw.displayName.languageCode,
+      localizedNames: { [raw.displayName.languageCode]: displayName },
+      englishName: /^en(?:-|$)/i.test(raw.displayName.languageCode) ? displayName : undefined,
+      placeId: raw.id ?? placeId,
+    } : undefined,
     placeId: raw.id ?? placeId,
     country: country || city,
     city: city || country || displayName,

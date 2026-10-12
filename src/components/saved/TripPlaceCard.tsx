@@ -1,3 +1,4 @@
+import { resolveCandidateDisplay } from "@/lib/ai/destination-localization";
 import { useI18n } from "@/hooks/use-i18n";
 import { ArrowRightLeft, ChevronDown, ChevronUp, Trash2 } from "lucide-react";
 import { TripLocationCard } from "@/components/saved/TripLocationCard";
@@ -36,7 +37,7 @@ export function TripPlaceCard({
   onDelete,
   onOpenPlaceDetail,
 }: Props) {
-  const { t: uiT } = useI18n();
+  const { t: uiT, locale } = useI18n();
 
   const legKey = legKeyForItem(item);
   const estimated =
@@ -62,7 +63,9 @@ export function TripPlaceCard({
       nextOpenHint: "",
     }).finalDuration;
   const durationMins = estimated;
-  const placeName = displayNameForPlaceLike(item);
+  const placeName = item.googlePlaceId && (item.localizedNames || item.englishName)
+    ? resolveCandidateDisplay({name: item.originalName || item.placeName, country: "", type: "place", originalName: item.originalName || item.placeName, englishName: item.englishName, localizedNames: item.localizedNames}, locale).name
+    : displayNameForPlaceLike(item);
 
   return (
     <article className="relative rounded-3xl border border-border bg-card p-4 shadow-soft">

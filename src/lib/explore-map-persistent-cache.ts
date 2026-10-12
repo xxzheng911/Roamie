@@ -1,3 +1,4 @@
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import { normalizedLocationKey } from "@/lib/location-key";
 import { exploreTimeBucket, type ExploreTimeBucket } from "@/lib/explore-time-bucket";
@@ -112,6 +113,11 @@ export function readExploreMapPersistedCache<T>(
 ): ExploreMapPersistedEntry<T> | null {
   void mode;
   const hit = readUnifiedPlaceSearchCache(scopeKey);
+  devVerboseInfo("[PLACE_ADDRESS_TRACE]", {
+    stage: "explore_cache_read",
+    cacheSource: "unified_search_cache",
+    cacheHit: Boolean(hit?.places.length),
+  });
   if (!hit?.places.length) return null;
   return {
     places: hit.places as T[],

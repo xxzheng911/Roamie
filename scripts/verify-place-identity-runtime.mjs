@@ -94,7 +94,9 @@ const fixtures = JSON.parse(fs.readFileSync("scripts/fixtures/place-identity-liv
 let calls = 0;
 const fetchOriginal = globalThis.fetch;
 for (const [index, fixture] of fixtures.entries()) {
-  globalThis.fetch = async () => {
+  globalThis.fetch = async (url) => {
+    assert.equal(new URL(String(url)).hostname, "places.googleapis.com");
+    assert.ok(String(url).includes(fixture.details.id), "fixture must match requested provider identity");
     calls++;
     return Response.json(fixture.details);
   };
@@ -109,6 +111,7 @@ for (const [index, fixture] of fixtures.entries()) {
   const expected = ["咖啡廳", "蛋糕店", "蛋糕店"][index];
   test(`${20 + index} real provider ${fixture.query}`, () => {
     assert.equal(label(normalized), expected);
+    assert.ok(detail, "mocked details must load");
     assert.equal(label(detail), expected);
     assert.doesNotMatch(reason(detail), /這是一個地點/);
   });

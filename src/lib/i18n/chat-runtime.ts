@@ -2,6 +2,8 @@ import type { Locale } from "./types";
 
 export const chatRuntimeMessages: Record<Locale, Record<string, string>> = {
   "zh-TW": {
+    "combinationSelectionNudge": "我還不確定你想用哪幾組。請回覆組合編號（例如 1、3），或說「可以幫我生成」讓我混搭全部組合。",
+    "combinationSelectionNudgeShort": "我還不確定你想用哪幾組。請回覆組合編號，或說「可以幫我生成」。",
     "badge_relax": "放鬆",
     "badge_explore": "探索",
     "badge_photo": "拍照",
@@ -18,6 +20,9 @@ export const chatRuntimeMessages: Record<Locale, Record<string, string>> = {
     "noMore": "我目前找不到更多符合條件的地點，要不要換成美食、咖啡廳或室內景點？",
     "shoppingNoMore": "目前暫時找不到更多符合條件、且不重複的購物地點。你也可以指定想找百貨、地下街、Outlet 或特色商店，我再換一個方向幫你找。",
     "recovery": "我剛剛整理時卡住了，我再幫你重新推薦一次。",
+    "numericSelectionUnavailable": "目前沒有可供此數字選擇的選項。請回答目前的問題，或重新整理推薦。",
+    "dateConfirmationExpired": "這次日期確認已過期。請回到目前的行程，重新確認日期。",
+    "dateConfirmationCancelled": "已取消這次日期確認。請提供你希望使用的旅行日期。",
     "generationFailed": "行程建立失敗，我再幫你重新整理一次。\n\n點選「重新生成」可沿用目前目的地與日期再試一次。",
     "capacity": "選擇的地點較多，這趟行程可能排不完。可以減少地點或增加天數。",
     "noResults": "目前在{destination}暫時找不到符合的地點，可以換個描述或稍後再試。",
@@ -78,6 +83,8 @@ export const chatRuntimeMessages: Record<Locale, Record<string, string>> = {
     "suggestedMix": "建議組合"
   },
   "en": {
+    "combinationSelectionNudge": "I’m not sure which combinations you want. Reply with their numbers (for example, 1, 3), or say “create the itinerary” to use all combinations.",
+    "combinationSelectionNudgeShort": "I’m not sure which combinations you want. Reply with their numbers, or say “create the itinerary”.",
     "badge_relax": "Relax",
     "badge_explore": "Explore",
     "badge_photo": "Photography",
@@ -94,6 +101,9 @@ export const chatRuntimeMessages: Record<Locale, Record<string, string>> = {
     "noMore": "I couldn’t find more places matching your preferences. Would you like to try food, cafés, or indoor attractions?",
     "shoppingNoMore": "There are no more new shopping places matching these preferences. Try department stores, underground malls, outlets, or specialty shops.",
     "recovery": "Something went wrong while preparing your recommendations. Let’s try again.",
+    "numericSelectionUnavailable": "There is no current option for that number. Please answer the current question or refresh the recommendations.",
+    "dateConfirmationExpired": "This date confirmation has expired. Return to your current trip and confirm the dates again.",
+    "dateConfirmationCancelled": "Date confirmation cancelled. Please provide your preferred travel dates.",
     "generationFailed": "Your itinerary couldn’t be created.\n\nSelect “Try again” to retry with the same destination and dates.",
     "capacity": "There may be too many places to fit into this trip. Remove some places or add more days.",
     "noResults": "No matching places were found in {destination}. Try a different description or try again later.",
@@ -154,6 +164,8 @@ export const chatRuntimeMessages: Record<Locale, Record<string, string>> = {
     "suggestedMix": "Suggested mix"
   },
   "ja": {
+    "combinationSelectionNudge": "どの組み合わせをご希望か、まだ確認できていません。番号（例：1、3）を返信するか、すべて使う場合は「旅程を作成して」とお伝えください。",
+    "combinationSelectionNudgeShort": "どの組み合わせをご希望か、まだ確認できていません。番号を返信するか、「旅程を作成して」とお伝えください。",
     "badge_relax": "リラックス",
     "badge_explore": "探索",
     "badge_photo": "写真",
@@ -170,6 +182,9 @@ export const chatRuntimeMessages: Record<Locale, Record<string, string>> = {
     "noMore": "条件に合う場所はこれ以上見つかりませんでした。グルメ、カフェ、屋内スポットなど、別のジャンルを探しますか？",
     "shoppingNoMore": "条件に合う未紹介のショッピングスポットは見つかりませんでした。百貨店、地下街、アウトレット、専門店など、探したい種類を指定してください。",
     "recovery": "おすすめの準備中に問題が発生しました。もう一度お試しください。",
+    "numericSelectionUnavailable": "その番号で選べる現在の選択肢はありません。現在の質問に回答するか、おすすめを更新してください。",
+    "dateConfirmationExpired": "この日程確認は期限切れです。現在の旅行に戻り、日程をもう一度確認してください。",
+    "dateConfirmationCancelled": "日程確認をキャンセルしました。希望する旅行日を入力してください。",
     "generationFailed": "旅程を作成できませんでした。\n\n「再生成」を選ぶと、同じ目的地と日程で再試行できます。",
     "capacity": "選んだ場所をすべて回るには日数が足りないかもしれません。場所を減らすか、日数を増やしてください。",
     "noResults": "{destination}で条件に合う場所が見つかりませんでした。条件を変えるか、しばらくしてからお試しください。",
@@ -230,6 +245,8 @@ export const chatRuntimeMessages: Record<Locale, Record<string, string>> = {
     "suggestedMix": "おすすめの組み合わせ"
   },
   "ko": {
+    "combinationSelectionNudge": "어떤 조합을 원하시는지 아직 확인하지 못했어요. 번호(예: 1, 3)를 보내거나, 모든 조합을 사용하려면 “일정을 만들어 주세요”라고 말씀해 주세요.",
+    "combinationSelectionNudgeShort": "어떤 조합을 원하시는지 아직 확인하지 못했어요. 번호를 보내거나 “일정을 만들어 주세요”라고 말씀해 주세요.",
     "badge_relax": "휴식",
     "badge_explore": "탐방",
     "badge_photo": "사진",
@@ -246,6 +263,9 @@ export const chatRuntimeMessages: Record<Locale, Record<string, string>> = {
     "noMore": "조건에 맞는 장소를 더 찾지 못했어요. 맛집, 카페 또는 실내 명소를 찾아볼까요?",
     "shoppingNoMore": "조건에 맞는 새로운 쇼핑 장소를 더 찾지 못했어요. 백화점, 지하상가, 아울렛 또는 개성 있는 상점 중 원하는 종류를 알려 주세요.",
     "recovery": "추천을 준비하는 중에 문제가 발생했어요. 다시 시도해 주세요.",
+    "numericSelectionUnavailable": "현재 그 번호로 선택할 수 있는 항목이 없어요. 현재 질문에 답하거나 추천을 새로고침해 주세요.",
+    "dateConfirmationExpired": "이 날짜 확인은 만료되었어요. 현재 여행으로 돌아가 날짜를 다시 확인해 주세요.",
+    "dateConfirmationCancelled": "날짜 확인을 취소했어요. 원하는 여행 날짜를 입력해 주세요.",
     "generationFailed": "여행 일정을 만들지 못했어요.\n\n“다시 생성”을 선택하면 같은 목적지와 날짜로 다시 시도할 수 있어요.",
     "capacity": "선택한 장소를 모두 방문하기에는 일정이 짧을 수 있어요. 장소를 줄이거나 여행 일수를 늘려 주세요.",
     "noResults": "{destination}에서 조건에 맞는 장소를 찾지 못했어요. 다른 설명으로 검색하거나 잠시 후 다시 시도해 주세요.",

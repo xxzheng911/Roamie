@@ -1,3 +1,4 @@
+import { displayMetadataMatchesLabel, sameDisplayCountry, type DestinationDisplayMetadata } from "./destination-display-metadata";
 import { globalPlanningTurn, applyGlobalPlanningContext } from './global-planning-context';
 import { travelMonthSignal } from "./travel-language-signals";
 import type { ChatPlanningSession } from "@/lib/chat-session";
@@ -107,6 +108,7 @@ export type CanonicalTravelContext = {
   endDate?: string;
   /** AI-suggested start (e.g. mid-month) when user has not locked exact dates yet */
   suggestedStartDate?: string;
+  dateProvenance?: import("./resolve-suggested-trip-dates").TripDateProvenance;
   days?: number;
   mood?: string;
   /** Whether mood can ground outward-facing personalization copy. */
@@ -181,6 +183,7 @@ export type CanonicalTravelContext = {
    * Country→city/region/island options from the previous assistant turn.
    * Destination Anchor matches user replies against this metadata first.
    */
+  destinationDisplay?: DestinationDisplayMetadata;
   offeredDestinationOptions?: import("@/lib/ai/destination-anchor").DestinationOptionMetadata[];
   /** Stable id for one Places mapping / itinerary generation attempt */
   generationRequestId?: string;
@@ -1014,6 +1017,7 @@ function mergeTravelContextLegacy(
           workingSession.tripEndDate)
         : (pendingSelection.contextPatch.endDate ?? parsed.endDate),
       suggestedStartDate: inheritTripBoundFields ? prev.suggestedStartDate : undefined,
+      dateProvenance: inheritTripBoundFields ? prev.dateProvenance : undefined,
       planningDaysConfirmed: inheritTripBoundFields
         ? (pendingSelection.contextPatch.planningDaysConfirmed ??
           parsed.planningDaysConfirmed ??
@@ -1376,6 +1380,11 @@ export function formatTravelContextForAi(ctx: CanonicalTravelContext): string {
 export function mergeTravelContext(session: ChatPlanningSession, userText: string, lastAssistantReply?: string): {context: CanonicalTravelContext; session: ChatPlanningSession} {
   if (session.fromTripAddPlace) return mergeTravelContextLegacy(session,userText,lastAssistantReply);
   const turn = globalPlanningTurn(session,userText);
-  if (turn) return applyGlobalPlanningContext(session,turn);
-  return mergeTravelContextLegacy(session,userText,lastAssistantReply);
+  const result = turn ? applyGlobalPlanningContext(session,turn) : mergeTravelContextLegacy(session,userText,lastAssistantReply);
+  const label = result.context.destinationCandidate?.raw ?? result.context.destinationCity ?? result.context.destination;
+  const candidates = [session.travelContext?.destinationDisplay, ...(session.travelContext?.offeredDestinationOptions ?? []).map(option => option.destinationDisplay)].filter(Boolean) as DestinationDisplayMetadata[];
+  const matched = candidates.filter(candidate => displayMetadataMatchesLabel(candidate, label ?? "") && sameDisplayCountry(candidate.country, result.context.destinationCountry ?? ""));
+  const unique = [...new Map(matched.map(candidate => [JSON.stringify(candidate), candidate])).values()];
+  const destinationDisplay = unique.length === 1 ? unique[0] : undefined;
+  return {...result, context:{...result.context,destinationDisplay},session:{...result.session,travelContext:{...result.context,destinationDisplay}}};
 }

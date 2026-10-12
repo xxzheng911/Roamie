@@ -177,6 +177,10 @@ export function preparePlanTripSession(
       form.startDate && form.endDate
         ? formatDateRangeLabel(form.startDate, form.endDate, { withYear: true })
         : undefined,
+    travelContext: form.startDate && form.endDate ? {
+      interests: [], startDate:form.startDate, endDate:form.endDate, days:form.days,
+      dateProvenance:{source:"user_date",confirmed:true,startDate:form.startDate,endDate:form.endDate},
+    } : undefined,
     tripStartDate: form.startDate || undefined,
     tripEndDate: form.endDate || undefined,
     tripDays: form.days,

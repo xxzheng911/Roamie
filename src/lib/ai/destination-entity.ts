@@ -8,6 +8,7 @@ import {
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 
 export type DestinationEntityType =
+  | "unknown"
   | "country"
   | "city"
   /** City-state / SAR where city and country share one travel label (SG, HK, MO, …). */
@@ -824,8 +825,8 @@ function inferType(name: string): DestinationEntityType {
   if (/(省|道|縣|县)$/.test(name)) return "province";
   if (/(州)$/.test(name)) return "province";
   if (/(國|国)$/.test(name)) return "country";
-  if (name.length <= 4 && !/(國|国)/.test(name)) return "city";
-  return "country";
+  // A label alone cannot establish geographic identity. Resolve or clarify it.
+  return "unknown";
 }
 
 function inferCountry(name: string, type: DestinationEntityType): string | undefined {

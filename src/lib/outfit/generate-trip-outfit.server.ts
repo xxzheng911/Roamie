@@ -8,7 +8,7 @@ import { localizedOutfitCopy } from "./localized-outfit-copy";
 import { aiLanguageInstruction } from "@/lib/i18n/ai-instructions";
 import { assertAiUse } from "@/lib/abuse-guard.server";
 import { getOpenAIKey } from "@/lib/env.server";
-import { mapOpenAIError } from "@/lib/ai/errors";
+import { mapOpenAIError, toError } from "@/lib/ai/errors";
 import type { DailyForecast } from "@/lib/weather-types";
 import { openWeatherGetTripForecast } from "@/lib/weather/openweather.server";
 import {
@@ -139,8 +139,7 @@ async function callTripOutfitAI(userMessage: string, locale: Locale, historical 
     });
 
     if (!response.ok) {
-      const err = await response.json().catch(() => ({}));
-      throw mapOpenAIError(response.status, err);
+      throw toError(await mapOpenAIError(response));
     }
 
     const json = (await response.json()) as {

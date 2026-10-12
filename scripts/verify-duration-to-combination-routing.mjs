@@ -19,11 +19,16 @@ import {
 } from "../src/lib/ai/destination-combination-suggestions.ts";
 import {
   clearDiscoveredCombinationsCache,
-  setCachedDiscoveredCombinations,
+  ensureDestinationCombinationsReady,
 } from "../src/lib/ai/destination-combination-discovery.ts";
 import { parseAskDaysFromText } from "../src/lib/ai/destination-pending-question.ts";
 import { buildThemeSearchDirections } from "../src/lib/ai/destination-discovery-queries.ts";
 
+import { clearCandidatePoolCache } from "../src/lib/ai/places-cost-cache/candidate-pool-cache.ts";
+import { resolveDestinationApproxCenter } from "../src/lib/ai/destination-geocode.ts";
+const locale = "en";
+Object.defineProperty(globalThis, "navigator", {value:{language:locale,languages:[locale]}, configurable:true});
+globalThis.fetch = async () => { throw new Error("Real provider calls forbidden"); };
 let failed = 0;
 const logs = [];
 const originalInfo = console.info;
@@ -51,27 +56,8 @@ function runAdvice(text, sess) {
     conversationMode:
       intent === "destination_advice" ? "destination_planning" : merged.session.conversationMode,
   };
-  const advice = resolveDestinationAdvice(merged.context, nextSession, text);
+  const advice = resolveDestinationAdvice(merged.context, nextSession, text, locale);
   return { advice, merged, nextSession };
-}
-
-function mockCombo(title, names, id) {
-  return {
-    combinationId: `mock:${id}`,
-    title,
-    theme: "attraction",
-    placeCandidates: names.map((name, i) => ({
-      name,
-      googlePlaceId: `ChIJ_${id}_${i}`,
-      types: ["tourist_attraction"],
-      coordinates: { lat: 10 + i * 0.01, lng: 120 + i * 0.01 },
-    })),
-    primaryCandidates: names.map((name, i) => ({
-      name,
-      googlePlaceId: `ChIJ_${id}_${i}`,
-      types: ["tourist_attraction"],
-    })),
-  };
 }
 
 // Theme fallback is search-only (empty places)
@@ -94,30 +80,6 @@ assert(
   "宿霧 without cache/discovery → no fake combos",
 );
 assert(parseAskDaysFromText("6") === 6, "bare 6 → tripDays");
-
-// Seed Places-backed cache for non-curated / sparse cities so duration→combo routing is testable
-const SEED = {
-  宿霧: [
-    mockCombo("市區文化組合", ["Basilica del Santo Niño", "Magellan's Cross", "Fort San Pedro"], 1),
-    mockCombo("海島放鬆組合", ["Mactan Island", "Nalusuan Island", "Hilutungan Island"], 2),
-    mockCombo("近郊自然組合", ["Kawasan Falls", "Osmeña Peak", "Moalboal"], 3),
-  ],
-  花蓮: [
-    mockCombo("經典地標組合", ["松園別館", "東大門夜市", "七星潭"], 1),
-    mockCombo("自然風景組合", ["太魯閣國家公園", "清水斷崖", "鯉魚潭"], 2),
-    mockCombo("海岸放鬆組合", ["七星潭", "北濱公園", "花蓮港"], 3),
-  ],
-  倫敦: [
-    mockCombo("經典地標組合", ["Big Ben", "Tower Bridge", "Buckingham Palace"], 1),
-    mockCombo("博物館藝文組合", ["British Museum", "Tate Modern", "National Gallery"], 2),
-    mockCombo("在地美食組合", ["Borough Market", "Covent Garden", "Camden Market"], 3),
-  ],
-};
-
-for (const [city, combos] of Object.entries(SEED)) {
-  clearDiscoveredCombinationsCache(city);
-  setCachedDiscoveredCombinations(city, combos);
-}
 
 const CITIES = [
   ["花蓮", "3", "台灣"],
@@ -157,13 +119,35 @@ for (const [city, days, country] of CITIES) {
   );
   assert(session.pendingQuestion?.type === "ask_days", `${city} pending ask_days`);
 
+  // Supply raw provider fixtures to the actual discovery/validation/assembly path.
+  // No preassembled combinations or curated-name promotion.
+  clearDiscoveredCombinationsCache(city);
+  const center = resolveDestinationApproxCenter(city, country);
+  assert(Boolean(center), `${city} fixture center exists`);
+  const fixtureNames = ["Amber Castle", "Royal Cathedral", "Heritage Palace", "Old Fortress", "Historic Abbey", "Marble Tower",
+    "Fine Arts Museum", "Maritime Museum", "Natural History Museum", "Archaeology Museum", "Design Museum", "Science Museum",
+    "Botanical Gardens", "Riverside Park", "Woodland Trail", "Rose Gardens", "Lakeside Mountain", "Sculpture Gardens"];
+  const places = fixtureNames.map((name, i) => ({
+    id:`ChIJFixture${Buffer.from(city).toString("hex")}${i}`, name,
+    lat:center.lat+i*.003, lng:center.lng,
+    types:[i<6 ? "tourist_attraction" : i<12 ? "museum" : (i===14 || i===16) ? "hiking_area" : "park"],
+    primaryType:i<6 ? "tourist_attraction" : i<12 ? "museum" : (i===14 || i===16) ? "hiking_area" : "park",
+    rating:4.6,userRatingCount:10000,address:`${city} ${country}`,businessStatus:"OPERATIONAL",
+  }));
+  let searches=0;
+  const ready=await ensureDestinationCombinationsReady({destination:city,destinationCountry:country,
+    days:Number(days),locale,generationRequestId:`duration-fixture-${city}`,
+    geocodeFn:async()=>center,
+    searchPlaces:async()=>{searches++;return {places,error:null}},
+  });
+  assert(ready.ok, `${city} actual mock discovery succeeds (${ready.failureReason ?? "ok"})`);
+  assert(searches>0 && searches<=12, `${city} bounded provider search executed`);
   const t2 = runAdvice(days, session);
   const reply = t2.advice.reply ?? "";
   assert(Boolean(reply), `${city} turn2 has reply`);
   assert(!/你這趟大概幾天|有預計的旅行日期或天數嗎/.test(reply), `${city} no re-ask days`);
   assert(
-    /建議組合|組合搭配/.test(reply) ||
-      t2.advice.pendingQuestion?.type === "combination_choice",
+    t2.advice.pendingQuestion?.type === "combination_choice",
     `${city} shows combinations`,
   );
   assert(
@@ -181,8 +165,8 @@ for (const [city, days, country] of CITIES) {
     );
   }
   assert(
-    logs.some((l) => l.includes("resolvedNextStep=show_combination_options")) ||
-      /建議組合/.test(reply),
+    t2.advice.pendingQuestion?.type === "combination_choice" &&
+      (t2.advice.contextPatch?.offeredCombinations?.length ?? 0) >= 2,
     `${city} nextStep combination options`,
   );
   assert(
@@ -198,6 +182,26 @@ for (const [city, days, country] of CITIES) {
   console.log(
     `  ${city} placesPerCombo=[${combos.map((c) => c.places.length).join(",")}]`,
   );
+  // Retain the original dense, homogeneous supply as a negative quality case.
+  clearDiscoveredCombinationsCache(city);
+  clearCandidatePoolCache();
+  const denseNames = ["Amber Castle", "Royal Cathedral", "Heritage Palace", "Old Fortress", "Historic Abbey", "Marble Tower",
+    "Fine Arts Museum", "Maritime Museum", "Natural History Museum", "Archaeology Museum", "Design Museum", "Science Museum",
+    "Botanical Gardens", "Riverside Park", "Woodland Park", "Rose Gardens", "Lakeside Park", "Sculpture Gardens"];
+  const dense = places.map((p,i)=>({...p,id:`ChIJDense${Buffer.from(city).toString("hex")}${i}`,name:denseNames[i],
+    lat:center.lat+i*.0003,types:[i<6?"tourist_attraction":i<12?"museum":"park"],primaryType:i<6?"tourist_attraction":i<12?"museum":"park"}));
+  const excludedSupply=dense.map((p,i)=>({...p,id:`ChIJTransit${Buffer.from(city).toString("hex")}${i}`,name:`Bus Terminal ${i}`,types:["bus_station"],primaryType:"bus_station"}));
+  let recoveryCalls=0;
+  const insufficient=await ensureDestinationCombinationsReady({destination:city,destinationCountry:country,
+    days:Number(days),locale,generationRequestId:`duration-negative-${city}`,geocodeFn:async()=>center,
+    searchPlaces:async(args)=>{
+      const recovery=/theme/.test(args.data.placesCaller??"");
+      if(recovery) recoveryCalls++;
+      return {places:recovery?excludedSupply:dense,error:null};
+    }});
+  assert(recoveryCalls>0, `${city} post-validation recovery evaluated`);
+  assert(!insufficient.ok && insufficient.failureReason==="insufficient_combinations", `${city} dense supply remains insufficient after recovery`);
+
 }
 
 console.info = originalInfo;

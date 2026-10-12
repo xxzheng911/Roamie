@@ -1,7 +1,7 @@
 {
   "name": "tanstack_start_ts",
   "private": true,
-  "sideEffects": false,
+  "sideEffects": ["./src/lib/ios15-compat.ts"],
   "type": "module",
   "scripts": {
     "sync:env": "node scripts/sync-dev-vars.mjs --local-dev",
@@ -266,7 +266,7 @@
     "cap:add:android": "npx cap add android",
     "verify:recommendation-review-runtime": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-recommendation-review-runtime.mjs",
     "verify:recommendation-review-browser": "node scripts/verify-recommendation-review-browser.mjs",
-    "verify:place-identity-runtime": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-place-identity-runtime.mjs",
+    "verify:place-identity-runtime": "vite-node --config scripts/vite.place-identity.verify.config.mjs scripts/verify-place-identity-runtime.mjs",
     "postinstall": "node scripts/patch-tanstack-router.mjs",
     "verify:protected-login-bootstrap": "node scripts/verify-protected-login-bootstrap.mjs",
     "verify:router-pending-lifecycle": "node scripts/verify-router-pending-lifecycle.mjs"

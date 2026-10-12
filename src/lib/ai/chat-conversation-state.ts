@@ -9,6 +9,7 @@ import { resolveInferredTripDays } from "@/lib/ai/ai-trip-style";
 /** What the system expects the user to answer next. */
 export type ExpectedAnswerType =
   | "destination"
+  | "dates"
   | "days"
   | "travel_style"
   | "preference"
@@ -31,6 +32,7 @@ export type ConversationState =
   | "itinerary_draft";
 
 const PENDING_TYPE_TO_EXPECTED: Record<PendingQuestionType, ExpectedAnswerType> = {
+  date_confirmation: "dates",
   ask_days: "days",
   duration_choice: "days",
   ask_preference: "preference",

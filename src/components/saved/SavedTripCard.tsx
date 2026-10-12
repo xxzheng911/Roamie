@@ -19,7 +19,7 @@ type Props = {
 export function SavedTripCard({ trip: inputTrip, shareSlot, deleteSlot }: Props) {
   const liveCover = useLiveTripCover(inputTrip.id);
   const trip = applyCoreTripCover(inputTrip);
-  const { t: uiT } = useI18n();
+  const { t: uiT, locale } = useI18n();
 
   const navigate = useNavigate();
 
@@ -34,7 +34,7 @@ export function SavedTripCard({ trip: inputTrip, shareSlot, deleteSlot }: Props)
           navigate(tripDetailNavigateOptions(trip.id));
         }}
         className="block w-full p-4 text-left"
-        aria-label={uiT("productionUi.viewTrip", { name: resolveCoreTripTitle(trip) })}
+        aria-label={uiT("productionUi.viewTrip", { name: resolveCoreTripTitle(trip, locale) })}
       >
         <div className="flex gap-3">
           <div className="h-[5.5rem] w-[5.5rem] shrink-0 overflow-hidden rounded-2xl">
@@ -52,7 +52,7 @@ export function SavedTripCard({ trip: inputTrip, shareSlot, deleteSlot }: Props)
           </div>
           <div className="min-w-0 flex-1 pr-8">
             <p className="line-clamp-2 font-display text-[17px] leading-snug">
-              {resolveCoreTripTitle(trip)}
+              {resolveCoreTripTitle(trip, locale)}
             </p>
             <p className="mt-2 flex items-center gap-1 text-xs text-muted-foreground">
               <Calendar className="h-3 w-3 shrink-0" />

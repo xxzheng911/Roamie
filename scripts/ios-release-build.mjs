@@ -36,6 +36,8 @@ run("cap sync ios (bundled)", "node", [
   "scripts/cap-sync-ios.mjs",
   "bundled",
 ]);
+// Strict gate over dist/client and the synced iOS bundle (rejects debug diagnostics).
+run("release artifact verifier", "node", ["scripts/verify-release-artifacts.mjs"]);
 run("iOS client key verifier", "node", [
   "scripts/verify-google-client-bundle.mjs",
   "--artifact",

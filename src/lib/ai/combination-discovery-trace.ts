@@ -6,20 +6,23 @@ function planCorrelationToken(generationId: string): string {
   for (let i = 0; i < generationId.length; i++) hash = Math.imul(hash ^ generationId.charCodeAt(i), 16777619);
   return (hash >>> 0).toString(16).padStart(8, "0");
 }
-const reasons = ['destination_unresolved','destination_state_mismatch','cooldown_blocked','deadline_exceeded','provider_rate_limited','provider_failed','insufficient_candidates','insufficient_combinations','discovery_budget_exhausted','ip_rate_limited','user_rate_limited','guest_rate_limited','global_budget_limited','rate_limited','cooldown_skipped','stale_generation','timeout','provider_error','invalid_request','auth_error','network_error','unknown'] as const;
+const reasons = ['blocked_country','unresolved_destination','empty_candidates','filtered_candidates','destination_unresolved','destination_state_mismatch','cooldown_blocked','deadline_exceeded','provider_rate_limited','provider_failed','insufficient_candidates','insufficient_combinations','discovery_budget_exhausted','ip_rate_limited','user_rate_limited','guest_rate_limited','global_budget_limited','rate_limited','cooldown_skipped','stale_generation','timeout','provider_error','invalid_request','auth_error','network_error','unknown'] as const;
 export type DiscoveryFailure = typeof reasons[number];
 export function discoveryFailure(value: unknown): DiscoveryFailure {
   const code = typeof value === 'string' ? value : '';
   if (reasons.includes(code as DiscoveryFailure)) return code as DiscoveryFailure;
-  if (['destination_resolution_failed','missing_destination','blocked_country'].includes(code)) return 'destination_unresolved';
+  if (['destination_resolution_failed','missing_destination'].includes(code)) return 'destination_unresolved';
+  if (code === 'country_level_destination') return 'blocked_country';
   if (code === 'destination_state_desync') return 'destination_state_mismatch';
   if (code === 'places_rate_limited') return 'rate_limited';
   if (/timeout|deadline/.test(code)) return 'deadline_exceeded';
-  if (code === 'places_no_results' || code === 'place_discovery_failed' || code === 'real_places_below_minimum') return 'insufficient_candidates';
-  if (code === 'too_few_combinations' || code === 'combination_candidates_insufficient') return 'insufficient_combinations';
+  if (code === 'places_no_results') return 'empty_candidates';
+  if (code === 'place_discovery_failed') return 'provider_error';
+  if (code === 'real_places_below_minimum') return 'insufficient_candidates';
+  if (code === 'too_few_combinations' || code === 'combination_insufficient' || code === 'combination_candidates_insufficient') return 'insufficient_combinations';
   return 'unknown';
 }
-export function createCombinationDiscoveryTrace(correlationToken?: string) {
+export function createCombinationDiscoveryTrace(correlationToken?: string, onFinal?: (combinationCount: number) => void) {
   const generationToken = planCorrelationToken(crypto.randomUUID());
   const correlation = /^[a-f0-9]{8}$/.test(correlationToken ?? '') ? correlationToken : undefined;
   const requests = { attempted:0, succeeded:0, failed:0, rateLimited:0, timedOut:0 };
@@ -61,8 +64,11 @@ export function createCombinationDiscoveryTrace(correlationToken?: string) {
       catch(e) {record(e);throw e;}
     },
     finish(success:boolean, reason?:unknown, combinationCount=0) {
-      if (finished) return; finished=true;candidates.combinationCount=count(combinationCount);
+      if (finished) return; finished=true;
+      // Failure may return no deliverable list while one actual assembled option remains.
+      if (success || combinationCount > 0) candidates.combinationCount=count(combinationCount);
       emit('request_summary',{...requests,...work});emit('candidate_summary',candidates);
+      try { onFinal?.(candidates.combinationCount); } catch { /* diagnostic observer only */ }
       emit('final',{success:success===true,failureReason:success ? null : work.failFastReason ?? failure ?? discoveryFailure(reason)});
     },
   };

@@ -10,6 +10,7 @@ export type TripCreateDates = {
   days: number;
   dayDates: (string | undefined)[];
   hasExplicitDates: boolean;
+  datesConfirmed: boolean;
   source: string;
 };
 
@@ -73,6 +74,7 @@ export function resolveTripCreateDates(params: {
 
   const suggested = resolveSuggestedTripDates({
     days: safeDays,
+    dateProvenance: context.dateProvenance ?? session.travelContext?.dateProvenance,
     userText: text,
     startDate: context.startDate ?? session.tripStartDate,
     endDate: context.endDate ?? session.tripEndDate,
@@ -88,7 +90,8 @@ export function resolveTripCreateDates(params: {
       endDate: suggested.endDate,
       days: suggested.days,
       dayDates,
-      hasExplicitDates: true,
+      hasExplicitDates: suggested.source === "user_date",
+      datesConfirmed: suggested.confirmed,
       source: suggested.source,
     };
     logAiDateParseResult(result);
@@ -101,6 +104,7 @@ export function resolveTripCreateDates(params: {
     days: safeDays,
     dayDates: Array.from({ length: safeDays }, () => undefined),
     hasExplicitDates: false,
+    datesConfirmed: false,
     source: "none",
   };
   logAiDateParseResult(result);

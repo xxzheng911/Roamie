@@ -1,3 +1,4 @@
+import { bindSelectionOwner } from "@/lib/ai/numeric-selection-authority";
 import type { ChatMsg } from "@/lib/chat-history";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { ConversationWorkspace } from "@/lib/conversation-workspace/types";
@@ -6,6 +7,7 @@ import {
   loadConversationWorkspace,
   saveConversationWorkspace,
   saveEphemeralWorkspace,
+  loadEphemeralWorkspace,
   setActiveWorkspaceId,
 } from "@/lib/conversation-workspace/storage";
 import { buildWorkspaceTitle } from "@/lib/conversation-workspace/title";
@@ -142,16 +144,24 @@ export function upsertDraftWorkspaceFromSession(params: {
   // or prior upsert in the same chat). Never inherit getActiveWorkspaceId() — that
   // leaked previous Conversation Stage into new chats after app reopen.
   const existingId = session.workspaceId?.trim() || undefined;
-  const existing =
-    hasPlusAccess && existingId ? loadConversationWorkspace(existingId, userId) : null;
+  const ephemeral = !hasPlusAccess && existingId ? loadEphemeralWorkspace() : null;
+  // Never restore another chat from the single ephemeral slot or active marker.
+  const existing = hasPlusAccess
+    ? (existingId ? loadConversationWorkspace(existingId, userId) : null)
+    : (ephemeral && ephemeral.workspaceId === existingId &&
+       ephemeral.conversationId === session.conversationId ? ephemeral : null);
 
   // Different destination → new Draft Workspace (北海道 / 東京 / 名古屋 each listed).
   const reuseExisting =
     Boolean(existing) && sameDestination(existing!.destination, destination);
 
+  const liveFreeIdentity = !hasPlusAccess && existingId && session.conversationId &&
+    (!existing || reuseExisting);
   const ids = reuseExisting
     ? { workspaceId: existing!.workspaceId, conversationId: existing!.conversationId }
-    : newIds();
+    : liveFreeIdentity
+      ? { workspaceId: existingId!, conversationId: session.conversationId! }
+      : newIds();
 
   const titleCustom = Boolean(reuseExisting && existing?.titleCustom);
   const title = buildWorkspaceTitle({
@@ -232,11 +242,11 @@ export function upsertDraftWorkspaceFromSession(params: {
     draftItinerary:
       session.draftTrip ?? (reuseExisting ? existing?.draftItinerary : null) ?? null,
     itineraryId: reuseExisting ? existing?.itineraryId : undefined,
-    planningSession: {
+    planningSession: bindSelectionOwner({
       ...session,
       workspaceId: ids.workspaceId,
       conversationId: ids.conversationId,
-    },
+    }),
     messages: nextMessages,
     status,
     createdAt: reuseExisting ? (existing?.createdAt ?? now) : now,
@@ -269,13 +279,13 @@ export function attachWorkspaceIdsToSession(
     session.workspaceId === workspace.workspaceId &&
     session.conversationId === workspace.conversationId
   ) {
-    return session;
+    return bindSelectionOwner(session);
   }
-  return {
+  return bindSelectionOwner({
     ...session,
     workspaceId: workspace.workspaceId,
     conversationId: workspace.conversationId,
-  };
+  });
 }
 
 export function renameConversationWorkspace(params: {

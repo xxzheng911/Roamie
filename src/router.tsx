@@ -1,3 +1,4 @@
+import "./lib/ios15-compat";
 import "./lib/production-logging";
 import "./client-entry";
 import "./boot-trace";

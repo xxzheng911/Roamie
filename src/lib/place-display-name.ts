@@ -86,6 +86,8 @@ export type ResolvedPlaceDisplayName = {
 };
 
 export type PlaceNameResolveInput = {
+  /** Language of the supplied name, from provider evidence, never the request locale. */
+  sourceLocale?: string | null;
   /** Current display / Google language-localized name */
   name?: string | null;
   /** Explicit original / local-script name when known */
@@ -145,8 +147,8 @@ export function hasForeignLocalScript(text: string, locale: Locale): boolean {
   if (locale !== "en" && hasLocalLatinDiacritics(t)) return true;
   if (locale !== "ja" && HAS_KANA_RE.test(t)) return true;
   if (locale !== "ko" && HAS_HANGUL_RE.test(t)) return true;
-  // CJK for non-Chinese App locales is treated as foreign local script.
-  if (locale !== "zh-TW" && HAS_CJK_RE.test(t) && !HAS_LATIN_RE.test(t)) return true;
+  // Han is shared by Chinese and Japanese; script compatibility is not language evidence.
+  if (locale !== "zh-TW" && locale !== "ja" && HAS_CJK_RE.test(t) && !HAS_LATIN_RE.test(t)) return true;
   return false;
 }
 
@@ -232,6 +234,8 @@ export function isCompleteLocalizationForLocale(
     return { ok: true };
   }
 
+  if (INCOMPLETE_SOURCES.has(resolved.localizationSource)) return { ok: false, reason: `incomplete_source:${resolved.localizationSource}` };
+
   if (locale === "ja") {
     if (HAS_KANA_RE.test(display) || HAS_CJK_RE.test(display)) return { ok: true };
     if (sourceIsEnglish(resolved.localizationSource)) {
@@ -257,7 +261,8 @@ export function isCompleteLocalizationForLocale(
 
 /**
  * Delivery eligibility for Combination / chat UI.
- * Readable English (or Latin) fallback is allowed; foreign-script-only is not.
+ * Missing translations preserve original names as fallback, not as verified localization.
+ * Geographic identity and recommendation quality remain separate gates.
  */
 export function isDeliverablePlaceNameForLocale(
   resolved: Pick<
@@ -290,7 +295,7 @@ export function isDeliverablePlaceNameForLocale(
     ) {
       return { ok: true, reason: "repaired_to_english", status: "partial" };
     }
-    return { ok: false, reason: "foreign_local_script_no_english", status: "fallback" };
+    return { ok: true, reason: "original_name_no_trusted_translation", status: "fallback" };
   }
 
   if (isReadablePlaceNameForLocale(display, locale)) {
@@ -300,7 +305,7 @@ export function isDeliverablePlaceNameForLocale(
     return { ok: true, reason: complete.reason, status };
   }
 
-  return { ok: false, reason: complete.reason ?? "unreadable_for_locale", status: "fallback" };
+  return { ok: true, reason: "original_name_no_trusted_translation", status: "fallback" };
 }
 
 export function resolveLocalizationStatus(
@@ -383,12 +388,7 @@ function detectEnglishName(raw: PlaceNameResolveInput, originalName: string): st
     raw.englishName,
     raw.localizedNames?.en,
     raw.localizedNames?.["en-US"],
-    HAS_LATIN_RE.test(originalName) && !hasForeignLocalScript(originalName, "zh-TW")
-      ? originalName
-      : null,
-    HAS_LATIN_RE.test(raw.name ?? "") && !hasForeignLocalScript(raw.name ?? "", "zh-TW")
-      ? raw.name
-      : null,
+    /^en(?:-|$)/i.test(raw.sourceLocale ?? "") ? raw.name ?? originalName : null,
   );
 }
 
@@ -429,8 +429,11 @@ export function resolvePlaceDisplayName(
     languageCode: locale === "zh-TW" ? "zh-TW" : languageCode,
     countryCode,
   });
+  const inputSignature = JSON.stringify([raw.name, raw.originalName, raw.localizedName,
+    Object.entries(raw.localizedNames ?? {}).sort(([a], [b]) => a.localeCompare(b)),
+    raw.englishName, raw.sourceLocale, raw.countryCode, raw.types, raw.primaryType]);
   const cached = getLocalizedPlaceNameCache(cacheKey);
-  if (cached) {
+  if (cached?.inputSignature === inputSignature) {
     return {
       originalName: cached.originalName,
       englishName: cached.englishName,
@@ -458,6 +461,7 @@ export function resolvePlaceDisplayName(
       translatedAt: resolved.translatedAt ?? translatedAt,
     };
     setLocalizedPlaceNameCache(cacheKey, {
+      inputSignature,
       originalName: withMeta.originalName,
       englishName: withMeta.englishName,
       localizedDisplayName: withMeta.localizedDisplayName,
@@ -495,7 +499,7 @@ export function resolvePlaceDisplayName(
     const zhTw = pickFirstNonEmpty(
       raw.localizedNames?.["zh-TW"],
       raw.localizedNames?.["zh_TW"],
-      languageCode === "zh-TW" ? raw.localizedName : null,
+      /^zh-(?:TW|Hant)$/i.test(raw.sourceLocale ?? "") ? raw.localizedName ?? raw.name : null,
     );
     if (
       zhTw &&
@@ -546,6 +550,7 @@ export function resolvePlaceDisplayName(
     // "ONIBUS COFFEE 台中").  Without an independent provider field proving that
     // the CJK segment is the complete business name, preserve the full string.
     if (
+      /^zh-(?:TW|Hant)$/i.test(raw.sourceLocale ?? "") &&
       looksTraditionalChinese(originalName) &&
       !HAS_KANA_RE.test(originalName) &&
       !hasForeignLocalScript(originalName, "zh-TW")
@@ -690,66 +695,26 @@ export function resolvePlaceDisplayName(
     });
   }
 
-  // Non zh-TW locales: prefer Google localized name for locale, else English, else original.
+  // Only explicit language evidence establishes a localized name. Unicode alone
+  // cannot distinguish Japanese Han from Chinese, or a translation from an original.
+  const sourceMatches = raw.sourceLocale?.toLowerCase().split("-")[0] === languageCode.toLowerCase().split("-")[0];
   const localized = pickFirstNonEmpty(
-    raw.localizedName,
-    raw.localizedNames?.[languageCode],
-    raw.name,
+    raw.localizedNames?.[languageCode], raw.localizedNames?.[locale],
+    sourceMatches ? raw.localizedName ?? raw.name : undefined,
   );
-  if (localized && !hasForeignLocalScript(localized, locale)) {
-    return remember({
-      originalName,
-      englishName,
-      localizedDisplayName: localized,
-      languageCode,
-      localizationSource: "google_locale",
-      translationConfidence: 1,
-      placeId,
-      canonicalPlaceId,
-    });
+  if (localized && !isUnreadablePlaceName(localized)) {
+    return remember({originalName, englishName, localizedDisplayName: localized,
+      languageCode: raw.localizedNames?.[languageCode] || raw.localizedNames?.[locale] ? languageCode : raw.sourceLocale!,
+      localizationSource: "google_locale", translationConfidence: 1, placeId, canonicalPlaceId});
   }
-
-  const englishFallback = pickFirstNonEmpty(
-    raw.englishName,
-    raw.localizedNames?.en,
-    HAS_LATIN_RE.test(originalName) ? originalName : null,
-  );
-  if (englishFallback && !hasForeignLocalScript(englishFallback, locale)) {
-    return emitFallback("locale_name_missing_use_english", {
-      originalName,
-      englishName: englishFallback,
-      localizedDisplayName: englishFallback,
-      languageCode: "en",
-      localizationSource: "english_fallback",
-      translationConfidence: 0,
-      placeId,
-      canonicalPlaceId,
-    });
+  if (englishName && !isUnreadablePlaceName(englishName) && !hasForeignLocalScript(englishName, "en")) {
+    return emitFallback("locale_name_missing_use_english", {originalName, englishName,
+      localizedDisplayName: englishName, languageCode: "en", localizationSource: "english_fallback",
+      translationConfidence: 0, placeId, canonicalPlaceId});
   }
-
-  if (localized) {
-    return emitFallback("foreign_local_script_no_english", {
-      originalName,
-      englishName,
-      localizedDisplayName: localized,
-      languageCode: "und",
-      localizationSource: "original",
-      translationConfidence: 0,
-      placeId,
-      canonicalPlaceId,
-    });
-  }
-
-  return remember({
-    originalName,
-    englishName,
-    localizedDisplayName: originalName,
-    languageCode,
-    localizationSource: "passthrough",
-    translationConfidence: 1,
-    placeId,
-    canonicalPlaceId,
-  });
+  return emitFallback("original_name_no_trusted_translation", {originalName, englishName,
+    localizedDisplayName: originalName, languageCode: raw.sourceLocale || "und",
+    localizationSource: "original", translationConfidence: 0, placeId, canonicalPlaceId});
 }
 
 /** 探索／地圖卡片：優先保留 Google 繁中名稱，英文則對照翻譯 */

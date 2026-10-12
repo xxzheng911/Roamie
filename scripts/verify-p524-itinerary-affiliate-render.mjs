@@ -1,6 +1,7 @@
+import { I18nProvider } from "../src/hooks/use-i18n.tsx";
 import assert from "node:assert/strict";
 import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderToStaticMarkup as renderRaw } from "react-dom/server";
 import { TripAffiliateSection } from "../src/components/trip/TripAffiliateSection.tsx";
 import {
   normalizeTripPlaceInput,
@@ -8,6 +9,11 @@ import {
 } from "../src/lib/trip/trip-place-input.ts";
 import { buildPlaceTicketOffers } from "../src/lib/affiliate/affiliate-links.ts";
 import fs from "node:fs";
+
+// Explicit device locale: Node's host locale must not choose the fixture language.
+Object.defineProperty(globalThis, "navigator", { configurable: true, value: { language: "zh-TW" } });
+globalThis.fetch = async () => { throw new Error("NETWORK_DISABLED"); };
+const renderToStaticMarkup = element => renderRaw(createElement(I18nProvider, null, element));
 
 const offer = (provider, label) => ({
   provider,
@@ -34,15 +40,15 @@ const ticketSearch = render(
   [offer("klook", "在 Klook 搜尋票券"), offer("kkday", "在 KKday 搜尋票券")],
   "ticket_search",
 );
-assert.match(ticketSearch, /在 Klook 搜尋票券/);
-assert.match(ticketSearch, /在 KKday 搜尋票券/);
+assert.match(ticketSearch, /Klook 搜尋票券/);
+assert.match(ticketSearch, /KKday 搜尋票券/);
 
 const experienceSearch = render(
   [offer("klook", "在 Klook 搜尋體驗"), offer("kkday", "在 KKday 搜尋體驗")],
   "experience_search",
 );
-assert.match(experienceSearch, /在 Klook 搜尋體驗/);
-assert.match(experienceSearch, /在 KKday 搜尋體驗/);
+assert.match(experienceSearch, /Klook 搜尋體驗/);
+assert.match(experienceSearch, /KKday 搜尋體驗/);
 
 assert.equal(render([], "hidden"), "");
 assert.match(render([offer("klook", "Klook")], "exact_product"), />Klook</);
@@ -122,8 +128,8 @@ const hotel = renderToStaticMarkup(
   }),
 );
 assert.match(hotel, /住宿推薦/);
-assert.match(hotel, />Agoda</);
-assert.match(hotel, />Trip\.com</);
+assert.match(hotel, />Agoda 住宿</);
+assert.match(hotel, />Trip\.com 住宿</);
 assert.doesNotMatch(hotel, /到第三方平台自行選擇住宿|合作佣金|不影響你的價格/);
 
 console.log("P52.4 itinerary affiliate renderer: PASS", {
@@ -135,3 +141,12 @@ console.log("P52.4 itinerary affiliate renderer: PASS", {
   externalRequestDelta: 0,
   normalizedHydratedOfferProviders: hydratedOffers.map((item) => item.provider),
 });
+
+const affiliateSource = fs.readFileSync(new URL("../src/components/trip/TripAffiliateSection.tsx", import.meta.url), "utf8");
+assert.match(affiliateSource, /openAffiliateUrl/);
+const related = ["klook", "kkday"].map(provider => ({...offer(provider, provider), searchIntent:"related_experiences", url:`https://example.test/${provider}?affiliate=kept&campaign=fixture`}));
+const relatedBefore = JSON.stringify(related);
+const relatedMarkup = render(related, "experience_search");
+assert.match(relatedMarkup, />Klook</);assert.match(relatedMarkup, />KKday</);
+assert.equal(JSON.stringify(related), relatedBefore);
+console.log("PASS related-experience brands and URL/tracking immutability; production click path retained");

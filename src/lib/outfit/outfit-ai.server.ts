@@ -3,7 +3,7 @@ import type { Locale } from "@/lib/i18n/types";
 import { aiLanguageInstruction } from "@/lib/i18n/ai-instructions";
 import { assertAiUse } from "@/lib/abuse-guard.server";
 import { getOpenAIKey } from "@/lib/env.server";
-import { mapOpenAIError } from "@/lib/ai/errors";
+import { mapOpenAIError, toError } from "@/lib/ai/errors";
 import type { DailyForecast } from "@/lib/weather.functions";
 import { formatActivityTypesForPrompt, inferActivityTypesFromDayItems } from "@/lib/outfit/infer-activities";
 import type { RoamieItineraryItem } from "@/lib/ai/types";
@@ -133,8 +133,7 @@ export async function callOutfitAI(input: OutfitAIInput): Promise<OutfitAIItem[]
     });
 
     if (!response.ok) {
-      const err = await response.json().catch(() => ({}));
-      throw mapOpenAIError(response.status, err);
+      throw toError(await mapOpenAIError(response));
     }
 
     const json = (await response.json()) as {

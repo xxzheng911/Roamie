@@ -1,11 +1,19 @@
 import { parseMonthNumber } from "@/lib/ai/season-response-guardrail";
 import { parseTravelDateRangeFromText } from "@/lib/ai/parse-travel-date-range";
 
+export type TripDateProvenance = {
+  source: "user_date" | "ai_suggested" | "month_default" | "unknown";
+  confirmed: boolean;
+  startDate: string;
+  endDate: string;
+};
+
 export type SuggestedTripDates = {
   startDate: string;
   endDate: string;
   days: number;
-  source: "user_date" | "ai_suggested" | "month_default";
+  source: TripDateProvenance["source"];
+  confirmed: boolean;
 };
 
 function addDaysIso(iso: string, offset: number): string {
@@ -59,6 +67,7 @@ export function resolveSuggestedTripDates(params: {
   suggestedStartDate?: string | null;
   travelMonth?: string | null;
   refDate?: Date;
+  dateProvenance?: TripDateProvenance;
 }): SuggestedTripDates | null {
   const safeDays = Math.max(1, params.days || 1);
   const refDate = params.refDate ?? new Date();
@@ -78,6 +87,7 @@ export function resolveSuggestedTripDates(params: {
       endDate: end,
       days,
       source: "user_date",
+      confirmed: true,
     };
   }
 
@@ -91,7 +101,10 @@ export function resolveSuggestedTripDates(params: {
       startDate: start,
       endDate: end,
       days,
-      source: "user_date",
+      source: params.dateProvenance?.startDate === start && params.dateProvenance?.endDate === end
+        ? params.dateProvenance.source : "unknown",
+      confirmed: params.dateProvenance?.startDate === start && params.dateProvenance?.endDate === end
+        ? params.dateProvenance.confirmed : false,
     };
   }
 
@@ -101,7 +114,9 @@ export function resolveSuggestedTripDates(params: {
       startDate: start,
       endDate: addDaysIso(start, safeDays - 1),
       days: safeDays,
-      source: "ai_suggested",
+      source: params.dateProvenance?.startDate === start ? params.dateProvenance.source : "ai_suggested",
+      confirmed: params.dateProvenance?.startDate === start && params.dateProvenance?.endDate === addDaysIso(start, safeDays - 1)
+        ? params.dateProvenance.confirmed : false,
     };
   }
 
@@ -113,8 +128,22 @@ export function resolveSuggestedTripDates(params: {
       endDate: addDaysIso(start, safeDays - 1),
       days: safeDays,
       source: "month_default",
+      confirmed: false,
     };
   }
 
   return null;
+}
+
+/** Planning may carry provisional dates, but only confirmed dates occupy calendar fields. */
+export function suggestedTripDateContextPatch(dates: SuggestedTripDates) {
+  return {
+    startDate: dates.confirmed ? dates.startDate : undefined,
+    endDate: dates.confirmed ? dates.endDate : undefined,
+    suggestedStartDate: dates.source === "user_date" ? undefined : dates.startDate,
+    dateProvenance: {
+      source: dates.source, confirmed: dates.confirmed,
+      startDate: dates.startDate, endDate: dates.endDate,
+    },
+  };
 }

@@ -1,3 +1,8 @@
+import { verifiedDestinationDisplay } from "@/lib/ai/destination-display-metadata";
+import type { TripLocation } from "@/lib/location/types";
+import { resolveCandidateDisplay, findReviewedDisplayCandidate } from "@/lib/ai/destination-localization";
+import { localizedCountryReference } from "@/lib/ai/destination-country-normalize";
+import { displayDestinationForCopy } from "@/lib/ai/destination-locale-aliases";
 import type { Locale } from "@/lib/i18n/types";
 import { translate } from "@/lib/i18n/translate";
 import type { AffiliateLinkOffer } from "@/lib/affiliate/affiliate-types";
@@ -41,4 +46,35 @@ export function openingCopyDisplay(value: string | undefined, locale: Locale): s
     if (match) return translate(locale, key, Object.fromEntries(names.map((name, index) => [name, openingCopyDisplay(match[index + 1], locale) ?? ""])));
   }
   return value;
+}
+
+/** Display projection only; never fed back into resolver or saved destination. */
+export function itineraryDestinationDisplay(value: string, locale: Locale, location?: TripLocation | null): string {
+  const trusted = verifiedDestinationDisplay(location);
+  const parts = location?.country?.trim() && (location.city?.trim() || location.region?.trim())
+    ? [...new Set([location.country.trim(), trusted?.name ?? (location.city || location.region)!.trim()])]
+    : value.split(/\s*[·・]\s*/).map(part => part.trim()).filter(Boolean);
+  const country = parts.map(part => localizedCountryReference(part)?.code).find(Boolean);
+  return parts.map(part => {
+    if (trusted && (part === trusted.name || part === location?.city || part === location?.region)) {
+      return resolveCandidateDisplay(trusted, locale).name;
+    }
+    // Reuse reviewed display bindings only inside an explicit matching country.
+    const candidate = findReviewedDisplayCandidate(part, country);
+    if (candidate) {
+      // Preserve the existing title/header preference for canonical Traditional Chinese.
+      if (locale === "zh-TW") return candidate.name;
+      return resolveCandidateDisplay(candidate, locale).name;
+    }
+    return displayDestinationForCopy(part, undefined, locale);
+  }).join(" · ");
+}
+
+/** New system prose only; never relabel previously generated or user-authored text. */
+export function generatedTripCopy(destination: string, days: number, count: number, locale: Locale) {
+  return {
+    generatedLocale: locale,
+    title: translate(locale, "destinationEditorial.generated_trip_title", { destination: itineraryDestinationDisplay(destination, locale), days }),
+    summary: translate(locale, "nativeQa.generatedStopsSummary", { count, days }),
+  };
 }

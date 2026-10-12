@@ -1,3 +1,4 @@
+import { resolveSuggestedTripDates } from "./resolve-suggested-trip-dates";
 import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
 import { displayDestinationForCopy } from "@/lib/ai/destination-locale-aliases";
 import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
@@ -255,7 +256,14 @@ export function enrichTripDatesInContext(
 
   const patch: Partial<CanonicalTravelContext> = {};
   if (startDate) patch.startDate = startDate;
-  if (endDate) patch.endDate = endDate;
+  if (fromText.startDate && startDate) {
+    const explicit = resolveSuggestedTripDates({ days: days ?? 1, userText: text });
+    if (explicit) {
+      patch.endDate = explicit.endDate;
+      patch.dateProvenance = { source: explicit.source, confirmed: explicit.confirmed, startDate: explicit.startDate, endDate: explicit.endDate };
+    }
+  }
+  if (endDate && !patch.endDate) patch.endDate = endDate;
   if (days && days > 0) {
     patch.days = days;
     if (startDate && endDate) {

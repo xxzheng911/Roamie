@@ -1,3 +1,12 @@
+import { traceCombinationChatReturn, combinationDiscoveryCorrelation, observeCombinationDiscovery, traceCombinationDisplayed, traceCombinationPersisted } from '@/lib/ai/combination-selection-diagnostics';
+import { discardExpiredSelection, rejectNumericSelection, isNumericSelection, hasNumericStyleAuthority } from "@/lib/ai/numeric-selection-authority";
+import { matchesDateGenerationAction, traceDateGenerationContinuation } from '@/lib/ai/date-generation-continuation';
+import { generatedTripCopy } from "@/lib/native-qa-display";
+import { attachDestinationDisplay } from "@/lib/ai/destination-display-metadata";
+import { prepareTripDateConfirmation, isRepeatedTripDateConfirmation, isCurrentTripDateSnapshot, consumeTripDateConfirmation, tripDateConfirmationCopy, type DateContinuation } from "@/lib/ai/trip-date-confirmation";
+import { workspaceTitleDisplay } from "@/lib/trip/title-display";
+import { sessionForAnsweredDurationDiscovery } from "@/lib/ai/pending-duration-discovery";
+import { hasDeliverableCombinationCount } from "@/lib/ai/combination-deliverability";
 import { resolveGlobalPlanningCandidate, isGlobalResolutionCurrent } from "@/lib/ai/global-planning-context";
 import { createExplicitCreateLoading } from "@/lib/ai/explicit-create-loading";
 import { isPlacesRateLimited as discoveryCooldownActive } from "@/lib/places-api-guard";
@@ -626,6 +635,7 @@ import {
 import { buildDateAndDurationQuestionReply } from "@/lib/ai/city-days-planning";
 import {
   isCountryLevelDestination,
+  matchedCombinationScope,
   logCountryLevelPlacesBlocked,
 } from "@/lib/ai/destination-scope";
 import {
@@ -708,7 +718,7 @@ import {
 import { getTripLegsWithDurations, travelLabelToRoutesMode } from "@/services/routesService";
 import { applyPlanTripDetails } from "@/lib/plan-form-trip-payload";
 import { attachCoreTripToPayload, toCoreTrip, type CoreTrip } from "@/lib/trip/core-trip";
-import { getImmediateTripCoverImage, getTripCoverImage } from "@/services/placeImageService";
+import { getImmediateTripCoverImage, getTripCoverImage, tripCoverDestinationInput } from "@/services/placeImageService";
 import {
   claimChatAutoScrollTarget,
   resolveChatShortcutRenderBranch,
@@ -1225,7 +1235,8 @@ function Chat() {
         context.destination?.trim() ||
         session.tripPlanningContext?.destination?.trim() ||
         session.tripDestination?.city?.trim();
-      const diagnosticTrace = createCombinationDiscoveryTrace(session.tripCreationAuthority ? planCorrelationToken(session.tripCreationAuthority.generationId) : undefined);
+      observeCombinationDiscovery(session, null);
+      const diagnosticTrace = createCombinationDiscoveryTrace(combinationDiscoveryCorrelation(session), count => observeCombinationDiscovery(session, count));
       diagnosticTrace.started(Boolean(comboDest), Boolean(comboDest && getCachedDiscoveredCombinations(normalizeDestinationLabel(comboDest), undefined, undefined, {log:false})?.length));
       try {
       if (!comboDest) { diagnosticTrace.finish(false, "destination_unresolved"); return; }
@@ -1269,18 +1280,19 @@ function Chat() {
         return;
       }
       const label = normalizeDestinationLabel(comboDest);
-      if (isCountryLevelDestination(label)) {
+      if (isCountryLevelDestination(label, guard.resolvedDestination)) {
         logCountryLevelPlacesBlocked(label, "city_required");
         return;
       }
       // Always run discovery when cache is empty — never treat theme titles as ready combos.
       const cachedCombinations = getCachedDiscoveredCombinations(label);
-      if (cachedCombinations?.length) { diagnosticTrace.finish(true, undefined, cachedCombinations.length); return; }
+      if (cachedCombinations && hasDeliverableCombinationCount(cachedCombinations)) { diagnosticTrace.finish(true, undefined, cachedCombinations.length); return; }
       if (getDestinationCombinations(label).length >= 3) {
         // Curated real-name combos already available — still ensure session cache is warm.
         await ensureDestinationCombinationsReady({
         diagnosticTrace,
           destination: label,
+          resolvedDestination: matchedCombinationScope(label, guard.resolvedDestination),
           searchPlaces: searchNearbyPlaces,
           geocodeFn: geocodeLocationFn,
           locale,
@@ -1307,6 +1319,7 @@ function Chat() {
       const ready = await ensureDestinationCombinationsReady({
         diagnosticTrace,
         destination: label,
+        resolvedDestination: matchedCombinationScope(label, guard.resolvedDestination),
         searchPlaces: searchNearbyPlaces,
         geocodeFn: geocodeLocationFn,
         locale,
@@ -1335,7 +1348,7 @@ function Chat() {
           logAiPipeline(
             "[COMBINATION_DISCOVERY_INSUFFICIENT]",
             `destination=${label}`,
-            "reason=real_places_below_minimum",
+            `reason=${ready.failureDetail ?? ready.failureReason ?? "insufficient_combinations"}`,
           );
         }
       }
@@ -1512,63 +1525,71 @@ function Chat() {
       planningSuggestionEntryPoint?: import("@/lib/ai/destination-advice").PlanningSuggestionEntryPoint,
     ) => {
       const pendingOwner = restorePendingPlanAiOwner(next, loadChatSession());
-      if (pendingOwner !== next) {
-        sessionRef.current = pendingOwner;
-        setSession(pendingOwner);
-        return;
-      }
-      const persistenceMessages = messagesForWorkspace ?? msgsRef.current;
-      const renderedCandidates = extractLatestShownCandidatesFromMsgs(persistenceMessages);
-      const candidateAuthority = renderedCandidates.length
-        ? renderedCandidates
-        : next.recommendedPlaces.length
-          ? next.recommendedPlaces
-          : next.activeShownCandidates;
-      const activeShownCandidates = candidateAuthority?.length
-        ? snapshotPlanningCandidates(candidateAuthority)
-        : next.activeShownCandidates;
-      const candidateSource =
-        activeShownCandidates?.[0]?.source ??
-        (renderedCandidates.length
-          ? "recommendation_cards"
+      try {
+        if (pendingOwner !== next) {
+          sessionRef.current = pendingOwner;
+          setSession(pendingOwner);
+          traceCombinationPersisted(next, pendingOwner, false);
+          return pendingOwner;
+        }
+        const persistenceMessages = messagesForWorkspace ?? msgsRef.current;
+        const renderedCandidates = extractLatestShownCandidatesFromMsgs(persistenceMessages);
+        const candidateAuthority = renderedCandidates.length
+          ? renderedCandidates
           : next.recommendedPlaces.length
+            ? next.recommendedPlaces
+            : next.activeShownCandidates;
+        const activeShownCandidates = candidateAuthority?.length
+          ? snapshotPlanningCandidates(candidateAuthority)
+          : next.activeShownCandidates;
+        const candidateSource =
+          activeShownCandidates?.[0]?.source ??
+          (renderedCandidates.length
             ? "recommendation_cards"
-            : "none");
-      console.info("[PLANNING_CANDIDATE_CONTEXT_WRITE]", {
-        shownCandidateCount: activeShownCandidates?.length ?? 0,
-        persistedCandidateCount: activeShownCandidates?.length ?? 0,
-        source: candidateSource,
-        ...(planningSuggestionEntryPoint ? { entryPoint: planningSuggestionEntryPoint } : {}),
-      });
-      logPlanningParseStage({
-        stage: "persist",
-        candidateCount: activeShownCandidates?.length ?? 0,
-        clauseCount: 0,
-        entityCount: 0,
-      });
-      let sessionToSave: ChatPlanningSession = {
-        ...next,
-        tripCreationAuthority: next.phase === "done" ? undefined : next.tripCreationAuthority,
-        activeShownCandidates,
-      };
-      const workspace = upsertDraftWorkspaceFromSession({
-        session: sessionToSave,
-        messages: persistenceMessages,
-        hasPlusAccess,
-        userId: readCachedAuthenticatedUserIdSync(),
-      });
-      sessionToSave = attachWorkspaceIdsToSession(sessionToSave, workspace);
-      sessionRef.current = sessionToSave;
-      setSession(sessionToSave);
-      saveChatSession(sessionToSave);
-      if (sessionToSave.planningSelection?.mode === "planning_selection") {
-        devVerboseInfo("[PLANNING_SELECTION_PERSIST]", {
-          sessionId: sessionToSave.planningSelection.id,
-          selectedCount: resolvePlanningSelectionPlaces(sessionToSave).length,
+            : next.recommendedPlaces.length
+              ? "recommendation_cards"
+              : "none");
+        console.info("[PLANNING_CANDIDATE_CONTEXT_WRITE]", {
+          shownCandidateCount: activeShownCandidates?.length ?? 0,
+          persistedCandidateCount: activeShownCandidates?.length ?? 0,
+          source: candidateSource,
+          ...(planningSuggestionEntryPoint ? { entryPoint: planningSuggestionEntryPoint } : {}),
         });
-      }
-      if (sessionToSave.homeMoodShortcutEngaged) {
-        homeMoodShortcutEngagedRef.current = true;
+        logPlanningParseStage({
+          stage: "persist",
+          candidateCount: activeShownCandidates?.length ?? 0,
+          clauseCount: 0,
+          entityCount: 0,
+        });
+        let sessionToSave: ChatPlanningSession = {
+          ...next,
+          tripCreationAuthority: next.phase === "done" ? undefined : next.tripCreationAuthority,
+          activeShownCandidates,
+        };
+        const workspace = upsertDraftWorkspaceFromSession({
+          session: sessionToSave,
+          messages: persistenceMessages,
+          hasPlusAccess,
+          userId: readCachedAuthenticatedUserIdSync(),
+        });
+        sessionToSave = attachWorkspaceIdsToSession(sessionToSave, workspace);
+        sessionRef.current = sessionToSave;
+        setSession(sessionToSave);
+        saveChatSession(sessionToSave);
+        if (sessionToSave.planningSelection?.mode === "planning_selection") {
+          devVerboseInfo("[PLANNING_SELECTION_PERSIST]", {
+            sessionId: sessionToSave.planningSelection.id,
+            selectedCount: resolvePlanningSelectionPlaces(sessionToSave).length,
+          });
+        }
+        if (sessionToSave.homeMoodShortcutEngaged) {
+          homeMoodShortcutEngagedRef.current = true;
+        }
+        traceCombinationPersisted(next, sessionToSave, true);
+        return sessionToSave;
+      } catch (error) {
+        traceCombinationPersisted(next, undefined, false);
+        throw error;
       }
     },
     [hasPlusAccess],
@@ -1638,6 +1659,17 @@ function Chat() {
     ) => Promise<boolean>
   >(async () => false);
 
+  const pauseForTripDates = useCallback((active: ChatPlanningSession, conversation: ChatMsg[], continuation: DateContinuation): boolean => {
+    const pending = prepareTripDateConfirmation(active, continuation);
+    if (!pending) return false;
+    const next: ChatMsg[] = [...conversation, {role: "assistant", content: tripDateConfirmationCopy(pending, locale)}];
+    setMsgs(next);
+    persistSession(pending, next);
+    setGenerating(false);
+    setStreaming(false);
+    return true;
+  }, [locale, persistSession]);
+
   const completeAdviceTurn = useCallback(
     async (
       turn: ChatTurnResult,
@@ -1656,6 +1688,10 @@ function Chat() {
       const updated = persistPlanningAdviceTurn(turn, baseSession, withReply);
       if (!turn.advice.triggerPlaceRecommendations) {
         setMsgs(withReply);
+        traceCombinationChatReturn(sessionRef.current, "completeAdviceTurn", turn.advice);
+        if (turn.advice.pendingQuestion?.type === "combination_choice") {
+          traceCombinationDisplayed(sessionRef.current, (turn.advice.reply?.match(/^\d+\./gm) ?? []).length, updated);
+        }
         if (!turn.advice.triggerItineraryGeneration) {
           setStreaming(false);
         }
@@ -1669,6 +1705,7 @@ function Chat() {
         }
       }
       if (turn.advice.triggerItineraryGeneration) {
+        if (pauseForTripDates({...updated, travelContext:{...context,...turn.advice.contextPatch}}, withReply, {entry:"direct"})) return;
         setGenerating(true);
         setStreaming(true);
         persistSession({
@@ -1801,11 +1838,14 @@ function Chat() {
                   "style_plan_named_fallback",
                 ),
               );
+              traceCombinationChatReturn(sessionRef.current, "triggerPlaceRecommendations.namedFallback", turn.advice);
             } else if (turn.advice.reply?.trim()) {
               setMsgs([...conversationBase, adviceToAssistantChatMsg(turn.advice)]);
+              traceCombinationChatReturn(sessionRef.current, "triggerPlaceRecommendations.adviceFallback", turn.advice);
             }
           }
         } finally {
+          traceCombinationChatReturn(sessionRef.current, "triggerPlaceRecommendations", turn.advice);
           setStreaming(false);
         }
       }
@@ -1813,6 +1853,7 @@ function Chat() {
     [
       uiT,
       persistPlanningAdviceTurn,
+      pauseForTripDates,
       stopDiscoveringLoadingAnimation,
       stripDiscoveringLoadingMessage,
       startDiscoveringLoadingAnimation,
@@ -4507,6 +4548,15 @@ function Chat() {
       },
     ): Promise<boolean> => {
       activeSession = restorePendingPlanAiOwner(activeSession, loadChatSession());
+      if (activeSession.tripCreationAuthority?.explicitCreate &&
+          activeSession.lastResolvedPendingQuestion?.type === "combination_choice" &&
+          Boolean(activeSession.adviceSelectionThisTurn) &&
+          activeSession.travelContext?.selectedCombinationIds?.length &&
+          activeSession.travelContext?.conversationState === "ready_for_itinerary") {
+        if (pauseForTripDates(activeSession, conversation, {entry:"recommendation", userText})) return true;
+        await runDirectItineraryRef.current(activeSession, activeSession.travelContext, conversation, "advice");
+        return true;
+      }
       const merged = mergeTravelContext(activeSession, userText);
       const placeCtx = mergeContextForPlaceFetch(merged.context, activeSession);
       const styleReselect = isStyleReselectTurn(userText, activeSession, placeCtx);
@@ -4560,6 +4610,7 @@ function Chat() {
 
       // Style/session normalization cannot replace the action authority captured at entry.
       sessionForPlan = { ...sessionForPlan, tripCreationAuthority: activeSession.tripCreationAuthority };
+      if (sessionForPlan.tripCreationAuthority?.explicitCreate && pauseForTripDates(sessionForPlan, conversation, {entry:"recommendation", userText, recommendationOptions:opts})) return true;
       const flowSessionId =
         sessionForPlan.planningSessionId ??
         getOrCreatePlanningSessionId(sessionForPlan, "ensure").sessionId;
@@ -4641,6 +4692,7 @@ function Chat() {
         resultAuthority: TripCreationAuthority | undefined = creationAuthority,
         resultOwnerId: string = resultGenerationId,
       ) => {
+        if (creationAuthority?.explicitCreate && !isCurrentTripDateSnapshot(sessionForPlan, sessionRef.current)) return false;
         logGeneratedPlanHandoff("received", {
           ...handoffCorrelation, sourceStage: "chat_callback", dayPlanCount: dayPlan?.items.length ?? 0,
           entryType: opts?.diagnosticEntryType ?? (activeSession.fromPlanAi || activeSession.planAiMode ? "plan_form_ai" : activeSession.fromPlanForm ? "plan_form" : "recommendation"),
@@ -6612,6 +6664,7 @@ function Chat() {
             return [...trimmedPrev, { role: "assistant", content: offline }];
           });
           persistSession(mergedForAdvice.session);
+          traceCombinationChatReturn(sessionRef.current, "buildPlanningOfflineReply.localFallback", undefined, mergedForAdvice.session);
           setPartial({});
           return true;
         }
@@ -7287,6 +7340,7 @@ function Chat() {
                 return [...trimmedPrev, { role: "assistant", content: offline }];
               });
               persistSession(fallbackMerged.session);
+              traceCombinationChatReturn(sessionRef.current, "buildPlanningOfflineReply.streamFallback", undefined, fallbackMerged.session);
               setPartial({});
               return;
             }
@@ -7327,6 +7381,7 @@ function Chat() {
             );
             return [...trimmedPrev, hint];
           });
+          traceCombinationChatReturn(sessionRef.current, "buildPlanningOfflineReply.streamHint", undefined, fallbackMerged.session);
         }
         setPartial({});
         setLastFailed(conversation);
@@ -7430,7 +7485,8 @@ function Chat() {
   // Capture the actual composer callback; style input keeps the originating action breadcrumb.
   const captureChatAction = (value: string): TripActionDiagnostic => {
     const current = restorePendingPlanAiOwner(sessionRef.current, loadChatSession());
-    const style = parseAskTripStyleSelection(value) != null;
+    const parsedStyle = parseAskTripStyleSelection(value);
+    const style = parsedStyle != null && (!isNumericSelection(value) || hasNumericStyleAuthority(current, parsedStyle));
     const source = style
       ? (current.pendingQuestion?.type === "ask_trip_style" || current.chatPlanningState === "waitingStyleSelection" ? "style_selection" : "style_preview")
       : chatActionSource(value);
@@ -7443,6 +7499,7 @@ function Chat() {
     opts?: { source?: "user" | "auto" | "chat_shortcut" | "home_mood"; actionDiagnostic?: TripActionDiagnostic },
   ) => {
     let session = restorePendingPlanAiOwner(sessionRef.current, loadChatSession());
+    observeCombinationDiscovery(session, null);
     session = { ...session, tripActionDiagnostic: selectTripActionOwner(session, opts?.actionDiagnostic) };
     const rawText = overrideText ?? text;
     console.info("[CHAT_SEND_RUNTIME_VERSION]", {
@@ -7468,7 +7525,68 @@ function Chat() {
     ) {
       return;
     }
+    if (isRepeatedTripDateConfirmation(session, trimmed)) { setText(""); return; }
     beginUserTurn(msgsRef.current.length);
+    if (session.pendingQuestion?.type === "date_confirmation") {
+      const conversation: ChatMsg[] = [...msgsRef.current, {role:"user",content:trimmed}];
+      setText("");
+      setMsgs(conversation);
+      let failureOwner = session;
+      try {
+        const outcome = consumeTripDateConfirmation(session, trimmed);
+        // Do not persist/rebind a pending owned by another conversation.
+        if (outcome.status === "stale") {
+          setMsgs([...conversation, {role:"assistant",content:chatRuntimeCopy("dateConfirmationExpired",locale)}]);
+          return;
+        }
+        const savedSession = persistSession(outcome.session, conversation);
+        if (!isCurrentTripDateSnapshot(outcome.session, savedSession)) {
+          throw new Error("date_owner_changed_during_persistence");
+        }
+        failureOwner = savedSession;
+        if (outcome.status !== "confirmed" || !outcome.continuation) {
+          const content = outcome.status === "pending" ? tripDateConfirmationCopy(savedSession,locale)
+            : chatRuntimeCopy(outcome.status === "cancelled" ? "dateConfirmationCancelled" : "generationFailed",locale);
+          const next: ChatMsg[] = [...conversation, {role:"assistant",content}];
+          setMsgs(next); persistSession(savedSession,next);
+          return;
+        }
+        const continuation = outcome.continuation;
+        if (continuation.entry === "recommendation") {
+          const actionMatches = matchesDateGenerationAction(savedSession, continuation.action);
+          traceDateGenerationContinuation(savedSession, continuation.userText ?? "", actionMatches, continuation.action);
+          if (!actionMatches) {
+            setMsgs([...conversation, {role:"assistant",content:chatRuntimeCopy("dateConfirmationExpired",locale)}]);
+            return;
+          }
+          // Resume the confirmed operation, never arbitrate a stored numeric/style reply again.
+          await runDirectItineraryRef.current(savedSession, savedSession.travelContext ?? {interests:[]}, conversation, "advice");
+        } else if (continuation.entry === "persist" && continuation.generationId) {
+          await persistGeneratedPlanRef.current(savedSession, conversation, continuation.generationId);
+        } else if (continuation.entry === "selection") {
+          await handleGenerateItinerary(savedSession,conversation);
+        } else {
+          await runDirectItineraryRef.current(savedSession, savedSession.travelContext ?? {interests:[]},conversation,"advice");
+        }
+      } catch {
+        // A late failure must never write UI/loading into a different conversation.
+        if (sessionRef.current.workspaceId !== failureOwner.workspaceId ||
+            sessionRef.current.conversationId !== failureOwner.conversationId ||
+            sessionRef.current.planningSessionId !== failureOwner.planningSessionId ||
+            !isCurrentTripDateSnapshot(failureOwner, sessionRef.current)) return;
+        setGenerating(false); setStreaming(false); setSelectionGenerationStatus(null);
+        setMsgs(previous => [...previous, {role:"assistant",content:chatRuntimeCopy("generationFailed",locale)}]);
+      }
+      return;
+    }
+    if (rejectNumericSelection(session, trimmed)) {
+      const conversation: ChatMsg[] = [...msgsRef.current,
+        {role: "user", content: trimmed},
+        {role: "assistant", content: chatRuntimeCopy("numericSelectionUnavailable", locale)}];
+      setText(""); setMsgs(conversation);
+      persistSession(discardExpiredSelection(session), conversation);
+      return;
+    }
     // Entry snapshot: early recommendation/clarification branches must carry the same action.
     if (isExplicitTripCreationTurn(trimmed) || isUserConfirmingItinerary(trimmed)) {
       session = beginTripCreation(session,
@@ -8625,7 +8743,7 @@ function Chat() {
         nextSession.tripDestination?.city?.trim();
     const isTripStyleSelection =
       nextSession.pendingQuestion?.type === "ask_trip_style" ||
-      parseAskTripStyleSelection(trimmed) != null;
+      (parseAskTripStyleSelection(trimmed) != null && !rejectNumericSelection(nextSession, trimmed));
     if (!isTripStyleSelection) {
       if (nextSession.phase === "done") {
         nextSession = startNewPlanningSession(nextSession, "phase_done");
@@ -9706,6 +9824,7 @@ function Chat() {
         const next = commitUserMessageWithDiscoveringLoading(displayMessage, msgs);
         await yieldToNextPaint();
         try {
+          const discoverySession = sessionForAnsweredDurationDiscovery(trimmed, nextSession, planningCtx);
           const durationFields = tripDurationFieldsFromContext(planningCtx, nextSession);
           const validDays = resolveValidTripDays(durationFields);
           const discoveryGuard = evaluateCombinationDiscoveryGuard({
@@ -9718,8 +9837,8 @@ function Chat() {
             destinationScopeId: planningCtx.destinationScopeId,
             ...durationFields,
             days: validDays,
-            pendingQuestion: nextSession.pendingQuestion,
-            session: nextSession,
+            pendingQuestion: discoverySession.pendingQuestion,
+            session: discoverySession,
           });
           logCombinationDiscoveryGuard(discoveryGuard, planningCtx.destination);
 
@@ -9795,11 +9914,11 @@ function Chat() {
               destinationScopeId: planningCtx.destinationScopeId,
               ...durationFields,
               days: validDays,
-              pendingQuestion: nextSession.pendingQuestion,
-              session: nextSession,
+              pendingQuestion: discoverySession.pendingQuestion,
+              session: discoverySession,
             })
           ) {
-            await prepareDestinationCombinations(planningCtx, nextSession);
+            await prepareDestinationCombinations(planningCtx, discoverySession);
           }
           const earlyPlanningTurn = processAdviceTurn(trimmed, nextSession, planningCtx, undefined, locale);
           if (earlyPlanningTurn.advice.reply) {
@@ -10303,6 +10422,7 @@ function Chat() {
           route.missingKey === "destination" ? "destination_clarification" : "other",
         );
         setMsgs([...next, { role: "assistant", content: route.question }]);
+        traceCombinationChatReturn(sessionRef.current, "route.clarify", route);
         logNearbyDispatchSkip(`route_missing_${route.missingKey}`, "route_clarification_fallback");
         return;
       }
@@ -10478,6 +10598,7 @@ function Chat() {
         if (offline) {
           persistSession(nextSession);
           setMsgs([...next, { role: "assistant", content: offline }]);
+          traceCombinationChatReturn(sessionRef.current, "buildPlanningOfflineReply.sendFallback", undefined, nextSession);
           return;
         }
         return;
@@ -10539,6 +10660,7 @@ function Chat() {
   ) => {
     if (!requireAuthForAction("trip_generation")) return;
     let activeSession = sessionOverride ?? sessionRef.current;
+    if (pauseForTripDates(activeSession, msgsOverride ?? msgs, {entry:"selection"})) return;
     if (activeSession.currentDayPlan?.items.length && !ownership) {
       await persistGeneratedPlanRef.current(
         activeSession, msgsOverride ?? msgs,
@@ -10686,12 +10808,12 @@ function Chat() {
           query, destinationName: query, locale, disableLocaleRegionBias: true, placesFallback: false,
         } })).location,
       );
-      if (ownership && !ownership.isCurrent()) {
+      if ((ownership && !ownership.isCurrent()) || !isCurrentTripDateSnapshot(activeSession, sessionRef.current)) {
         logTripLifecycle("aborted", { failureCode: "entry_blocked" });
         return;
       }
       logTripLifecycle("destination_resolution", { success: Boolean(resolvedTripDestination) });
-      activeSession = { ...activeSession, tripDestination: resolvedTripDestination };
+      activeSession = { ...activeSession, tripDestination: attachDestinationDisplay(resolvedTripDestination, resolvedTripDestination?.destinationDisplay ?? activeSession.travelContext?.destinationDisplay) };
       if (!resolvedTripDestination) {
         // Keep the text context, but never plan/weather-fetch against device or placeholder coordinates.
         throw new Error("destination_unresolved");
@@ -10762,8 +10884,9 @@ function Chat() {
             endDate: selectionDateAuthority.endDate,
             days: selectionDateAuthority.tripDays,
             dayDates: selectionDateAuthority.dayDates,
-            hasExplicitDates: true,
-            source: selectionDateAuthority.source,
+            hasExplicitDates: workingSession.travelContext?.dateProvenance?.source === "user_date" || !workingSession.travelContext?.dateProvenance,
+            datesConfirmed: true,
+            source: workingSession.travelContext?.dateProvenance?.source ?? "user_date",
           }
         : resolveTripCreateDates({
             context: workingSession.travelContext ?? { interests: [] },
@@ -10985,8 +11108,7 @@ function Chat() {
           session: { ...workingSession, aiItineraryState: "SUCCESS", phase: "generating" },
           payload: {
             version: 2,
-            title: `${destination} ${effectiveTripDays} 天`,
-            summary: `依你選的 ${dayPlan.items.length} 個地點排成 ${effectiveTripDays} 天行程。`,
+            ...generatedTripCopy(destination, effectiveTripDays, dayPlan.items.length, locale),
             moodTag: workingSession.mood ?? "",
             recommendations,
             itinerary: itineraryItems,
@@ -11307,8 +11429,12 @@ function Chat() {
         aiGeneratedCoverImageUrl: cover.url,
         tripSettings: {
           ...itinerary.tripSettings,
-          tripStartDate: tripDates.hasExplicitDates ? startDate : undefined,
-          tripEndDate: tripDates.hasExplicitDates ? endDate : undefined,
+          tripStartDate: tripDates.datesConfirmed ? startDate : undefined,
+          tripEndDate: tripDates.datesConfirmed ? endDate : undefined,
+          dateProvenance: startDate && endDate ? {
+            source: tripDates.source as import("@/lib/ai/resolve-suggested-trip-dates").TripDateProvenance["source"],
+            confirmed: tripDates.datesConfirmed, startDate, endDate,
+          } : undefined,
           transport: /開車|自駕|租車|drive/i.test(workingSession.transportation ?? "")
             ? "drive"
             : workingSession.transportation === "大眾運輸"
@@ -11406,7 +11532,7 @@ function Chat() {
       }
       logSelectionTiming("save_start");
       lifecycleFailureCode = "save_failed";
-      if (ownership && !ownership.isCurrent()) {
+      if ((ownership && !ownership.isCurrent()) || !isCurrentTripDateSnapshot(activeSession, sessionRef.current)) {
         logTripLifecycle("aborted", { failureCode: "entry_blocked" });
         return;
       }
@@ -11482,7 +11608,7 @@ function Chat() {
         savedTripId: saved.id,
       });
       lifecycleFailureCode = "navigation_failed";
-      if (ownership && !ownership.isCurrent()) {
+      if ((ownership && !ownership.isCurrent()) || !isCurrentTripDateSnapshot(activeSession, sessionRef.current)) {
         logTripLifecycle("aborted", { failureCode: "entry_blocked" });
         return;
       }
@@ -11521,7 +11647,7 @@ function Chat() {
         savedTripId: saved.id,
       });
       const coverEnrichment = getTripCoverImage({
-        destination,
+        ...tripCoverDestinationInput(destination, workingSession.tripDestination),
         mood: workingSession.mood ?? "",
         moodTag: workingSession.mood ?? "",
         title: itinerary.title,
@@ -11586,6 +11712,7 @@ function Chat() {
           });
         });
     } catch (e) {
+      if (!isCurrentTripDateSnapshot(activeSession, sessionRef.current)) return;
       if (lifecycleFailureCode === "save_failed") logTripLifecycle("save_result", { success: false, hasTripId: false });
       logTripLifecycle("aborted", { failureCode: lifecycleFailureCode });
       abandonPendingCover?.();
@@ -11635,6 +11762,7 @@ function Chat() {
   };
 
   persistGeneratedPlanRef.current = async (readySession, conversation, generationId) => {
+    if (pauseForTripDates(readySession, conversation, {entry:"persist", generationId})) return;
     logGeneratedPlanHandoff("handoff_started", { correlationToken: planCorrelationToken(generationId), sourceStage: "persistence", hasGenerationId: Boolean(generationId), hasDayPlan: Boolean(readySession.currentDayPlan?.items.length), dayPlanCount: readySession.currentDayPlan?.items.length ?? 0, explicitCreate: readySession.tripCreationAuthority?.explicitCreate === true, fromPlanAi: Boolean(readySession.fromPlanAi) });
     await generatedPlanHandoffRef.current(generationId, async () => {
       logGeneratedPlanHandoff("ownership", {
@@ -11672,6 +11800,9 @@ function Chat() {
     conversation: ChatMsg[],
     entryType: TripEntryType = "direct_intent",
   ) => {
+    context = {...activeSession.travelContext, ...context};
+    activeSession = {...activeSession, travelContext:context};
+    if (pauseForTripDates(activeSession, conversation, {entry:"direct"})) return;
     activeSession = beginTripCreation(
       entryType === "regenerate" ? { ...activeSession, tripCreationAuthority: undefined } : activeSession,
       entryType === "advice" ? "advice_create" : "direct_itinerary_create",
@@ -11720,6 +11851,7 @@ function Chat() {
           return result.place;
         },
       });
+      if (!isCurrentTripDateSnapshot(activeSession, sessionRef.current)) return;
       logTripLifecycle("final_planner_gate", { success: prepared.ok });
       if (!prepared.ok) {
         logTripLifecycle("aborted", { failureCode: "generation_failed" });
@@ -11773,6 +11905,7 @@ function Chat() {
       itinCreditsHandle = null;
       lastFailureGenerationRequestIdRef.current = null;
     } catch (e) {
+      if (!isCurrentTripDateSnapshot(activeSession, sessionRef.current)) return;
       logTripLifecycle("aborted", { failureCode: "generation_failed" });
       await settleCreditsOperation(itinCreditsHandle, false);
       itinCreditsHandle = null;
@@ -11818,9 +11951,11 @@ function Chat() {
       });
     } finally {
       finishPlanningLoading();
-      activeGenerationRequestIdRef.current = null;
-      setStreaming(false);
-      setGenerating(false);
+      if (activeGenerationRequestIdRef.current === generationRequestId) {
+        activeGenerationRequestIdRef.current = null;
+        setStreaming(false);
+        setGenerating(false);
+      }
     }
   };
 
@@ -11932,7 +12067,9 @@ function Chat() {
                 ? (selectionGenerationStatus ?? t("chat.statusGenerating"))
                 : streaming
                   ? t("chat.statusStreaming")
-                  : session.selectedPlaces.length
+                  : chatBackNavigation.entrySource === "travel_draft" && session.workspaceId
+                    ? workspaceTitleDisplay(loadConversationWorkspace(session.workspaceId, readCachedAuthenticatedUserIdSync()), t("trip.travelDraft"), locale)
+                    : session.selectedPlaces.length
                     ? t("chat.statusSelectedPlaces", { count: session.selectedPlaces.length })
                     : t("chat.statusDefault")}
             </p>

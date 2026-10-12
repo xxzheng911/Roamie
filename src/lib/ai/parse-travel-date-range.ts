@@ -11,7 +11,13 @@ export function parseTravelDateRangeFromText(
   const rangeMatch = t.match(
     /((?:\d{4}[\/\-年])?\d{1,2}[\/\-月]\d{1,2})\s*[~～至到\-—–]\s*((?:\d{4}[\/\-年])?\d{1,2}[\/\-月]\d{1,2})/,
   );
-  if (!rangeMatch?.[1] || !rangeMatch[2]) return {};
+  if (!rangeMatch?.[1] || !rangeMatch[2]) {
+    // A complete numeric calendar date is explicit; month-only/duration text is not.
+    const single = t.match(/(?:^|[^\d])(\d{4}[\/\-年]\d{1,2}[\/\-月]\d{1,2})(?:日|$|[^\d])/);
+    const parsed = single ? parsePartialDate(single[1]!, refDate) : undefined;
+    const startDate = parsed ? toIsoDate(parsed.year, parsed.month, parsed.day) : undefined;
+    return startDate ? { startDate } : {};
+  }
 
   const start = parsePartialDate(rangeMatch[1], refDate);
   const end = parsePartialDate(rangeMatch[2], refDate, start?.year);

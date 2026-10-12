@@ -50,13 +50,14 @@ export function parseDayCountFromText(text: string): number | undefined {
   }
 
   // Soft hedges: 大概3天 / 差不多3天 / 三天左右 / 3天吧
-  const digit = t.match(/(?:大概|差不多|約|大约)?(\d+)\s*(?:天|日|晚)(?:左右|吧)?/);
+  // 「12月4日」is a calendar day, never a trip length.
+  const digit = t.match(/(?:大概|差不多|約|大约)?(?<![\d月])(\d+)\s*(?:天|日|晚)(?:左右|吧)?/);
   if (digit) {
     return boundedParsedDayCount(Number.parseInt(digit[1]!, 10));
   }
 
   const cn = t.match(
-    /(?:大概|差不多|約|大约)?([一二三四五六七八九十两兩])\s*(?:天|日|晚)(?:左右|吧)?/,
+    /(?:大概|差不多|約|大约)?(?<!月)([一二三四五六七八九十两兩])\s*(?:天|日|晚)(?:左右|吧)?/,
   );
   if (cn?.[1]) {
     const n = CN_DAY_MAP[cn[1]];

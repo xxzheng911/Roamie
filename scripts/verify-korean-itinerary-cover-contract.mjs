@@ -1,0 +1,36 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {toCoreTrip,resolveCoreTripTitle} from '../src/lib/trip/core-trip.ts';
+import {normalizeStoredTrip} from '../src/lib/saved-trip/normalize.ts';
+import {itineraryDestinationDisplay,generatedTripCopy} from '../src/lib/native-qa-display.ts';
+import {tripTitleDisplay,workspaceTitleDisplay} from '../src/lib/trip/title-display.ts';
+import {tripCoverDestinationInput,buildTripCoverQueryStages} from '../src/services/placeImageService.ts';
+import {resolveDisplayCoverImage,coverFieldsFromStored} from '../src/lib/saved-trip/display.ts';
+globalThis.fetch=()=>{throw Error('NO_LIVE_NETWORK')};
+const location={country:'葡萄牙',city:'파루',region:'파루',formattedName:'葡萄牙・파루',displayLabel:'葡萄牙・파루',placeId:'ChIJFixture',lat:37.2555153,lng:-8.3964938};
+for(const [locale,city,expected] of [['ko','파루','포르투갈 · 파루'],['en','Porto','Portugal · Porto'],['zh-TW','Porto','葡萄牙 · 波爾圖'],['ja','Faro','ポルトガル · Faro']])for(const separator of ['・',' · ']) {
+ const loc={...location,city,formattedName:`葡萄牙${separator}${city}`,displayLabel:`葡萄牙${separator}${city}`};
+ const row={id:'fixture',title:'old',custom_title:null,is_title_customized:false,cover_image:'https://images.unsplash.com/photo-fixture?fm=jpg',is_cover_customized:false,payload:{version:2,title:'old',summary:'',moodTag:'',recommendations:[],itinerary:[],destination:loc.displayLabel,destinationLocation:loc,days:5,aiGeneratedCoverImageUrl:'/default.png'}};
+ const before=JSON.stringify(row), restored=JSON.parse(before),view=normalizeStoredTrip(restored);
+ assert.equal(itineraryDestinationDisplay(view.destination,locale,loc),expected);
+ assert.ok(resolveCoreTripTitle(toCoreTrip(restored),locale).startsWith(expected));
+ assert.ok(tripTitleDisplay({title:'old',custom:false,destination:view.destination,destinationLocation:loc,days:5},locale).startsWith(expected));
+ assert.ok(workspaceTitleDisplay({title:'old',titleCustom:false,tripDays:5,planningSession:{tripDestination:loc,travelContext:{destinationCountry:loc.country,destinationCity:city,days:5}}},'old',locale).startsWith(expected));
+ assert.equal(resolveDisplayCoverImage(coverFieldsFromStored(restored)),row.cover_image);
+ assert.equal(tripTitleDisplay({title:'My trip',custom:true,destination:loc.displayLabel,destinationLocation:loc,days:5},locale),'My trip');
+ assert.equal(JSON.stringify(restored),before);
+ const copy=generatedTripCopy(loc.displayLabel,5,18,locale);assert.equal(copy.generatedLocale,locale);assert.ok(copy.title.startsWith(expected));
+}
+assert.equal(itineraryDestinationDisplay('葡萄牙・파루','ko'),'포르투갈 · 파루');
+assert.equal(itineraryDestinationDisplay('Unresolved Name','ko'),'Unresolved Name');
+const legacy=tripCoverDestinationInput(location.displayLabel,location);
+assert.equal(legacy.canonicalEnglishDestination,undefined);assert.equal(buildTripCoverQueryStages(legacy).length,2);
+const trusted={...location,destinationDisplay:{name:'파루',country:'葡萄牙',type:'city',placeId:location.placeId,localizedNames:{en:'Faro',ko:'파루'}}};
+const search=tripCoverDestinationInput(location.displayLabel,trusted);
+assert.equal(search.destination,'Faro, Portugal');assert.equal(buildTripCoverQueryStages(search).length,2);
+assert.equal(tripCoverDestinationInput('legacy',{...trusted,placeId:'different'}).canonicalEnglishDestination,undefined);
+const chat=readFileSync('src/routes/_app.chat.tsx','utf8');
+assert.match(chat,/generatedTripCopy\(destination, effectiveTripDays, dayPlan.items.length, locale\)/);
+assert.match(chat,/tripCoverDestinationInput\(destination, workingSession.tripDestination\)/);
+const server=readFileSync('src/lib/itinerary.functions.ts','utf8');assert.match(server,/generatedTripCopy\(data.destination, data.days, selectedPlaces.length, data.locale/);
+console.log('PASS actual saved projection without metadata, four locales, separators, restore, immutable identities, custom title, row cover priority, bounded trusted query, generation copy; real device/image loads NOT VERIFIED');

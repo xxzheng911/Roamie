@@ -35,6 +35,16 @@ export function processAdviceTurn(
   messageId?: string,
   locale?: Locale,
 ): ChatTurnResult {
+  // A selection made this turn always clears its pending (applyDestinationPendingSelection).
+  // An open ask_days beside a selection means the selection is a previous turn's
+  // authority; the ask_days handler must own this turn.
+  if (
+    session.adviceSelectionThisTurn &&
+    (session.pendingQuestion?.type === "ask_days" ||
+      session.pendingQuestion?.type === "duration_choice")
+  ) {
+    session = { ...session, adviceSelectionThisTurn: undefined, lastResolvedPendingQuestion: undefined };
+  }
   const advice = persistPlanningShownCandidateContext(
     resolveDestinationAdvice(context, session, userText, locale),
     session,

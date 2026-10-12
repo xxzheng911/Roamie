@@ -273,6 +273,17 @@ check("桃園 3d select 1、2、4 acceptance", () => {
     }
   }
 
+  const shortfall = validateSelectedCombinationIntegrity({
+    destination:"桃園",selectedCombinationIds:ids,resolvedPlaces:places,
+    supplementAttempted:true,tripDays:3,capacityPlan:plan,
+  });
+  assert.equal(places.length,4,"negative fixture contains four resolved places");
+  assert.equal(shortfall.ok,false);
+  assert.equal(shortfall.failureCode,"total_real_place_count_insufficient");
+  // Offline provider-shaped supplemental candidates with independent identity.
+  for (let i=0; places.length<plan.dynamicCapacity.minimumViableStops; i++) {
+    places.push(mockPlace(`Supplemental museum fixture ${i}`, [ids[i % ids.length]], 900+i));
+  }
   const integrity = validateSelectedCombinationIntegrity({
     destination: "桃園",
     selectedCombinationIds: ids,

@@ -1,3 +1,7 @@
+import { verifiedDestinationDisplay } from "@/lib/ai/destination-display-metadata";
+import { resolveCandidateDisplay } from "@/lib/ai/destination-localization";
+import { localizedCountryName } from "@/lib/ai/destination-country-normalize";
+import type { TripLocation } from "@/lib/location/types";
 import cafe from "@/assets/scene-cafe.jpg";
 import roamieDefaultCover from "@/assets/roamie-default-cover.png";
 import type { RoamiePayloadV2 } from "@/lib/ai/types";
@@ -359,4 +363,14 @@ export function tripCoverInputFromPayload(payload: RoamiePayloadV2): TripCoverIn
     city: payload.destinationLocation?.city ?? extractCity(payload.destination ?? ""),
     category,
   };
+}
+
+/** Replaces, rather than adds to, the caller's search stages. Display identity only. */
+export function tripCoverDestinationInput(destination: string, location?: TripLocation | null): TripCoverInput {
+  const trusted = verifiedDestinationDisplay(location);
+  const english = trusted ? resolveCandidateDisplay(trusted, "en") : undefined;
+  const country = location ? localizedCountryName(location.country, "en") : undefined;
+  const canonicalEnglishDestination = english && english.source !== "original"
+    ? [english.name, country].filter(Boolean).join(", ") : undefined;
+  return { destination: canonicalEnglishDestination ?? destination, canonicalEnglishDestination };
 }

@@ -1,7 +1,10 @@
+import { MIN_DELIVERABLE_COMBINATIONS, hasDeliverableCombinationCount, hasDeliverablePlaceIdentity } from "./combination-deliverability";
+import type { ResolvedTripDestination } from "./resolved-trip-destination";
+import { matchedCombinationScope } from "./destination-scope";
 import { planningContextText } from "@/lib/i18n/planning-context-copy";
 import { displayDestinationForCopy } from "./destination-locale-aliases";
 import { generationDiscoverySearchScope, discoverySearchStopped, DiscoverySearchStopped } from "./discovery-search-scope";
-import { createCombinationDiscoveryTrace, type CombinationDiscoveryTrace } from "./combination-discovery-trace";
+import { createCombinationDiscoveryTrace, discoveryFailure, type DiscoveryFailure, type CombinationDiscoveryTrace } from "./combination-discovery-trace";
 import { isDevVerboseLog } from "@/lib/dev-verbose-log";
 /**
  * Destination-agnostic combination discovery via Places category search.
@@ -90,7 +93,6 @@ import {
 import { collapseParentLandmarkCandidates } from "@/lib/ai/ai-parent-landmark-dedup";
 import { applyCombinationLocalizationGate } from "@/lib/ai/combination-localization-gate";
 import {
-  hasForeignLocalScript,
   resolvePlaceDisplayName,
   type PlaceNameLocalizationSource,
 } from "@/lib/place-display-name";
@@ -163,6 +165,10 @@ export type CombinationValidationResult = {
 };
 
 export type DestinationDiscoveryFailureReason =
+  | DiscoveryFailure
+  | "unresolved_destination"
+  | "empty_candidates"
+  | "filtered_candidates"
   | "destination_resolution_failed"
   | "no_coordinates"
   | "destination_country_unresolved"
@@ -291,7 +297,7 @@ export function buildDestinationRecommendationFailedMessage(
 export const REFRESH_DESTINATION_RECOMMENDATIONS_OPTION = "重新整理推薦";
 
 /** Prefer 3+ groups, but accept 2 when typed food/shopping leave fewer valid themes. */
-const MIN_COMBINATIONS = 2;
+const MIN_COMBINATIONS = MIN_DELIVERABLE_COMBINATIONS;
 const PREFERRED_COMBINATIONS = 3;
 const MAX_COMBINATIONS = 5;
 /** Minimum real Places required per combination before showing it. */
@@ -619,6 +625,9 @@ function localizeCachedCombinations(
   combinations: StructuredCombinationOption[],
   locale: Locale = effectiveAppLocale(),
 ): StructuredCombinationOption[] | null {
+  // Old/restored cache entries must satisfy the same provider identity contract.
+  if (combinations.some(combo => [...combo.placeCandidates, ...(combo.primaryCandidates ?? []), ...(combo.fallbackCandidates ?? [])].some(p =>
+    !hasDeliverablePlaceIdentity(p.googlePlaceId, p.coordinates?.lat, p.coordinates?.lng)))) return null;
   const gated = applyCombinationLocalizationGate(combinations, {
     locale,
     minPlacesPerCombo: 2,
@@ -792,12 +801,14 @@ function resolveCandidateDisplayName(
     {
       name: place.localizedDisplayName || place.name,
       originalName,
+      localizedNames: place.localizedNames,
+      sourceLocale: place.sourceLocale,
       placeId: place.id,
       canonicalPlaceId: place.id,
-      englishName:
+      englishName: place.englishName ?? (
         place.localizationSource === "english" || place.localizationSource === "english_fallback"
           ? place.name
-          : undefined,
+          : undefined),
       types: place.types,
       primaryType: place.primaryType,
     },
@@ -940,23 +951,12 @@ function toCandidate(
   center?: { lat: number; lng: number } | null,
   locale: Locale = effectiveAppLocale(),
 ): CombinationPlaceCandidate | null {
+  if (!hasDeliverablePlaceIdentity(place.id, place.lat, place.lng)) return null;
   const resolved = resolveCandidateDisplayName(place, locale);
   if (!resolved.displayName) return null;
 
-  // Drop destination local-script names early (Thai / Greek / Myanmar / …).
-  if (hasForeignLocalScript(resolved.displayName, locale)) {
-    logAiPipeline(
-      "[PLACE_LOCALIZATION_FALLBACK]",
-      `placeId=${place.id ?? ""}`,
-      `originalName=${resolved.originalName}`,
-      `requestedLocale=${locale}`,
-      `resolvedName=${resolved.displayName}`,
-      `resolvedLanguage=${resolved.languageCode}`,
-      `localizationSource=${resolved.localizationSource}`,
-      "reason=foreign_local_script_dropped_at_candidate",
-    );
-    return null;
-  }
+  // Display language is not geographic eligibility. Preserve original-name
+  // fallbacks; identity/scope/type/quality validation below still applies.
 
   if (isGenericDestinationPlaceholder(resolved.displayName, destination)) return null;
   if (isGenericDestinationPlaceholder(resolved.originalName, destination)) return null;
@@ -3053,6 +3053,7 @@ async function discoverDestinationCombinationsInternal(params: {
   destinationCountry?: string | null;
   /** Travel Context / session coordinates when already known */
   contextCoordinates?: { lat: number; lng: number } | null;
+  resolvedDestination?: ResolvedTripDestination | null;
   /** Places Autocomplete / Place Details city center */
   placesGeometry?: { lat: number; lng: number } | null;
   /** Previous-round country→city options for Destination Anchor matching */
@@ -3064,10 +3065,14 @@ async function discoverDestinationCombinationsInternal(params: {
 }): Promise<StructuredCombinationOption[] | null> {
   const label = normalizeDestinationLabel(params.destination);
   const locale = params.locale ?? effectiveAppLocale();
-  if (isCountryLevelDestination(label)) {
+  const trustedScope = matchedCombinationScope(label, params.resolvedDestination, params.destinationCountry);
+  const scopeUnresolved = (params.resolvedDestination && !trustedScope) ||
+    (!trustedScope && resolveDestinationEntity(label).type === "unknown");
+  if (isCountryLevelDestination(label, trustedScope)) {
     logCountryLevelPlacesBlocked(label, "city_required");
     return setDiscoveryFailure(label, "blocked_country", "city_required");
   }
+  if (scopeUnresolved) return setDiscoveryFailure(label, "unresolved_destination");
   lastDiscoveryFailure = null;
   lastFinalizedScopePatch = null;
 
@@ -3081,7 +3086,7 @@ async function discoverDestinationCombinationsInternal(params: {
   params.diagnosticTrace?.guard(true, "allowed", shouldSkipPlanningPlacesApi(), deadlineAt - Date.now());
   // Silent peek only — never log COMBINATION_CACHE_MISS before Destination Anchor succeeds.
   const cached = getCachedDiscoveredCombinations(label, undefined, undefined, { log: false });
-  if (cached) {
+  if (cached && hasDeliverableCombinationCount(cached)) {
     logCombinationCacheHit({
       destination: label,
       travelStyle: "any",
@@ -3143,7 +3148,8 @@ async function discoverDestinationCombinationsInternal(params: {
     destination: label,
     locale: params.locale ?? "zh-TW",
     countryHint: country ?? params.destinationCountry,
-    contextCoordinates: params.contextCoordinates,
+    contextCoordinates: trustedScope ? {lat:trustedScope.latitude!, lng:trustedScope.longitude!} : params.contextCoordinates,
+    entityType: trustedScope?.type,
     placesGeometry: params.placesGeometry,
     offeredOptions: params.offeredDestinationOptions,
     geocodeFn: params.geocodeFn,
@@ -3192,7 +3198,7 @@ async function discoverDestinationCombinationsInternal(params: {
   const postAnchorCached = getCachedDiscoveredCombinations(label, undefined, undefined, {
     log: true,
   });
-  if (postAnchorCached?.length) {
+  if (postAnchorCached && hasDeliverableCombinationCount(postAnchorCached)) {
     return postAnchorCached;
   }
 
@@ -3607,14 +3613,23 @@ async function discoverDestinationCombinationsInternal(params: {
 
   if (timedOut() && !combinations?.length) return failTimeout();
 
-  // Theme-directed per-combo search: minimum (2) is degraded delivery, not
-  // discovery completion. Preserve ready groups and try unused themes until 3.
+  // Recovery authority is the final composition/quality result, not raw buckets.
+  // Reuse the same gates before and after the single bounded theme recovery.
+  const assembledCombinationCount = combinations?.length ?? 0;
+  if (combinations?.length) {
+    combinations = applyCombinationLocalizationGate(
+      enforcePlanningCombinationComposition(combinations),
+      { locale, minPlacesPerCombo: 2, minCombinations: MIN_COMBINATIONS,
+        preferredCombinations: PREFERRED_COMBINATIONS },
+    ).combinations as StructuredCombinationOption[];
+  }
+  params.diagnosticTrace?.candidates(rawPlaces.length, new Set(rawPlaces.map(rawCandidateKey)).size, candidates.length, combinations?.length ?? 0);
   const initialCombinationCount = combinations?.length ?? 0;
   let topUpAttempted = false;
   let topUpThemeCount = 0;
   let topUpResultCount = 0;
   let degradedReason: CombinationTopUpDegradedReason | undefined;
-  if ((!combinations || combinations.length < PREFERRED_COMBINATIONS) && !timedOut() && !discoverySearchStopped(params.searchPlaces)) {
+  if (!hasDeliverableCombinationCount(combinations) && !timedOut() && !discoverySearchStopped(params.searchPlaces)) {
     topUpAttempted = true;
     const themed = await searchPlacesForThemeDirections({
       destination: label,
@@ -3627,31 +3642,19 @@ async function discoverDestinationCombinationsInternal(params: {
       locale,
       existingCombinations: combinations ?? [],
       targetCombinationCount: PREFERRED_COMBINATIONS,
-    }).catch((error): ThemeDirectionSearchResult => {
-      if (!(error instanceof DiscoverySearchStopped) || initialCombinationCount < MIN_COMBINATIONS) throw error;
-      // A stopped optional top-up must not discard already validated combinations.
-      return {combinations:[],attemptedThemeCount:0,stopReason:"insufficient_verified_candidates"};
     });
     topUpThemeCount = themed.attemptedThemeCount;
-    if (initialCombinationCount >= MIN_COMBINATIONS) {
-      const merged = mergeVerifiedCombinationTopUp(
-        label,
-        combinations ?? [],
-        themed.combinations,
-        PREFERRED_COMBINATIONS,
-      );
-      combinations = merged.combinations.length ? merged.combinations : null;
-      topUpResultCount = merged.addedCount;
-      degradedReason = themed.stopReason ?? merged.degradedReason;
-    } else {
-      // Preserve the pre-existing minimum-recovery contract for <2 groups.
-      combinations =
-        themed.combinations.length >= MIN_COMBINATIONS
-          ? themed.combinations.slice(0, PREFERRED_COMBINATIONS)
-          : combinations;
-      topUpResultCount = Math.max(0, (combinations?.length ?? 0) - initialCombinationCount);
-      degradedReason = themed.stopReason;
-    }
+    const merged = mergeVerifiedCombinationTopUp(
+      label, combinations ?? [], themed.combinations, PREFERRED_COMBINATIONS,
+    );
+    const recovered = applyCombinationLocalizationGate(
+      enforcePlanningCombinationComposition(initialCombinationCount === 0 ? themed.combinations : merged.combinations),
+      { locale, minPlacesPerCombo: 2, minCombinations: MIN_COMBINATIONS,
+        preferredCombinations: PREFERRED_COMBINATIONS },
+    ).combinations as StructuredCombinationOption[];
+    if (recovered.length > initialCombinationCount) combinations = recovered;
+    topUpResultCount = Math.max(0, (combinations?.length ?? 0) - initialCombinationCount);
+    degradedReason = themed.stopReason ?? merged.degradedReason;
   }
 
   const finalTopUpCombinationCount = combinations?.length ?? 0;
@@ -3663,6 +3666,7 @@ async function discoverDestinationCombinationsInternal(params: {
   }
   logAiPipeline(
     "[COMBINATION_PREFERRED_TOP_UP]",
+    `assembledCombinationCount=${assembledCombinationCount}`,
     `initialCombinationCount=${initialCombinationCount}`,
     `preferredCombinationCount=${PREFERRED_COMBINATIONS}`,
     `topUpAttempted=${topUpAttempted}`,
@@ -3680,9 +3684,7 @@ async function discoverDestinationCombinationsInternal(params: {
       const count = (c.primaryCandidates ?? c.placeCandidates).length;
       return count >= 2;
     });
-    if (combinations.length < 2) {
-      combinations = null;
-    }
+    // Keep the actual count for diagnostics; the shared final gate rejects it.
   }
 
   // Combination Localization Repair Gate — names only; never delete for English fallback.
@@ -3713,9 +3715,9 @@ async function discoverDestinationCombinationsInternal(params: {
       `localizationDisplayPass=${gated.localizationDisplayPass}`,
       `minimumCombinationCountPass=${gated.minimumCombinationCountPass}`,
     );
-    // Fail discovery only when no deliverable real-place combinations remain —
-    // never solely because localizationCoverage < 1 / english_fallback.
-    if (!combinations.length) {
+    params.diagnosticTrace?.candidates(rawPlaces.length, new Set(rawPlaces.map(rawCandidateKey)).size, candidates.length, combinations.length);
+    // Locale/category validation can shrink an assembled list to one option.
+    if (!hasDeliverableCombinationCount(combinations)) {
       logAiPipeline(
         "[COMBINATION_DISCOVERY_FAILED]",
         "reason=combination_real_places_insufficient",
@@ -3726,7 +3728,7 @@ async function discoverDestinationCombinationsInternal(params: {
       );
       return setDiscoveryFailure(
         label,
-        "combination_candidates_insufficient",
+        "insufficient_combinations",
         "combination_real_places_insufficient",
       );
     }
@@ -3749,10 +3751,10 @@ async function discoverDestinationCombinationsInternal(params: {
   if (!combinations?.length) {
     const failureReason: DestinationDiscoveryFailureReason =
       candidates.length === 0
-        ? "place_discovery_failed"
+        ? (rawPlaces.length === 0 ? "empty_candidates" : "filtered_candidates")
         : candidates.length < MIN_RESOLVED_PLACES_FOR_SOFT_COMBOS
           ? "real_places_below_minimum"
-          : "combination_candidates_insufficient";
+          : "insufficient_combinations";
     logAiPipeline(
       "[COMBINATION_DISCOVERY_FAILED]",
       `reason=${failureReason}`,
@@ -3763,6 +3765,9 @@ async function discoverDestinationCombinationsInternal(params: {
     return setDiscoveryFailure(label, failureReason, "all_layers_exhausted");
   }
 
+  if (getActivePlacesGenerationRequestId() && getActivePlacesGenerationRequestId() !== generationRequestId) {
+    return setDiscoveryFailure(label, "stale_generation");
+  }
   setCachedDiscoveredCombinations(label, combinations);
   for (let i = 0; i < combinations.length; i += 1) {
     const combo = combinations[i]!;
@@ -3834,6 +3839,7 @@ async function ensureDestinationCombinationsReadyInternal(params: {
   generationRequestId?: string;
   destinationCountry?: string | null;
   contextCoordinates?: { lat: number; lng: number } | null;
+  resolvedDestination?: ResolvedTripDestination | null;
   placesGeometry?: { lat: number; lng: number } | null;
   offeredDestinationOptions?:
     | import("@/lib/ai/destination-anchor").DestinationOptionMetadata[]
@@ -3850,7 +3856,10 @@ async function ensureDestinationCombinationsReadyInternal(params: {
 }> {
   const label = normalizeDestinationLabel(params.destination);
   const locale = params.locale ?? effectiveAppLocale();
-  if (isCountryLevelDestination(label)) {
+  const trustedScope = matchedCombinationScope(label, params.resolvedDestination, params.destinationCountry);
+  const scopeUnresolved = (params.resolvedDestination && !trustedScope) ||
+    (!trustedScope && resolveDestinationEntity(label).type === "unknown");
+  if (isCountryLevelDestination(label, trustedScope)) {
     logCountryLevelPlacesBlocked(label, "city_required");
     return {
       ok: false,
@@ -3859,11 +3868,15 @@ async function ensureDestinationCombinationsReadyInternal(params: {
       failureReason: "blocked_country",
     };
   }
+  if (scopeUnresolved) {
+    setDiscoveryFailure(label, "unresolved_destination");
+    return {ok:false, combinations:[], source:"failed", failureReason:"unresolved_destination", destinationResolutionFailed:true};
+  }
   const cached = getCachedDiscoveredCombinations(label, undefined, undefined, {
     log: false,
     locale,
   });
-  if (cached?.length) {
+  if (cached && hasDeliverableCombinationCount(cached)) {
     return { ok: true, combinations: cached, source: "cache" };
   }
 
@@ -3948,7 +3961,7 @@ async function ensureDestinationCombinationsReadyInternal(params: {
         ? combo.primaryCandidates
         : combo.placeCandidates.slice(0, PRIMARY_PLACES_PER_COMBO);
       return (
-        primary.length >= 2 && primary.every((place) => isHardGooglePlaceId(place.googlePlaceId))
+        primary.length >= 2 && primary.every((place) => hasDeliverablePlaceIdentity(place.googlePlaceId, place.coordinates?.lat, place.coordinates?.lng))
       );
     });
     if (groundedContracted.length >= MIN_COMBINATIONS) {
@@ -3960,8 +3973,7 @@ async function ensureDestinationCombinationsReadyInternal(params: {
       });
       // Deliver when Repair Gate kept ≥ MIN real-place combos (English fallback OK).
       if (
-        gatedLocal.tripCombinationDeliveryPass ||
-        gatedLocal.combinations.length >= MIN_COMBINATIONS
+        hasDeliverableCombinationCount(gatedLocal.combinations)
       ) {
         const localized = gatedLocal.combinations as StructuredCombinationOption[];
         setCachedDiscoveredCombinations(label, localized);
@@ -3974,7 +3986,7 @@ async function ensureDestinationCombinationsReadyInternal(params: {
   }
 
   const discovered = await discoverDestinationCombinationsInternal(params);
-  if (discovered?.length) {
+  if (discovered && hasDeliverableCombinationCount(discovered)) {
     return {
       ok: true,
       combinations: discovered,
@@ -4027,6 +4039,11 @@ export async function ensureDestinationCombinationsReady(params: Parameters<type
     const result = await ensureDestinationCombinationsReadyInternal({...params, diagnosticTrace:trace,
       searchPlaces: scope.search,
     });
+    if (!result.ok && scope.stats.failFastReason) {
+      result.failureReason = discoveryFailure(scope.stats.failFastReason);
+      result.failureDetail = scope.stats.failFastReason;
+      setDiscoveryFailure(normalizeDestinationLabel(params.destination), result.failureReason, scope.stats.failFastReason);
+    }
     trace.work(scope.stats);
     trace.finish(result.ok,result.failureReason,result.combinations.length);
     return result;

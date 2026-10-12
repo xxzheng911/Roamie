@@ -22,6 +22,7 @@ import {useLiveTripCover} from './src/lib/saved-trip/use-live-cover';
 import {publishTripCover,applyTripCover} from './src/lib/saved-trip/cover-live-state';
 import {coverFieldsFromStored} from './src/lib/saved-trip/display';
 const row=(id,n=0,url='/pixel.svg?default')=>({id,updated_at:'2026-10-01T00:00:0'+n+'.000Z',cover_image:url,custom_cover_image_url:null,cover_image_url:null,is_cover_customized:false,cover_source:'unsplash',cover_query:null,mood:null});
+const coverEvents=[];const originalInfo=console.info;console.info=(tag,data,...rest)=>{if(typeof tag==='string'&&tag.startsWith('[COVER_'))coverEvents.push({tag,data});originalInfo(tag,data,...rest)};
 let decodeDone;HTMLImageElement.prototype.decode=function(){return new Promise(r=>decodeDone=r)};
 function Card({id}){const live=useLiveTripCover(id);const current=applyTripCover(row(id));return <article data-id={id} style={{width:300,height:200}}><span>Trip contents</span><TripCoverImage {...coverFieldsFromStored(current)} resolutionPending={live?.resolution==='pending'&&!current.is_cover_customized}/></article>}
 const root=createRoot(document.getElementById('root'));
@@ -45,14 +46,30 @@ window.run=async()=>{
  publishTripCover(row('B'),'pending');root.render(<Card id='B'/>);await until(()=>document.querySelector('[aria-busy=true]'),'trip B pending');check(!document.querySelector('img'),'trip A image not retained');
  publishTripCover({...row('B'),cover_source:'roamie'},'fallback');await until(()=>document.querySelector('img')?.src.includes('default'),'confirmed fallback');
  publishTripCover({...row('C'),is_cover_customized:true,custom_cover_image_url:'/pixel.svg?custom'},'pending');root.render(<Card id='C'/>);await until(()=>document.querySelector('img')?.src.includes('custom'),'custom takes precedence');
- root.unmount();return {result:'PASS',pendingWithoutDefault:true,decodeBeforeReveal:true,staleIgnored:true,remountReplay:true,tripIsolation:true,confirmedFallback:true,customPriority:true};};`;
+ // Hold an actual onLoad/decode callback while the selected source changes.
+ decodeDone=undefined;root.render(<TripCoverImage displayCoverImage='/pixel.svg-old-version'/>);
+ await until(()=>decodeDone,'old decode pending');const oldDecode=decodeDone;
+ decodeDone=undefined;root.render(<TripCoverImage displayCoverImage='/pixel.svg-new-version'/>);
+ await until(()=>decodeDone,'new decode pending');const newDecode=decodeDone;
+ oldDecode();await tick();
+ check(document.querySelector('img').src.includes('new-version'),'stale load cannot replace new URL');
+ check(document.querySelector('img').className.includes('opacity-0'),'stale decode cannot reveal new image');
+ check(coverEvents.some(e=>e.data?.fallbackReason==='stale_callback'&&e.data?.isCurrentVersion===false),'stale callback observation');
+ newDecode();await until(()=>document.querySelector('img').className.includes('opacity-100'),'current decode reveal');
+ // Real img error from local HTTP fixture (no remote provider).
+ root.render(<TripCoverImage displayCoverImage='/broken-image?binaryfail=1'/>);
+ await until(()=>coverEvents.some(e=>e.tag==='[COVER_IMAGE_LOAD_FAILURE]'),'failure event');
+ await until(()=>document.querySelector('img')?.src.includes('fallback'),'error fallback');
+ for(const tag of ['COVER_SOURCE_SELECTED','COVER_IMAGE_LOAD_START','COVER_IMAGE_LOAD_SUCCESS','COVER_IMAGE_LOAD_FAILURE','COVER_FALLBACK_APPLIED','COVER_ASYNC_UPDATE']) check(coverEvents.some(e=>e.tag==='['+tag+']'),tag);
+ const logs=JSON.stringify(coverEvents);check(!logs.includes('/pixel.svg')&&!logs.includes('binaryfail'),'no paths or queries');
+ root.unmount();return {diagnostics:true,result:'PASS',pendingWithoutDefault:true,decodeBeforeReveal:true,staleIgnored:true,remountReplay:true,tripIsolation:true,confirmedFallback:true,customPriority:true};};`;
 await build({
   stdin: { contents: entry, resolveDir: root, loader: "tsx" },
   bundle: true,
   outfile: path.join(dir, "app.js"),
   format: "iife",
   loader: { ".png": "dataurl", ".jpg": "dataurl" },
-  define: { "import.meta.env": "{}", "process.env.NODE_ENV": '"production"' },
+  define: { "import.meta.env": '{"VITE_VERBOSE_LOG":"1"}', "process.env.NODE_ENV": '"production"' },
   plugins: [
     {
       name: "controlled-network",

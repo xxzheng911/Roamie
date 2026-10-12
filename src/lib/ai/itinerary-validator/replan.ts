@@ -504,6 +504,7 @@ function repairDailyCategoryDiversity(
   telemetryRepairRound = 0,
   partialDays?: readonly number[],
   generationId?: string,
+  plannedDate?: string,
 ): ComposedDayPlan[] {
   const limits = resolveDailyDiversityLimits({ style });
   const beforeViolations = plans.flatMap((plan) => {
@@ -583,10 +584,15 @@ function repairDailyCategoryDiversity(
         plan.entries.filter((entry) => classifyDailyDiversityCategory(entry.place) === family)
           .length > allowedCount
       ) {
-        const offendingIndex = plan.entries.findLastIndex(
-          (entry) =>
-            !isLockedEntry(entry, lock) && classifyDailyDiversityCategory(entry.place) === family,
-        );
+        // Reverse scan instead of findLastIndex: iOS 15.0–15.3 JavaScriptCore lacks it.
+        let offendingIndex = -1;
+        for (let index = plan.entries.length - 1; index >= 0; index -= 1) {
+          const entry = plan.entries[index]!;
+          if (!isLockedEntry(entry, lock) && classifyDailyDiversityCategory(entry.place) === family) {
+            offendingIndex = index;
+            break;
+          }
+        }
         if (offendingIndex < 0) break;
         const offending = plan.entries[offendingIndex]!;
         const withoutOffending = plan.entries.filter((_, index) => index !== offendingIndex);
@@ -1193,6 +1199,7 @@ function applyAutoRepairPass(
     attempt,
     partialDays,
     generationId,
+    plannedDate,
   );
   current = repairCrossDayGeographicCohesion(current, {
     generationId,
@@ -1306,6 +1313,7 @@ function applyAutoRepairPass(
     attempt,
     partialDays,
     generationId,
+    plannedDate,
   );
   current = repairEmptyDays(current, days, partialDays, lock);
   current = repairNightlifeTiming(current, days);

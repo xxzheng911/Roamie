@@ -1,3 +1,6 @@
+import type { Locale } from "@/lib/i18n/types";
+import { translate } from "@/lib/i18n/translate";
+import { itineraryTransportDisplay } from "@/lib/native-qa-display";
 import type { TransitLegAdvice } from "@/lib/transit/types";
 import type { RoutesTravelMode } from "@/lib/routes/types";
 import { ROAMIE_API_FALLBACK } from "@/lib/api/constants";
@@ -196,8 +199,22 @@ function displayTextMatchesTransportMode(
 export function formatLegTravelTimeLabel(
   leg: TransitLegAdvice | undefined,
   transportLabel: string,
-  opts?: { loading?: boolean; unavailable?: boolean },
+  opts?: { loading?: boolean; unavailable?: boolean; locale?: Locale },
 ): string | undefined {
+  if (opts?.locale && opts.locale !== "zh-TW") {
+    const locale = opts.locale;
+    if (opts.loading) return translate(locale, "nativeQa.legLoading");
+    if (isJapanTransitMapsLeg(leg, transportLabel)) return undefined;
+    const minutes = leg && !opts.unavailable ? travelMinutesForMode(leg, transportLabel) : null;
+    if (minutes == null) return translate(locale, "nativeQa.legUnavailable");
+    const label = displayTransportLabelForLeg(leg!, transportLabel);
+    const mode = itineraryTransportDisplay(label, locale);
+    const estimated = leg!.transportFallbackMode || (leg!.fallbackReason && leg!.requestedMode && leg!.resolvedMode && leg!.requestedMode !== leg!.resolvedMode);
+    return (locale === "en" && label === "步行"
+      ? translate(locale, "nativeQa.legWalkDuration", { minutes })
+      : translate(locale, "nativeQa.legDuration", { mode, minutes }))
+      + (estimated ? translate(locale, "nativeQa.legEstimated") : "");
+  }
   if (opts?.loading) return ROAMIE_API_FALLBACK.routesLoading;
   if (isJapanTransitMapsLeg(leg, transportLabel)) return undefined;
   if (!leg) {

@@ -1,3 +1,4 @@
+import { tripTitleDisplay } from "@/lib/trip/title-display";
 import { useI18n } from "@/hooks/use-i18n";
 import { createFileRoute, Link, redirect, useNavigate } from "@tanstack/react-router";
 import { Share2, Trash2, MapPin, Loader2 } from "lucide-react";
@@ -398,7 +399,10 @@ function Trip() {
           <p className="text-xs uppercase tracking-[0.25em] text-muted-foreground">
             {uiT("productionUi.pb589aa86ad")}
           </p>
-          <h1 className="mt-2 font-display text-[26px] leading-snug">{trip.title}</h1>
+          <h1 className="mt-2 font-display text-[26px] leading-snug">{tripTitleDisplay({ title: trip.custom_title || trip.title,
+            custom: isDraft ? undefined : trip.is_title_customized,
+            destination: payload?.destination, days: payload?.days,
+          }, locale)}</h1>
 
           {isV2 && itineraryStops.length > 0 ? (
             <>

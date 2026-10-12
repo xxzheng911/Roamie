@@ -1,3 +1,4 @@
+import { generatedTripCopy } from "@/lib/native-qa-display";
 import { isResolvedDestination } from "@/lib/location/destination-authority";
 import { inGenerationPhase, setGenerationPhase, generationSettlement, generationSettlementResponse, creditSettlementException, captureGenerationException, emitGenerationDiagnostic } from "@/lib/itinerary-diagnostics.server";
 import { integrityRuleCodes, sanitizeIntegrityFailureTelemetry } from "@/lib/analytics/itinerary-integrity-failure-telemetry";
@@ -473,12 +474,9 @@ function buildFallbackTripPayload(
   items: RoamieItineraryItem[],
   selectedPlaces: RoamieRecommendationItem[],
 ): RoamiePayloadV2 {
-  const placeNames = selectedPlaces.map((p) => p.placeName ?? p.name).join("、");
   return {
-    generatedLocale: "zh-TW",
+    ...generatedTripCopy(data.destination, data.days, selectedPlaces.length, data.locale ?? "zh-TW"),
     version: 2,
-    title: `${data.destination} ${data.days} 天`,
-    summary: `依你選的地點排成 ${data.days} 天節奏：${placeNames}`,
     moodTag: data.mood ?? "",
     recommendations: selectedPlaces,
     itinerary: items,

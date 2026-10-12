@@ -81,7 +81,7 @@ export type { PlaceResult } from "@/lib/place-result";
 
 export type RawPlaceHours = PlaceHoursData & {
   id: string;
-  displayName?: { text?: string };
+  displayName?: { text?: string; languageCode?: string };
   formattedAddress?: string;
   shortFormattedAddress?: string;
   vicinity?: string;
@@ -336,6 +336,12 @@ async function postPlaces(
           return { places: [] as RawPlace[], error: "places_search_attempt_timeout" };
         }
         const run = async (signal?: AbortSignal) => {
+          devVerboseInfo("[PLACE_ADDRESS_TRACE]", {
+            stage: "provider_request",
+            languageCode: coerceLocale(typeof body.languageCode === "string" ? body.languageCode : undefined),
+            addressOrigin: "provider",
+            cacheSource: "network",
+          });
           recordPlacesHttpCall(callType, {
             functionName: "postPlaces",
             requestKey: httpKey,
@@ -1081,7 +1087,7 @@ type PlaceDetailsScreenRaw = PlaceDetailsRaw & {
   internationalPhoneNumber?: string;
 };
 
-function mapPlaceDetailsScreenRaw(
+export function mapPlaceDetailsScreenRaw(
   p: PlaceDetailsScreenRaw,
   locale?: Locale,
 ): PlaceDetailsScreenResult {
@@ -1092,6 +1098,7 @@ function mapPlaceDetailsScreenRaw(
     shortFormattedAddress: p.shortFormattedAddress,
     vicinity: p.vicinity,
   };
+  const trustedNames = normalizeGooglePlace(p, { locale });
   const rawName = p.displayName?.text ?? "Unknown";
   const resolvedName = resolvePlaceDisplayName(
     {
@@ -1109,6 +1116,9 @@ function mapPlaceDetailsScreenRaw(
     utcOffsetMinutes: p.utcOffsetMinutes,
     id: p.id,
     name: resolvedName.localizedDisplayName,
+    englishName: trustedNames?.englishName,
+    localizedNames: trustedNames?.localizedNames,
+    sourceLocale: trustedNames?.sourceLocale,
     originalName: resolvedName.originalName,
     localizedDisplayName: resolvedName.localizedDisplayName,
     languageCode: resolvedName.languageCode,

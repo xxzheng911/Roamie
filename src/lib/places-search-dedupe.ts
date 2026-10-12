@@ -88,6 +88,11 @@ export function markPlacesClientFallbackAttempted(key: string): void {
   clientFallbackAttempted.add(key);
 }
 
+/** A local guard skip sent no provider request, so it does not consume the one attempt. */
+export function releasePlacesClientFallbackAttempt(key: string): void {
+  clientFallbackAttempted.delete(key);
+}
+
 function logPlacesApiSkipOnce(
   reason: Parameters<typeof logPlacesApiSkipDuplicate>[0],
   detail: Parameters<typeof logPlacesApiSkipDuplicate>[1],

@@ -77,6 +77,9 @@ export const RoamieItineraryItemSchema = z.object({
   placeType: z.string().optional(),
   notes: z.string().optional(),
   /** Pre-localization / local-script name (search / nav / match only). */
+  englishName: z.string().optional(),
+  localizedNames: z.record(z.string(), z.string().optional()).optional(),
+  sourceLocale: z.string().optional(),
   originalName: z.string().optional(),
   /** Localized display name — sole UI SoT (kept in sync with placeId / coords). */
   localizedDisplayName: z.string().optional(),
@@ -172,6 +175,7 @@ export type RoamieResponse = z.infer<typeof RoamieResponseSchema>;
 export type TripTransportMode = "walk" | "scooter" | "drive" | "transit";
 
 export type TripPlanSettings = {
+  dateProvenance?: import("./resolve-suggested-trip-dates").TripDateProvenance;
   /** Provenance for generated transportTips, separate from editable trip notes. */
   generatedLocale?: import("@/lib/i18n/types").Locale;
   startTime?: string;
@@ -198,7 +202,7 @@ export type TripPlanSettings = {
 
 export type StoredCoreTripSnapshot = {
   id: string;
-  destinationPlace: { name: string; placeId?: string } | null;
+  destinationPlace: { name: string; placeId?: string; country?: string; location?: TripLocation } | null;
   originPlace: { name: string; placeId?: string } | null;
   startDate: string;
   endDate: string;
@@ -269,6 +273,9 @@ export function normalizeItineraryItem(
     googlePlaceId: raw.googlePlaceId,
     placeType: raw.placeType,
     notes: raw.notes,
+    englishName: raw.englishName,
+    localizedNames: raw.localizedNames,
+    sourceLocale: raw.sourceLocale,
     originalName: raw.originalName,
     localizedDisplayName: raw.localizedDisplayName,
     languageCode: raw.languageCode,
@@ -372,6 +379,9 @@ export function normalizeRoamieResponse(raw: Record<string, unknown>): RoamieRes
 
 export function normalizeRecommendationItem(
   raw: Partial<RoamieRecommendationItem> & { name: string } & {
+    englishName?: string;
+    localizedNames?: Partial<Record<string,string>>;
+    sourceLocale?: string;
     localizedDisplayName?: string;
     originalName?: string;
     languageCode?: string;
@@ -379,6 +389,9 @@ export function normalizeRecommendationItem(
   },
   locale: Locale = effectiveAppLocale(),
 ): RoamieRecommendationItem & {
+  englishName?: string;
+  localizedNames?: Partial<Record<string,string>>;
+  sourceLocale?: string;
   localizedDisplayName?: string;
   originalName?: string;
   languageCode?: string;
@@ -424,6 +437,9 @@ export function normalizeRecommendationItem(
     destinationScope: raw.destinationScope,
     extensionDestination: raw.extensionDestination,
     localizedDisplayName: raw.localizedDisplayName ?? localized,
+    englishName: raw.englishName,
+    localizedNames: raw.localizedNames,
+    sourceLocale: raw.sourceLocale,
     originalName: raw.originalName,
     languageCode: raw.languageCode,
     localizationSource: raw.localizationSource,

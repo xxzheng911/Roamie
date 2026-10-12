@@ -4,7 +4,7 @@ import { Heart, Loader2, Plus, Star } from "lucide-react";
 import { PlaceCoverImage } from "@/components/media/PlaceCoverImage";
 import { PlaceImage } from "@/components/media/PlaceImage";
 import { homeNearbyImageUrl } from "@/lib/home-nearby-image";
-import { getExploreCategoryDisplayLabel } from "@/lib/place-category";
+import { placeCategoryDisplay } from "@/lib/native-qa-display";
 import { homeNearbyOpeningBadgeLabel } from "@/lib/home-nearby-display";
 import type { HomeNearbyPick } from "@/lib/explore-category-search";
 import type { HomeNearbyRenderState } from "@/lib/home-nearby-log";
@@ -73,7 +73,7 @@ function buildCardDisplay(
         ? formatDistanceLabel(distanceMeters(anchor, { lat: place.lat, lng: place.lng }))
         : "");
   }
-  const typeName = place.displayCategory ?? getExploreCategoryDisplayLabel(place);
+  const typeName = placeCategoryDisplay(place, locale);
   let rating: string | null = null;
   if (place.rating != null && place.rating > 0) {
     const count =

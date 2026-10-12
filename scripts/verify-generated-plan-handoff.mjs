@@ -1,3 +1,5 @@
+import { prepareTripDateConfirmation, isCurrentTripDateSnapshot } from "../src/lib/ai/trip-date-confirmation.ts";
+import { resolveSuggestedTripDates } from "../src/lib/ai/resolve-suggested-trip-dates.ts";
 import { createExplicitCreateLoading } from "../src/lib/ai/explicit-create-loading.ts";
 import { planCorrelationToken } from "../src/lib/ai/generated-plan-handoff-diagnostic.ts";
 import assert from 'node:assert/strict';
@@ -28,9 +30,11 @@ assert.ok(bridge&&direct&&renderer&&handler);
 function evaluate(text,context){return vm.runInNewContext(ts.transpileModule(`(${text})`,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText,context)}
 let saved=0,navigated=0,replanned=0,fail=false,stale=false;
 const dayPlan={days:2,items:Array.from({length:14},(_,i)=>({day:1+Math.floor(i/7),id:i}))};
-const session={planningSessionId:'fixture',planVersion:2,currentDayPlan:dayPlan,phase:'recommend',tripStartDate:'2026-12-15',tripEndDate:'2026-12-16',recommendedPlaces:[{fixture:true}]};
+const explicitDates=resolveSuggestedTripDates({days:2,userText:'2026/12/15'});
+const session={travelContext:{interests:[],startDate:explicitDates.startDate,endDate:explicitDates.endDate,dateProvenance:explicitDates},planningSessionId:'fixture',planVersion:2,currentDayPlan:dayPlan,phase:'recommend',tripStartDate:'2026-12-15',tripEndDate:'2026-12-16',recommendedPlaces:[{fixture:true}]};
 const messages=[];const loading=[];const errors=[];
 const context={
+ pauseForTripDates:(s,m,c)=>Boolean(prepareTripDateConfirmation(s,c)),
  explicitCreateLoading:createExplicitCreateLoading(()=>{},()=>{}),
  planCorrelationToken,
  logGeneratedPlanHandoff:()=>{},
@@ -103,7 +107,7 @@ const savedStatement=persistenceTry.tryBlock.statements.find(n=>n.getText(ast).s
 const navigationStatement=persistenceTry.tryBlock.statements.find(n=>n.getText(ast).startsWith('const navigation = navigate'));
 const navigationAwait=persistenceTry.tryBlock.statements.find(n=>n.getText(ast)==='await Promise.resolve(navigation);');
 let actualNav=0,actualErrors=0,saveReject=true;
-const persistenceContext={locale:'zh-TW',draftPayload:{dayPlan},cover:{},generationId:'fixture',lifecycleFailureCode:'save_failed',
+const persistenceContext={isCurrentTripDateSnapshot,sessionRef:{current:session},locale:'zh-TW',draftPayload:{dayPlan},cover:{},generationId:'fixture',lifecycleFailureCode:'save_failed',
  confirmSaveTrip:async(payload,source,options)=>{assert.equal(payload.dayPlan,dayPlan);assert.equal(options.generationId,'fixture');if(saveReject)throw Error('fixture save failure');return {id:'saved-fixture'}},
  navigate:()=>{actualNav++},tripDetailNavigateOptions:id=>({id}),
  logTripLifecycle:()=>{},abandonPendingCover:null,logSelectionStage:()=>{},selectionGenerateStage:'save',

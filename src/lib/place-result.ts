@@ -58,6 +58,10 @@ export type PlaceResult = {
   sourceRegionCandidate?: string;
   /** Pre-localization / local-script name */
   originalName?: string | null;
+  /** Names supplied by the same provider identity, not inferred translations. */
+  englishName?: string | null;
+  localizedNames?: Partial<Record<string, string>>;
+  sourceLocale?: string | null;
   /** App-locale display name (UI should prefer this) */
   localizedDisplayName?: string | null;
   languageCode?: string | null;

@@ -16,4 +16,9 @@ try {
 console.log('PASS discovery/cache/guards/429/timeout/insufficiency/mismatch/redaction, same result/error, no extra requests, final emitted once.');
 
 assert.equal(discoveryFailure('combination_candidates_insufficient'),'insufficient_combinations');
-assert.equal(discoveryFailure('place_discovery_failed'),'insufficient_candidates');
+assert.equal(discoveryFailure('place_discovery_failed'),'provider_error');
+
+// Provider failures are not successful empty results; retain distinct diagnostic outcomes.
+assert.equal(discoveryFailure("empty_candidates"), "empty_candidates");
+assert.equal(discoveryFailure("filtered_candidates"), "filtered_candidates");
+assert.equal(discoveryFailure("blocked_country"), "blocked_country");

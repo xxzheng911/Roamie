@@ -1,7 +1,7 @@
 /**
  * Combination Localization Repair Gate —
  * zh-TW prefers 繁中; readable English fallback is deliverable (partial).
- * Foreign scripts (Thai / Greek / Kana / Hangul / Myanmar) must not be delivered.
+ * Original scripts remain deliverable fallbacks, never claimed as translated.
  *
  * Run: npx vite-node --config scripts/vite.verify.config.mjs scripts/verify-combination-localization.mjs
  */
@@ -75,7 +75,7 @@ assert.equal(brandResolved.localizationSource, "brand_exception");
 assertZh(brandResolved.localizedDisplayName, "brand");
 console.log(`OK brand: ${brandResolved.localizedDisplayName}`);
 
-// --- Repair Gate: keep English fallback; drop Thai; keep 繁中 + brand ---
+// --- Repair Gate: keep English/original fallback; prefer verified 繁中 + brand ---
 clearLocalizedPlaceNameCache();
 const gated = applyCombinationLocalizationGate(
   [
@@ -146,8 +146,8 @@ const allNames = gated.combinations.flatMap((c) =>
   c.placeCandidates.map((p) => p.effectiveDisplayName || p.localizedDisplayName),
 );
 assert.ok(
-  !allNames.some((n) => HAS_THAI_RE.test(n || "")),
-  "Thai script must not be delivered",
+  allNames.some((n) => HAS_THAI_RE.test(n || "")),
+  "original name must survive missing translation",
 );
 assert.ok(
   allNames.some((n) => /Cabanas|Hin Lat|Samui View/i.test(n || "")),
@@ -165,10 +165,10 @@ assert.ok(
 for (const combo of gated.combinations) {
   for (const p of combo.placeCandidates) {
     const name = p.effectiveDisplayName || p.localizedDisplayName || "";
-    assert.ok(!HAS_THAI_RE.test(name), `${combo.title}: Thai leaked`);
+    if (HAS_THAI_RE.test(name)) assert.equal(p.localizationStatus, "fallback", "original is not a verified translation");
     assert.ok(name.trim().length >= 2, `${combo.title}: empty name`);
     assert.ok(
-      HAS_CJK_RE.test(name) || p.brandNameException === true || p.localizationStatus === "partial",
+      HAS_CJK_RE.test(name) || p.brandNameException === true || ["partial", "fallback"].includes(p.localizationStatus),
       `${name} must be App-locale text, explicit brand exception, or marked partial fallback`,
     );
   }
@@ -205,7 +205,7 @@ assert.ok(!isMechanicalCombinationTitle(derived), derived);
 assert.ok(HAS_CJK_RE.test(derived), derived);
 console.log(`OK theme derive: 推薦景點組合 3 → ${derived}`);
 
-// Foreign scripts never complete for zh-TW; undeliverable without English.
+// Original scripts never complete for zh-TW; retain explicit fallback without English.
 for (const foreign of ["Ακρόπολη", "東京タワー", "남산타워", "ရွှေ့ဂူကြီး"]) {
   clearLocalizedPlaceNameCache();
   const r = resolvePlaceDisplayName(foreign, "zh-TW");
@@ -213,7 +213,8 @@ for (const foreign of ["Ακρόπολη", "東京タワー", "남산타워", "�
     const c = isCompleteLocalizationForLocale(r, "zh-TW");
     assert.equal(c.ok, false, foreign);
     const d = isDeliverablePlaceNameForLocale(r, "zh-TW");
-    assert.equal(d.ok, false, `${foreign} must not be deliverable without English`);
+    assert.equal(d.ok, true, `${foreign} remains displayable without a fabricated translation`);
+    assert.equal(d.status, "fallback");
   }
 }
 

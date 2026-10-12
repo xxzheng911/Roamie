@@ -96,6 +96,7 @@ export type DestinationAnchorType =
  * Coordinates are optional until resolution succeeds.
  */
 export type DestinationOptionMetadata = {
+  destinationDisplay?: import("./destination-display-metadata").DestinationDisplayMetadata;
   id: string;
   displayName: string;
   normalizedName: string;
@@ -184,7 +185,7 @@ export {
 function mapDestinationType(
   entityType?: DestinationEntityType | null,
 ): DestinationAnchorType | undefined {
-  if (!entityType) return undefined;
+  if (!entityType || entityType === "unknown") return undefined;
   if (entityType === "resort_area") return "tourist_area";
   return entityType as DestinationAnchorType;
 }
@@ -369,17 +370,17 @@ export function buildDestinationOptionMetadata(params: {
 }
 
 export function buildDestinationOptionsFromCityList(
-  options: Array<{ name: string; type?: string; country?: string }>,
+  options: Array<{ name: string; type?: string; country?: string } & Partial<import("./destination-localization").LocalizationCandidate>>,
   country: string,
 ): DestinationOptionMetadata[] {
   return options
     .map((opt, index) =>
-      buildDestinationOptionMetadata({
+      ({ ...buildDestinationOptionMetadata({
         name: opt.name,
         country: opt.country || country,
         entityType: (opt.type as DestinationEntityType | undefined) ?? undefined,
         id: `opt:${index + 1}:${normalizeDestinationLabel(opt.name)}`,
-      }),
+      }), destinationDisplay: {name:opt.name,country:opt.country || country,type:opt.type || "city",originalName:opt.originalName,englishName:opt.englishName,localizedNames:opt.localizedNames,sourceLocale:opt.sourceLocale,localizationIdentity:opt.localizationIdentity} }),
     )
     .filter((o) => Boolean(o.normalizedName));
 }
@@ -539,6 +540,8 @@ export type ResolveDestinationAnchorParams = {
   destination: string;
   locale?: Locale;
   countryHint?: string | null;
+  /** Verified scope classification supplied by the discovery authority. */
+  entityType?: import("./destination-entity").DestinationEntityType;
   /** Travel Context / session already-saved coordinates */
   contextCoordinates?: { lat: number; lng: number } | null;
   /** Places Autocomplete / Place Details geometry */
@@ -660,6 +663,7 @@ async function resolveDestinationAnchorImpl(
     alias.countryCode ??
     countryCodeForCountryName(countryHint);
   const entityType =
+    params.entityType ??
     matchedOption?.entityType ??
     alias.entityType ??
     resolveDestinationEntity(normalized).type;

@@ -42,6 +42,30 @@ export function isClientReleaseArtifact(path) {
   return path.includes("/dist/client/") || path.includes("/ios/App/App/public/");
 }
 
+// Vite inlines import.meta.env into client chunks; a release must not ship either flag on.
+const debugDiagnosticsPattern = /\bVITE_(DEBUG_DIAGNOSTICS|VERBOSE_LOG)["']?\s*:\s*["']1["']/;
+
+/** Scans the built client artifact itself, not the environment that produced it. */
+export function collectDebugDiagnosticsFailures(path, text) {
+  if (!isClientReleaseArtifact(path) || !path.endsWith(".js")) return [];
+  const match = text.match(debugDiagnosticsPattern);
+  return match ? [`${path}: debug diagnostics enabled (VITE_${match[1]}=1)`] : [];
+}
+
+/**
+ * Only an explicitly requested debug `npm run build` may keep diagnostics, and only for
+ * the dist/client it just produced. Every release gate (standalone verifier, ios:release,
+ * Worker upload) runs strict over dist/client and the synced iOS bundle.
+ */
+export function debugDiagnosticsPolicy(env = process.env) {
+  const developmentBuild = ["postbuild", "cap:sync"].includes(env.npm_lifecycle_event ?? "");
+  if (!developmentBuild) return { allow: false, scanIos: true };
+  return {
+    allow: env.VITE_DEBUG_DIAGNOSTICS === "1" || env.VITE_VERBOSE_LOG === "1",
+    scanIos: false,
+  };
+}
+
 export function textHasRetiredUnsplashAccessKey(text) {
   const fingerprints = new Set(RETIRED_UNSPLASH_ACCESS_KEY_SHA256);
   const runs = text.match(/[A-Za-z0-9_-]{43,}/g) ?? [];
@@ -71,8 +95,12 @@ export function collectUnsplashLeakFailures(path, text) {
   return failures;
 }
 
-export function verifyReleaseArtifacts(root, { requireReceipt = true } = {}) {
+export function verifyReleaseArtifacts(
+  root,
+  { requireReceipt = true, debugDiagnostics = debugDiagnosticsPolicy() } = {},
+) {
   const failures = [];
+  let debugArtifactSeen = false;
 
   function scanJwtRoles(path, text) {
     const jwtPattern = /\beyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b/g;
@@ -108,6 +136,14 @@ export function verifyReleaseArtifacts(root, { requireReceipt = true } = {}) {
     }
     const clientArtifact = isClientReleaseArtifact(path);
     if (clientArtifact) scanJwtRoles(path, text);
+    const debugFailures = collectDebugDiagnosticsFailures(path, text);
+    if (debugFailures.length && path.includes("/ios/App/App/public/") && !debugDiagnostics.scanIos) {
+      // A previously synced iOS copy is not this build's artifact; release gates scan it.
+    } else if (debugFailures.length && debugDiagnostics.allow) {
+      debugArtifactSeen = true;
+    } else {
+      failures.push(...debugFailures);
+    }
     failures.push(...collectUnsplashLeakFailures(path, text));
     for (const pattern of clientArtifact
       ? [...secretValuePatterns, ...clientSecretNamePatterns]
@@ -122,6 +158,10 @@ export function verifyReleaseArtifacts(root, { requireReceipt = true } = {}) {
     if (existsSync(path)) scan(path);
   }
   if (failures.length) throw new Error("Secret/leakage scan failed: " + failures.join("\n"));
+  if (debugArtifactSeen)
+    console.warn(
+      "[release-artifacts] WARNING: debug diagnostics build — development only, NOT releasable",
+    );
   const receipt = {
     schemaVersion: 1,
     buildMode: "production-bundled",

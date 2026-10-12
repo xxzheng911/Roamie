@@ -1,3 +1,4 @@
+import { isResolvedDestination } from "@/lib/location/destination-authority";
 /**
  * ResolvedTripDestination — single source of truth for planning destination.
  *
@@ -103,6 +104,13 @@ export function resolvePlanningDestination(
   const label = pickLabel(bag);
   if (!label) return null;
 
+  // A newly selected label must not inherit the previous destination's geometry.
+  const trip = bag.tripDestination;
+  const tripMatches = isResolvedDestination(trip) &&
+    [trip.city, trip.region, trip.displayLabel, trip.formattedName].some(value =>
+      value && normalizeDestinationLabel(value) === label) &&
+    (!bag.destinationCountry || countryCodeForCountryName(bag.destinationCountry) === countryCodeForCountryName(trip.country));
+  if (!tripMatches) bag.tripDestination = undefined;
   const entity = resolveDestinationEntity(label);
   const scopeFields = resolveDestinationScopeFields(
     label,
@@ -110,12 +118,14 @@ export function resolvePlanningDestination(
   );
   const locked = getResolvedDestinationScope(label);
 
-  const type = (scopeFields.destinationType ||
+  const type = ((tripMatches ? (trip!.city ? "city" : trip!.region ? "region" : undefined) : undefined) ||
+    scopeFields.destinationType ||
     bag.destinationType ||
     entity.type ||
     "unknown") as DestinationEntityType | "unknown";
 
   const country =
+    (tripMatches ? trip!.country : undefined) ??
     locked?.country ??
     scopeFields.destinationCountry ??
     bag.destinationCountry ??
@@ -123,11 +133,13 @@ export function resolvePlanningDestination(
     (type === "city_state" || type === "country" ? label : undefined);
 
   const city =
+    (tripMatches ? trip!.city : undefined) ??
     scopeFields.destinationCity ??
     bag.destinationCity ??
     (type === "city" || type === "city_state" ? label : undefined);
 
   const countryCode =
+    (tripMatches ? countryCodeForCountryName(trip!.country) : undefined) ??
     locked?.countryCode ??
     bag.destinationCountryCode?.trim()?.toUpperCase() ??
     countryCodeForCountryName(country) ??
@@ -157,8 +169,8 @@ export function resolvePlanningDestination(
   const fromApprox =
     approx && isValidCoordinate(approx.lat, approx.lng) ? approx : null;
 
-  const coords = fromLocked ?? fromBag ?? fromTrip ?? fromApprox;
-  const source = fromLocked
+  const coords = tripMatches ? fromTrip : fromLocked ?? fromBag ?? fromApprox;
+  const source = tripMatches ? "trip_destination" : fromLocked
     ? `destination_scope_lock:${locked!.source}`
     : fromBag
       ? "context_coordinates"

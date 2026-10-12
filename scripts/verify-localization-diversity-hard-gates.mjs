@@ -37,7 +37,7 @@ const comboGate = applyCombinationLocalizationGate([{
     { name: "吉隆坡飛禽公園", originalName: "吉隆坡飛禽公園", types: ["bird_park"] },
   ],
 }], { locale: "zh-TW", minCombinations: 1, minPlacesPerCombo: 2 });
-assert.equal(comboGate.combinations.length, 0, "English fallbacks cannot be delivered in zh-TW");
+assert.equal(comboGate.combinations.length, 1, "Missing translation preserves eligible original names; category gates still apply");
 
 for (const [id, name, type] of [
   ["lawn", "Freedom Lawn Area KL", "park"],

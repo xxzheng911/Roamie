@@ -276,6 +276,7 @@ try {
     ["node", "scripts/production-build.mjs", "--maps-client=ios"],
     ["node", "scripts/capacitor-prepare.mjs"],
     ["node", "scripts/cap-sync-ios.mjs", "bundled"],
+    ["node", "scripts/verify-release-artifacts.mjs"],
     ["node", "scripts/verify-google-client-bundle.mjs", "--artifact", "ios/App/App/public"],
     ["node", "scripts/ensure-ios-bundled-config.mjs"],
     ["node", "scripts/verify-ios-prereqs.mjs"],
