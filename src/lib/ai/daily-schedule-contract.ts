@@ -4,7 +4,11 @@
  * without a meal/rest stop. Pure — never fetches, adds or removes places.
  */
 import type { PlaceResult } from "@/lib/place-result";
-import { classifyDailyDiversityCategory } from "@/lib/ai/daily-category-diversity";
+import {
+  classifyDailyDiversityCategory,
+  blockingDailyDiversityExcess,
+  type DailyDiversityAuthority,
+} from "@/lib/ai/daily-category-diversity";
 import { isClearlyClosedAtSlot } from "@/lib/ai/itinerary-validator/place-checks";
 import { isOpenAtScheduled } from "@/lib/filter-available-places";
 
@@ -573,6 +577,7 @@ export function repairDailyScheduleAcrossDays<
   plans: readonly P[],
   options: {
     intent?: DailyScheduleIntent;
+    diversity?: DailyDiversityAuthority;
     distanceM: (a: PlaceResult, b: PlaceResult) => number;
     maxMoveM: number;
     slotPool?: readonly string[];
@@ -714,6 +719,24 @@ export function repairDailyScheduleAcrossDays<
                   missingDailyMealWindows(candidate[from]!.entries, intent).some(
                     (w) => !priorMissing.includes(w),
                   )
+                )
+                  continue;
+                // A meal repair may not introduce or worsen a delivery-blocking family
+                // on either day. Required-only overflow uses the Validator's exception.
+                if (
+                  [from, to].some((i) => {
+                    const before = blockingDailyDiversityExcess(
+                      current[i]!.entries,
+                      options.diversity,
+                    );
+                    const after = blockingDailyDiversityExcess(
+                      candidate[i]!.entries,
+                      options.diversity,
+                    );
+                    return Object.entries(after).some(
+                      ([family, excess]) => excess > (before[family] ?? 0),
+                    );
+                  })
                 )
                   continue;
                 const score = dailyScheduleSeverity(candidate, intent);

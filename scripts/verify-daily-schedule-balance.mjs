@@ -503,6 +503,69 @@ await test("P1 evidence gap: marker and visitable heritage are currently indisti
   assert.deepEqual(evaluateTourismQuality(common),{ok:true});
   assert.deepEqual(evaluateTourismQuality({...common,id:"heritage2"}),{ok:true});
 });
+const { diversitySixDayPlans } = await import("./fixtures/daily-balance-production.mjs");
+await test("D1-D3/D8-D10/D13 six-day exchange never adds a blocking family", () => {
+  const plans = diversitySixDayPlans();
+  const base = {...validatorBase, requestedDays:6, validationStage:"final"};
+  const hard = ps => validateItineraryPlan({plans:ps,...base}).failedRules.filter(r=>r.code==="daily_category_diversity");
+  assert.equal(plans.length,6);assert.equal(plans.flatMap(p=>p.entries).length,28);
+  assert.deepEqual(hard(plans),[]);
+  const fixed = e => e.place.id.startsWith("div");
+  const repaired=contract.repairDailyScheduleAcrossDays(plans,{...repairOpts,
+    distanceM:(_a,b)=>b.primaryType==="park"||b.types?.includes("restaurant")?100:10000,
+    isDayFixed:fixed,
+  });
+  assert.deepEqual(hard(repaired),[],"meal exchange must reject park_family:2>1");
+  assert.deepEqual(repaired.map(p=>p.entries.map(e=>e.place.id).sort()),plans.map(p=>p.entries.map(e=>e.place.id).sort()),"no legal exchange: keep each day's identities");
+  const invalid=structuredClone(plans);invalid[0].entries[3].place={...invalid[0].entries[3].place,name:"Synthetic park",primaryType:"park",types:["park"]};
+  assert.ok(hard(invalid).some(r=>r.message.includes("park_family:2>1")));
+});
+const {blockingDailyDiversityExcess}=await import("../src/lib/ai/daily-category-diversity.ts");
+await test("D6 Required-only warning and mixed blocking use the same authority",()=>{
+  const entries=diversitySixDayPlans()[0].entries;
+  entries[3].place={...entries[3].place,name:"Synthetic park",primaryType:"park",types:["park"]};
+  const required=entries.filter(e=>e.place.primaryType==="park").map(e=>e.place.googlePlaceId);
+  const authority={...validatorBase,lockedPlaceIds:required};
+  assert.deepEqual(blockingDailyDiversityExcess(entries,authority),{});
+  const v=validateItineraryPlan({plans:[{day:1,entries}],...authority,requestedDays:1,validationStage:"final"});
+  assert.ok(v.warnings.some(r=>r.code==="daily_category_diversity"));
+  assert.ok(!v.failedRules.some(r=>r.code==="daily_category_diversity"));
+  const mixed=[...entries,{...entries[0],place:{...entries[0].place,id:"extra-park",googlePlaceId:"ChIJextraPark",name:"Extra park"}}];
+  assert.equal(blockingDailyDiversityExcess(mixed,authority).park_family,2);
+});
+await test("D7 style/userText cafe exception matches final Validator",()=>{
+  const entries=diversitySixDayPlans()[0].entries;
+  for(const i of [0,3])entries[i].place={...entries[i].place,name:`Synthetic cafe ${i}`,primaryType:"cafe",types:["cafe","food"]};
+  for(const userText of ["","咖啡巡"]){
+    const authority={...validatorBase,userText,style:"mixed"};
+    const excess=blockingDailyDiversityExcess(entries,authority);
+    const v=validateItineraryPlan({plans:[{day:1,entries}],...authority,requestedDays:1,validationStage:"final"});
+    assert.equal(Boolean(excess.cafe),!userText);
+    assert.equal(v.failedRules.some(r=>r.code==="daily_category_diversity"),!userText);
+  }
+});
+await test("D11/D12 six-day replan and final delivery never gain a hard family",()=>{
+  const plans=diversitySixDayPlans();const input={...validatorBase,requestedDays:6};
+  const initial=validateItineraryPlan({plans,...input});
+  const r=replanUntilItineraryValid({plans,pool:plans.flatMap(p=>p.entries.map(e=>e.place)),days:6,style:"mixed",validatorInput:input},initial);
+  assert.ok(r.attempts>0);
+  const final=validateItineraryPlan({plans:r.plans,...input,validationStage:"final"});
+  assert.ok(!final.failedRules.some(r=>r.code==="daily_category_diversity"));
+});
+await test("D6/D7 exchange retains Required-only and explicit cafe-tour exceptions",()=>{
+  for(const mode of ["required","cafe"]){
+    const plans=diversitySixDayPlans();
+    const parks=plans.slice(0,2).flatMap(p=>p.entries).filter(e=>e.place.primaryType==="park");
+    if(mode==="cafe")for(const entry of parks)entry.place={...entry.place,name:"Synthetic cafe",primaryType:"cafe",types:["cafe"]};
+    const authority=mode==="required"?{lockedPlaceIds:parks.map(e=>e.place.googlePlaceId)}:{style:"mixed",userText:"咖啡巡"};
+    const options={...repairOpts,diversity:authority,isDayFixed:e=>e.place.id.startsWith("div"),
+      distanceM:(_a,b)=>["park","cafe"].includes(b.primaryType)||b.types?.includes("restaurant")?100:10000};
+    const repaired=contract.repairDailyScheduleAcrossDays(plans,options);
+    assert.notDeepEqual(repaired[0].entries.map(e=>e.place.id).sort(),plans[0].entries.map(e=>e.place.id).sort(),`${mode}: legal meal exchange remains active`);
+    assert.ok(violations(repaired).length<violations(plans).length);
+    assert.ok(repaired.every(p=>Object.keys(blockingDailyDiversityExcess(p.entries,authority)).length===0));
+  }
+});
 let failed = 0;
 for (const [name, status] of results) {
   if (status !== "PASS") failed += 1;

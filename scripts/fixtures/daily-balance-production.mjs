@@ -96,3 +96,27 @@ export const asPlans = (days) =>
     day,
     entries: places.map((p) => ({ time: p.time, label: "景點", name: p.name, place: p })),
   }));
+
+// Synthetic six-day/28-stop regression: not a claim about an identifiable user's trip.
+export function diversitySixDayPlans() {
+  const plans = asPlans(structuredClone(productionA));
+  for (const [day, index] of [[0, 0], [1, 0]]) {
+    plans[day].entries[index].place = { ...plans[day].entries[index].place,
+      name: `Synthetic park ${day}`, primaryType: "park", types: ["park", "point_of_interest"] };
+  }
+  plans[1].entries[3].place = { ...plans[1].entries[3].place, name: "Synthetic attraction",
+    primaryType: "tourist_attraction", types: ["tourist_attraction"] };
+  plans[1].entries[0].time = "12:30";
+  plans[1].entries[2].time = "09:30";
+  for (let day = 3; day <= 6; day++) {
+    const types = day < 5
+      ? ["park", "restaurant", "tourist_attraction", "bar", "restaurant"]
+      : ["park", "restaurant", "tourist_attraction", "restaurant"];
+    plans.push({ day, entries: types.map((type, i) => {
+      const p = stop(`div${day}x${i}`, `Synthetic ${day}/${i}`, type,
+        ["09:30", "12:00", "14:00", "18:00", "20:00"][i]);
+      return { time: p.time, label: "景點", name: p.name, place: p };
+    }) });
+  }
+  return plans;
+}

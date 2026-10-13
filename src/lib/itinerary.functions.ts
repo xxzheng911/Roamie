@@ -1245,6 +1245,12 @@ export const generateItinerary = createServerFn({ method: "POST" })
           // re-anchor still-violating days.
           composedPlans = repairDailyScheduleAcrossDays(composedPlans, {
             ...scheduleOptions,
+            diversity: {
+              style: resolvePlannerStyleKey(data.style),
+              userText: [data.interests, data.conversationSummary].filter(Boolean).join("\n"),
+              lockedPlaceIds: requiredSelectedPlaces.map(place => place.googlePlaceId?.trim()).filter((id): id is string => Boolean(id)),
+              lockedPlaceNames: requiredSelectedPlaces.map(place => place.placeName ?? place.name),
+            },
             distanceM: placeDistanceM,
             maxMoveM: PLANNER_DAY_ANCHOR_RADIUS_M,
           });

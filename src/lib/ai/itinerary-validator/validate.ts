@@ -54,6 +54,8 @@ import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import type { PlaceResult } from "@/lib/place-result";
 import {
   classifyDailyDiversityCategory,
+  requiredDailyDiversityEntry,
+  dailyDiversityViolationProvenance,
   summarizeDailyCategoryDiversity,
 } from "@/lib/ai/daily-category-diversity";
 import { resolveNightlifeClassification } from "@/lib/ai/nightlife-classification";
@@ -581,20 +583,7 @@ function runRules(input: ItineraryValidatorInput): {
         validatorRound: input.telemetryValidatorRound,
       },
     );
-    const lockedCanonicalIds = new Set(
-      [...lockedIds]
-        .map((id) => resolveCanonicalPlaceIdentity({ id }).identityKey)
-        .filter(Boolean),
-    );
-    const lockedNames = new Set((input.lockedPlaceNames ?? []).map(normalizeName).filter(Boolean));
-    const requiredEntries = plan.entries.filter((entry) => {
-      const identity = resolveCanonicalPlaceIdentity(entry.place).identityKey;
-      const name = normalizeName(entry.name || entry.place.name || "");
-      return Boolean(
-        (identity && lockedCanonicalIds.has(identity)) ||
-          (name && lockedNames.has(name)),
-      );
-    });
+    const requiredEntries = plan.entries.filter(entry => requiredDailyDiversityEntry(entry, input));
     const requiredFamilyCounts: Record<string, number> = {};
     for (const entry of requiredEntries) {
       const family = classifyDailyDiversityCategory(entry.place);
@@ -608,11 +597,7 @@ function runRules(input: ItineraryValidatorInput): {
       const familyLimit = Number(match[3]);
       const requiredFamilyCount = requiredFamilyCounts[family] ?? 0;
       const supplementalFamilyCount = Math.max(0, totalFamilyCount - requiredFamilyCount);
-      const provenance = requiredFamilyCount > familyLimit
-        ? supplementalFamilyCount > 0
-          ? "mixed"
-          : "required_only"
-        : "supplemental_caused";
+      const provenance = dailyDiversityViolationProvenance(totalFamilyCount, requiredFamilyCount, familyLimit);
       return [{
         family,
         requiredFamilyCount,

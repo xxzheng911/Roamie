@@ -1192,6 +1192,7 @@ function applyAutoRepairPass(
   partialDays?: readonly number[],
   failedDays?: readonly number[],
   scheduleIntent?: DailyScheduleIntent,
+  diversityAuthority?: Omit<ItineraryValidatorInput, "plans">,
 ): ComposedDayPlan[] {
   const reasonSet = new Set(reasons);
   let current = normalizeCompleteDayMap(
@@ -1366,6 +1367,7 @@ function applyAutoRepairPass(
     // Shared schedule contract: move/re-anchor meals; never drops a (locked) stop.
     current = repairDailyScheduleAcrossDays<DayPlanEntry, ComposedDayPlan>(current, {
       intent: scheduleIntent,
+      diversity: diversityAuthority,
       distanceM: placeDistanceM,
       maxMoveM: PLANNER_DAY_ANCHOR_RADIUS_M,
       slotPool: SCHEDULED_DAY_TIME_SLOTS,
@@ -1707,6 +1709,7 @@ export function replanUntilItineraryValid(
       params.validatorInput.partialDays,
       failedDays,
       resolveDailyScheduleIntent(params.validatorInput.userText),
+      params.validatorInput,
     );
 
     const coverageGate = evaluateDayCoverageGate({

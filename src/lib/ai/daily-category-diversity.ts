@@ -2,6 +2,7 @@
  * Daily Category Diversity — prevent stacking same low-value types on one day.
  * Destination-agnostic; used by Planner day assembly + validator delivery gate.
  */
+import { resolveCanonicalPlaceIdentity } from "@/lib/place-canonical-identity";
 import type { PlaceResult } from "@/lib/place-result";
 import { isTourismLandmarkException } from "@/lib/ai/tourism-quality-gate";
 import type { TripStyleKey } from "@/lib/ai/ai-trip-style";
@@ -61,9 +62,7 @@ const TELEMETRY_FAMILY_ORDER: DailyDiversityCategory[] = [
   "other",
 ];
 
-export function dailyDiversityFamilyCounts(
-  places: readonly PlaceResult[],
-): Record<string, number> {
+export function dailyDiversityFamilyCounts(places: readonly PlaceResult[]): Record<string, number> {
   const counts: Record<string, number> = {};
   for (const family of TELEMETRY_FAMILY_ORDER) counts[family] = 0;
   for (const place of places) {
@@ -73,9 +72,7 @@ export function dailyDiversityFamilyCounts(
   return counts;
 }
 
-export function formatDailyDiversityFamilySummary(
-  places: readonly PlaceResult[],
-): string {
+export function formatDailyDiversityFamilySummary(places: readonly PlaceResult[]): string {
   const counts = dailyDiversityFamilyCounts(places);
   return TELEMETRY_FAMILY_ORDER.map((family) => `${family}=${counts[family] ?? 0}`).join(",");
 }
@@ -108,9 +105,7 @@ function resolveCategoryLimit(
 export function validateDailyDiversityLimitContract(
   limits: DailyDiversityLimits = DEFAULT_LIMITS,
 ): { valid: boolean; invalidCategories: DailyDiversityCategory[] } {
-  const explicitlyUnlimited = new Set<DailyDiversityCategory>(
-    UNLIMITED_DAILY_DIVERSITY_CATEGORIES,
-  );
+  const explicitlyUnlimited = new Set<DailyDiversityCategory>(UNLIMITED_DAILY_DIVERSITY_CATEGORIES);
   const invalidCategories = TELEMETRY_FAMILY_ORDER.filter((category) => {
     if (explicitlyUnlimited.has(category)) return false;
     const limit = resolveCategoryLimit(category, limits);
@@ -233,11 +228,7 @@ export function diversityCategoryFromFamily(
     return "cafe";
   }
 
-  if (
-    types.has("night_club") ||
-    types.has("bar") ||
-    /酒吧|bar|夜店|nightlife|클럽/i.test(blob)
-  ) {
+  if (types.has("night_club") || types.has("bar") || /酒吧|bar|夜店|nightlife|클럽/i.test(blob)) {
     return "nightlife";
   }
 
@@ -337,6 +328,59 @@ export function applyDailyCategoryDiversity(
     dropped,
     conflictCategories: [...conflictCategories],
   };
+}
+
+/** Shared delivery authority for required-only overflow and meal-exchange admission. */
+export type DailyDiversityAuthority = {
+  style?: TripStyleKey;
+  userText?: string;
+  lockedPlaceIds?: readonly string[];
+  lockedPlaceNames?: readonly string[];
+};
+
+export function requiredDailyDiversityEntry(
+  entry: { place: PlaceResult; name?: string },
+  authority: DailyDiversityAuthority,
+): boolean {
+  const identity = resolveCanonicalPlaceIdentity(entry.place).identityKey;
+  const normalize = (name: string) => name.trim().toLowerCase().replace(/\s+/g, " ");
+  const name = normalize(entry.name || entry.place.name || "");
+  return Boolean(
+    (identity &&
+      authority.lockedPlaceIds?.some(
+        (id) => resolveCanonicalPlaceIdentity({ id }).identityKey === identity,
+      )) ||
+    (name && authority.lockedPlaceNames?.some((value) => normalize(value) === name)),
+  );
+}
+
+export function dailyDiversityViolationProvenance(total: number, required: number, limit: number) {
+  return required > limit ? (total > required ? "mixed" : "required_only") : "supplemental_caused";
+}
+
+/** Silent candidate check: the final Validator remains the delivery/logging authority. */
+export function blockingDailyDiversityExcess(
+  entries: readonly { place: PlaceResult; name?: string }[],
+  authority: DailyDiversityAuthority = {},
+): Record<string, number> {
+  const limits = resolveDailyDiversityLimits(authority);
+  const counts = dailyDiversityFamilyCounts(entries.map((entry) => entry.place));
+  const required = dailyDiversityFamilyCounts(
+    entries
+      .filter((entry) => requiredDailyDiversityEntry(entry, authority))
+      .map((entry) => entry.place),
+  );
+  const excess: Record<string, number> = {};
+  for (const [family, count] of Object.entries(counts)) {
+    const limit = resolveCategoryLimit(family as DailyDiversityCategory, limits);
+    if (
+      count > limit &&
+      dailyDiversityViolationProvenance(count, required[family] ?? 0, limit) !== "required_only"
+    ) {
+      excess[family] = count - limit;
+    }
+  }
+  return excess;
 }
 
 /** Delivery-gate summary for one day (hard when violations present). */

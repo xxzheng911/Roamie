@@ -43,7 +43,7 @@ const item = (date, time, p, title = p.n) => ({
   address: "東京都", googlePlaceId: p.gid, placeType: p.t, types: p.types ?? [p.t], notes: "",
 });
 const toRec = (p, combo) => ({
-  name: p.n, placeName: p.n, type: p.t, types: p.types ?? [p.t], primaryType: p.t, description: p.n, reason: "",
+  name: p.n, placeName: p.n, type: p.t, types: p.types ?? [p.t], primaryType: p.t, ...(p.required === false ? {isRequiredBySelection:false} : {}), description: p.n, reason: "",
   estimatedTime: "1 小時", address: "東京都", lat: p.lat, lng: p.lng, googleMapsUrl: "", reasonSource: "template",
   googlePlaceId: p.gid, photoName: null, rating: 4.5, userRatingCount: 1200, businessStatus: "OPERATIONAL",
   ...(combo ? { matchedSelectedCombinationIds: [1], sourceCombinationId: 1 } : {}),
@@ -66,8 +66,9 @@ async function run({ days, places, endDate, it = [], interests = "", selected = 
     return r;
   });
   const logs = [];
+  const events = [];
   const original = { info: console.info, log: console.log, warn: console.warn };
-  const sink = (...args) => logs.push(args.map((a) => (typeof a === "string" ? a : "")).join(" "));
+  const sink = (...args) => { events.push(args); logs.push(args.map((a) => (typeof a === "string" ? a : "")).join(" ")); };
   console.info = sink;
   console.log = sink;
   console.warn = sink;
@@ -92,7 +93,7 @@ async function run({ days, places, endDate, it = [], interests = "", selected = 
   const out = captured ?? {};
   const stops = out?.trip?.payload?.itinerary ?? [];
   return {
-    out, stops, logs, rpc, thrown,
+    out, stops, logs, events, rpc, thrown,
     aiCalls: calls.filter((u) => u.includes("api.openai.com")).length,
     googleCalls: calls.filter((u) => /googleapis|maps\.google|places/.test(u)).length,
   };
@@ -330,6 +331,26 @@ await test("R16 real Handler payload survives JSON persistence and saved normali
     const actual=view.days.flatMap(d=>d.items.map(s=>`${d.date}|${s.time}|${s.placeId}`));
     assert.deepEqual(actual,expected);
   }
+});
+const {diversitySixDayPlans}=await import("./fixtures/daily-balance-production.mjs");
+await test("D Handler: six days / 28 stops survive replan and final meal exchange",async()=>{
+  const plans=diversitySixDayPlans();
+  const places=plans.flatMap(d=>d.entries.map(e=>({...e.place,n:e.place.name,t:e.place.primaryType,gid:e.place.googlePlaceId,required:false})));
+  const it=plans.flatMap(d=>d.entries.map(e=>item(`2026-11-0${d.day+1}`,e.time,{...e.place,n:e.place.name,t:e.place.primaryType,gid:e.place.googlePlaceId})));
+  const r=await run({days:6,places,it,endDate:"2026-11-07"});
+  console.log(`D_PROVIDER_CALLS ai=${r.aiCalls} google=${r.googleCalls}`);
+  ok(r);assert.equal(byDay(r.stops).length,6);
+  const selectedIds=new Set(places.map(p=>p.gid));
+  assert.ok(r.stops.every(s=>selectedIds.has(s.googlePlaceId)),"no unselected candidate added");
+  assert.ok(byDay(r.stops).every(d=>d.list.length<=6),"daily capacity preserved");
+  assert.ok(r.logs.some(l=>l.includes("[ITINERARY_REPLAN_INPUT]")),"actual replan executed");
+  const replanIndex=r.events.findIndex(e=>e[0]==="[ITINERARY_REPLAN_INPUT]");
+  const finalIndex=r.events.findIndex(e=>e[0]==="[ITINERARY_CROSS_DAY_GEOGRAPHIC_VALIDATION]"&&e[1]?.stage==="final_pre_persistence");
+  const gateIndex=r.events.findIndex(e=>e[0]==="[ITINERARY_DELIVERY_ALLOWED]");
+  assert.ok(replanIndex>=0&&finalIndex>replanIndex&&gateIndex>finalIndex,"Replan -> final meal exchange -> final Validator -> delivery");
+  const finalDiversity=r.events.filter(e=>e[0]==="[ITINERARY_DAILY_DIVERSITY]"&&e[1]?.stage==="final");
+  assert.equal(finalDiversity.length,6);assert.ok(finalDiversity.every(e=>!e[1].ruleEmitted));
+  assert.equal(r.googleCalls,0);assert.ok(r.aiCalls<=2);
 });
 let failed = 0;
 for (const [name, error] of results) {
