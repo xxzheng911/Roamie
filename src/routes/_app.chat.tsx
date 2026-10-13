@@ -43,7 +43,7 @@ import {
   resolveChatEntrySource,
   TRAVEL_DRAFTS_ROUTE,
 } from "@/lib/chat-navigation";
-import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, useId } from "react";
 import { toast } from "sonner";
 import { ROAMIE_BUILD_DEBUG } from "@/lib/app-bundle-version";
 import { supabase } from "@/integrations/supabase/client";
@@ -269,6 +269,7 @@ import { resolveChatConnectionFallbackMessage } from "@/lib/user-facing-error";
 import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
 import { generateItineraryViaNativeApi } from "@/lib/ai/itinerary-transport";
 import { useAccess } from "@/hooks/use-access";
+import { useAuth } from "@/hooks/use-auth";
 import {
   beginPlaceRecommendationCredits,
   fetchCreditAccount,
@@ -778,16 +779,30 @@ function Chat() {
   const { openAddToTrip } = useAddToTrip();
   const search = Route.useSearch();
   const navigate = useNavigate();
-  const [greetingContent, setGreetingContent] = useState(() => t("chat.greeting"));
+  const { user: greetingUser, loading: authLoading } = useAuth();
+  // UI-only identity. Restored messages and handoff openers never receive this id.
+  const defaultGreetingId = useId();
+  const [greetingRevision, setGreetingRevision] = useState(0);
+  const greetingId = `${defaultGreetingId}:${greetingRevision}`;
+  const defaultGreetingTouchedRef = useRef(false);
+  const greetingReady = !authLoading && (!greetingUser || subscriptionHydrated);
+  const greetingScope = JSON.stringify([greetingUser?.id, hasPlusAccess, locale, greetingRevision]);
+  const [resolvedGreeting, setResolvedGreeting] = useState<{ scope: string; content: string } | null>(null);
   const greetingMsg = useMemo(
-    (): ChatMsg => ({ role: "assistant", content: greetingContent }),
-    [greetingContent],
+    (): ChatMsg => ({
+      id: greetingId,
+      role: "assistant",
+      content: greetingReady && greetingUser && resolvedGreeting?.scope === greetingScope
+        ? resolvedGreeting.content : t("chat.greeting"),
+    }),
+    [greetingId, greetingReady, greetingUser, resolvedGreeting, greetingScope, t],
   );
 
   useEffect(() => {
+    if (!greetingReady || !greetingUser) return;
     let cancelled = false;
     void (async () => {
-      if (isCreditsFeatureEnabled()) {
+      if (!hasPlusAccess && isCreditsFeatureEnabled()) {
         await fetchCreditAccount();
       }
       const resolved = await resolveCreditsGreeting(
@@ -799,15 +814,13 @@ function Chat() {
         },
         { isPlus: hasPlusAccess },
       );
-      if (!cancelled) setGreetingContent(resolved.content);
+      if (!cancelled) setResolvedGreeting({ scope: greetingScope, content: resolved.content });
     })();
     return () => {
       cancelled = true;
     };
-  }, [t, hasPlusAccess]);
-  const [msgs, setMsgs] = useState<ChatMsg[]>(() => [
-    { role: "assistant", content: t("chat.greeting") },
-  ]);
+  }, [t, hasPlusAccess, greetingReady, greetingScope, greetingUser]);
+  const [msgs, setMsgs] = useState<ChatMsg[]>(() => [greetingMsg]);
   const msgsRef = useRef<ChatMsg[]>([]);
   const [session, setSession] = useState<ChatPlanningSession>(() => loadChatSession());
   const sessionRef = useRef(session);
@@ -1902,14 +1915,15 @@ function Chat() {
       return;
     }
     setMsgs((prev) => {
+      if (defaultGreetingTouchedRef.current) return prev;
       if (prev.length === 0) return [greetingMsg];
       if (
         prev.length === 1 &&
         prev[0].role === "assistant" &&
         !prev[0].roamie &&
-        prev[0].content !== greetingMsg.content
+        prev[0].id === greetingMsg.id
       ) {
-        logAiPipeline("[NEARBY_FALLBACK]", "reason=handoff_overwritten_prevented");
+        return [greetingMsg];
       }
       return prev;
     });
@@ -1990,6 +2004,7 @@ function Chat() {
             saveChatSession(session);
           }
           setSession(session);
+          defaultGreetingTouchedRef.current = true;
           setMsgs(uiCache.msgs);
           pendingScrollTopRef.current = uiCache.scrollTop;
           chatLifecycleEstablishedRef.current = true;
@@ -2031,6 +2046,7 @@ function Chat() {
             const places = await listPlaces();
             if (!cancelled) setSavedNames(new Set(places.map((p) => p.name)));
             if (workspace.messages?.length) {
+              defaultGreetingTouchedRef.current = true;
               setMsgs(workspace.messages);
             } else {
               setMsgs([greetingMsg]);
@@ -2055,6 +2071,7 @@ function Chat() {
           await clearChatHistory();
           persistSession(fresh);
           if (!cancelled) setSession(restorePendingPlanAiOwner(fresh, loadChatSession()));
+          defaultGreetingTouchedRef.current = false;
           setMsgs([greetingMsg]);
           homeMoodShortcutEngagedRef.current = false;
           chatLifecycleEstablishedRef.current = true;
@@ -7456,6 +7473,7 @@ function Chat() {
     const nextSession = enterPlaceDetailChat(session, item);
     persistSession(nextSession);
 
+    defaultGreetingTouchedRef.current = true;
     beginUserTurn(msgsRef.current.length);
     const userLine = `想聊聊 ${placeDisplayName(item)}`;
     const assistantLine = buildPlaceDetailReply(item, nextSession);
@@ -7528,6 +7546,7 @@ function Chat() {
       return;
     }
     if (isRepeatedTripDateConfirmation(session, trimmed)) { setText(""); return; }
+    defaultGreetingTouchedRef.current = true;
     beginUserTurn(msgsRef.current.length);
     if (session.pendingQuestion?.type === "date_confirmation") {
       const conversation: ChatMsg[] = [...msgsRef.current, {role:"user",content:trimmed}];
@@ -12004,7 +12023,11 @@ function Chat() {
       pendingScrollTopRef.current = null;
       if (restoreScrollFrameRef.current != null) cancelAnimationFrame(restoreScrollFrameRef.current);
       restoreScrollFrameRef.current = null;
-      setMsgs([greetingMsg]);
+      const nextRevision = greetingRevision + 1;
+      setGreetingRevision(nextRevision);
+      setResolvedGreeting(null);
+      defaultGreetingTouchedRef.current = false;
+      setMsgs([{ id: `${defaultGreetingId}:${nextRevision}`, role: "assistant", content: t("chat.greeting") }]);
       resetScrollToInitial();
       setLastFailed(null);
       setPartial({});

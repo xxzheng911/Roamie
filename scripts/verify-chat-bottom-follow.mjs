@@ -40,5 +40,7 @@ api.begin(3);api.resetToInitial();active=[row(0,'assistant',20,100)];mutation();
 api.resetToInitial();api.begin(1);active.push(row(1,'user',140,50));mutation();flush();assert.equal(container.scrollTop,120);
 api.update();flush();assert.equal(container.scrollTop,120,'no reply following after reset');
 api.dispose();assert.equal(observed.size,0);assert.equal(handlers.size,0);
-const chat=fs.readFileSync('src/routes/_app.chat.tsx','utf8');assert.match(chat,/beginUserTurn\(msgsRef.current.length\)/);assert.match(chat,/beginUserTurn\(existingMsgs.length\)/);assert.match(chat,/restoreScrollPosition\(top\)/);assert.match(chat,/setMsgs\(\[greetingMsg\]\);\s*resetScrollToInitial\(\)/);
+const chat=fs.readFileSync('src/routes/_app.chat.tsx','utf8');assert.match(chat,/beginUserTurn\(msgsRef.current.length\)/);assert.match(chat,/beginUserTurn\(existingMsgs.length\)/);assert.match(chat,/restoreScrollPosition\(top\)/);// The reset now creates a fresh default-greeting identity. Its actual callback is
+// executed by verify-credits-greeting-lifecycle; retain the scroll-order assertion.
+assert.match(chat,/setMsgs\(\[\{ id: `\$\{defaultGreetingId\}:\$\{nextRevision\}`,[^\n]+\]\);\s*resetScrollToInitial\(\)/);
 console.log('PASS: submit anchors once; text/loading/cards/replace/stream/images never move viewport; next submit, native gesture, hydration and cleanup');
