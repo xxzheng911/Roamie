@@ -6,6 +6,7 @@
  * - cap sync ios → 複製到 ios/App/App/public
  */
 import { spawnSync } from "node:child_process";
+import { rmSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -30,6 +31,11 @@ console.info("[ios:release] Production bundled build (no dev server)\n");
 
 run("app bundle meta", "node", ["scripts/sync-app-bundle-meta.mjs"]);
 run("iOS client build", "node", ["scripts/production-build.mjs", "--maps-client=ios"]);
+// A previously synced iOS copy (e.g. a debug cap:sync) is not this build's artifact, yet the
+// strict receipt check in capacitor prepare scans ios/App/App/public before cap sync replaces
+// it. Remove the stale generated copy; the post-sync gates below still verify the new one.
+console.info("\n[ios:release] remove stale synced iOS web assets");
+rmSync(resolve(root, "ios/App/App/public"), { recursive: true, force: true });
 env.ROAMIE_CANONICAL_CLIENT_PREPARE = "1";
 run("capacitor prepare", "node", ["scripts/capacitor-prepare.mjs"]);
 run("cap sync ios (bundled)", "node", [
