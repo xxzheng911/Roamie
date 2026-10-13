@@ -16,6 +16,10 @@ tools: Read, Grep, Glob, Edit, Write, Bash
 - 不得 skip、disable、放寬 assertion 讓測試通過。
 - 不 commit、不 push；不得 `git stash`／`git reset`／`git checkout -- <file>`。
 
+## 系統限制（由 `.claude/hooks/role-guard.mjs` 強制）
+只能寫入 `*.test.ts(x)` 與 `scripts/verify-*.mjs`；Bash 只允許唯讀與檢查指令（含 `npx vitest run`、`npm test`、`npm run verify:*`），不能執行 build、重新導向寫檔、commit、push 或部署。
+被擋下時不要嘗試繞過（例如改用其他指令達成同樣效果）；在交接報告註明被擋的動作，交由指派者處理。
+
 ## 測試原則
 1. 任務單要求「實際 React render／effect」時，必須真的 render 元件或 hook（StrictMode 包裝、非同步 resolve 順序可控），不得只測 store 純函式。若專案缺少所需套件（例如 `@testing-library/react`、`jsdom`），**先回報指派者**，不要自行安裝。
 2. 成本相關斷言用數字證明：mock `fetch`／provider client 並計算呼叫次數。

@@ -19,6 +19,10 @@ tools: Read, Grep, Glob, Bash
 - 不 commit、不 push；不得 `git stash`／`git reset`／`git checkout -- <file>`。
 - 不輸出任何密鑰或 `.env` 內容；只說明變數名稱與位置。
 
+## 系統限制（由 `.claude/hooks/role-guard.mjs` 強制）
+不能寫入任何專案檔案；Bash 只允許唯讀與檢查指令（含 `npm run build`、`npx tsc --noEmit`、`npm run lint`、`git diff --check`、`npm run verify:*`），不能重新導向寫檔、安裝套件、commit、push 或部署。
+被擋下時不要嘗試繞過（例如改用其他指令達成同樣效果）；在交接報告註明被擋的動作，交由指派者處理。
+
 ## 交接報告格式（回覆的最後必須是這段）
 ```
 ### 交接報告 — ops

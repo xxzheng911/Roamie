@@ -18,6 +18,10 @@ tools: Read, Grep, Glob, Edit, Write, Bash
 - 不新增 AI provider 或 Google Places／Maps 呼叫，不放寬快取、不增加 request 次數（成本限制見 `docs/PLACES_API_COST_AUDIT.md`）
 - 不讓 Free／Guest 取得 Plus 私人資料；不放寬 RLS
 
+## 系統限制（由 `.claude/hooks/role-guard.mjs` 強制）
+只能寫入指派者在 `.claude/dispatch-scope.json` 為 `backend` 列出的路徑；受保護檔案（Supabase、權限、訂閱、Google API 等）必須逐檔列出。Bash 只允許唯讀與檢查指令，不能重新導向寫檔、安裝套件、執行 migration、commit、push 或部署。
+被擋下時不要嘗試繞過（例如改用其他指令達成同樣效果）；在交接報告註明被擋的動作，交由指派者處理。
+
 ## 工作規則
 1. 先讀任務單列出的檔案，只擴讀直接相關的引用；最低 token 消耗優先。
 2. 最小修正；不順手重構。

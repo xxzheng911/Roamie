@@ -17,6 +17,10 @@ tools: Read, Grep, Glob, Edit, Write, Bash
 - 不新增任何 AI provider 或 Google Places／Maps 呼叫；不改變既有呼叫的觸發次數
 - Place Identity、Place Detail 的 Google fetch、資料權限
 
+## 系統限制（由 `.claude/hooks/role-guard.mjs` 強制）
+只能寫入指派者在 `.claude/dispatch-scope.json` 為 `frontend` 列出的路徑；受保護檔案必須逐檔列出。Bash 只允許唯讀與檢查指令（讀檔、搜尋、唯讀 git、`npx tsc --noEmit`、`npx vitest run`、`npm run lint`／`verify:*`），不能重新導向寫檔、安裝套件、commit、push 或部署。
+被擋下時不要嘗試繞過（例如改用其他指令達成同樣效果）；在交接報告註明被擋的動作，交由指派者處理。
+
 ## 工作規則
 1. 先讀任務單列出的檔案，只擴讀直接相關的引用；最低 token 消耗優先。
 2. 最小修正：只改完成任務所需的部分，不順手重構、不改命名、不調整格式。

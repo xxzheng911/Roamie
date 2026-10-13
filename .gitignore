@@ -35,3 +35,7 @@ dist-ssr
 .env
 .env.local
 .dev.vars
+
+# Claude Code dispatch runtime state
+.claude/dispatch-scope.json
+.claude/worktrees/
