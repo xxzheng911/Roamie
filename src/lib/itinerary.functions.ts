@@ -6,6 +6,15 @@ import { PlaceReviewEvidenceSchema } from "@/lib/place-review-evidence";
 import { z } from "zod";
 import { createServerFn } from "@tanstack/react-start";
 import { requireItineraryCredits } from "@/integrations/supabase/security-middleware";
+import {
+  isClearlyClosedForSchedule,
+  reanchorViolatingDays,
+  repairDailyScheduleAcrossDays,
+  resolveDailyScheduleIntent,
+} from "@/lib/ai/daily-schedule-contract";
+import { placeDistanceM, PLANNER_DAY_ANCHOR_RADIUS_M } from "@/lib/ai/planner-day-route-assembly";
+import { SCHEDULED_DAY_TIME_SLOTS } from "@/lib/ai/day-time-slots";
+import { createEmptyDayBudget } from "@/lib/ai/time-budget-planner";
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import type {
   RoamiePayloadV2,
@@ -462,10 +471,12 @@ function buildItineraryFromSelectedPlaces(
   destination?: string,
   selectedCombinationIds?: number[],
   requireDeliverableCandidates = false,
+  scheduleIntentText?: string,
 ): RoamieItineraryItem[] {
   return buildFallbackItineraryFromPlaces(selectedPlaces, days, startDate, destination, {
     selectedCombinationIds,
     requireDeliverableCandidates,
+    scheduleIntentText,
   });
 }
 
@@ -915,6 +926,8 @@ export const generateItinerary = createServerFn({ method: "POST" })
         startDate,
         data.destination,
         selectedCombinationIds,
+        false,
+        interestsText,
       );
       const coverageCheck = validateGeneratedItinerary({
         tripDays: data.days,
@@ -1039,6 +1052,8 @@ export const generateItinerary = createServerFn({ method: "POST" })
         startDate,
         data.destination,
         selectedCombinationIds,
+        false,
+        interestsText,
       );
       ai = buildFallbackTripPayload(data, builtItems, selectedPlaces);
       usedDeterministic = true;
@@ -1124,6 +1139,8 @@ export const generateItinerary = createServerFn({ method: "POST" })
           startDate,
           data.destination,
           selectedCombinationIds,
+          false,
+          interestsText,
         );
         ai = buildFallbackTripPayload(data, rebuilt, selectedPlaces);
         usedDeterministic = true;
@@ -1148,6 +1165,14 @@ export const generateItinerary = createServerFn({ method: "POST" })
       ) {
         const normalizationOutcome: TimelineNormalizationObservation | undefined =
           stage === "final_pre_persistence" ? { status: "not_called" } : undefined;
+        const daySignature = (plans: typeof composedPlans) =>
+          new Map(
+            plans.map((plan) => [
+              plan.day,
+              plan.entries.map((entry) => entry.place.googlePlaceId ?? entry.place.id).sort().join("|"),
+            ]),
+          );
+        const beforeCohesion = daySignature(composedPlans);
         composedPlans = repairCrossDayGeographicCohesion(composedPlans, {
           generationId,
           stage,
@@ -1159,6 +1184,36 @@ export const generateItinerary = createServerFn({ method: "POST" })
           normalizationOutcome,
         });
         if (normalizationOutcome) finalTimelineNormalization = normalizationOutcome;
+        // Cross-day moves are not schedule-aware: re-anchor meals on days whose stops changed
+        // and now break the daily schedule contract. The final pre-persistence pass is the
+        // last chance after replan, so there every violating day is re-anchored. Same day,
+        // same stops, fixed reservation clocks kept; the final validator still runs after.
+        const afterCohesion = daySignature(composedPlans);
+        const changedDays = new Set(
+          [...afterCohesion.keys()].filter((day) => afterCohesion.get(day) !== beforeCohesion.get(day)),
+        );
+        const finalPass = stage === "final_pre_persistence";
+        const scheduleOptions = {
+          intent: resolveDailyScheduleIntent(interestsText),
+          slotPool: SCHEDULED_DAY_TIME_SLOTS,
+          dayWindowFor: (day: number) => {
+            const budget = createEmptyDayBudget({ day, totalDays: data.days });
+            return { start: budget.dayStartTime, end: budget.dayEndTime };
+          },
+          isClosedAt: (place: PlaceResult, time: string) => isClearlyClosedForSchedule(place, time),
+        };
+        if (finalPass) {
+          // A cohesion move can pile meals onto one day and empty another; swap a surplus meal
+          // back (same capacity, within the day-anchor radius, reservations never move), then
+          // re-anchor still-violating days.
+          composedPlans = repairDailyScheduleAcrossDays(composedPlans, {
+            ...scheduleOptions,
+            distanceM: placeDistanceM,
+            maxMoveM: PLANNER_DAY_ANCHOR_RADIUS_M,
+          });
+        } else if (changedDays.size) {
+          composedPlans = reanchorViolatingDays(composedPlans, { ...scheduleOptions, onlyDays: changedDays });
+        }
       }
       const routedPlans = applyFinalDayRouteOrdering(composedPlans, {
         generationId,
@@ -1203,6 +1258,8 @@ export const generateItinerary = createServerFn({ method: "POST" })
         startDate,
         data.destination,
         selectedCombinationIds,
+        false,
+        interestsText,
       );
       ai = buildFallbackTripPayload(data, rebuilt, selectedPlaces);
       finalStops = coalesceItineraryItems(ai.itinerary);
@@ -1312,6 +1369,8 @@ export const generateItinerary = createServerFn({ method: "POST" })
           startDate,
           data.destination,
           selectedCombinationIds,
+          false,
+          interestsText,
         );
         ai = { ...ai, itinerary: finalStops };
       } else {
@@ -1344,6 +1403,8 @@ export const generateItinerary = createServerFn({ method: "POST" })
           startDate,
           data.destination,
           selectedCombinationIds,
+          false,
+          interestsText,
         );
         ai = { ...ai, itinerary: finalStops };
       }
@@ -1389,6 +1450,8 @@ export const generateItinerary = createServerFn({ method: "POST" })
           startDate,
           data.destination,
           selectedCombinationIds,
+          false,
+          interestsText,
         );
         ai = { ...ai, itinerary: finalStops };
       }
@@ -1544,6 +1607,8 @@ export const generateItinerary = createServerFn({ method: "POST" })
         startDate,
         data.destination,
         selectedCombinationIds,
+        false,
+        interestsText,
       );
       if (rebuilt.length > finalStops.length) {
         finalStops = rebuilt;
@@ -1794,6 +1859,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
                 data.destination,
                 selectedCombinationIds,
                 true,
+                interestsText,
               );
           if (rebuiltStops.length) {
             const rebuiltRoutedPlans = applyFinalDayRouteOrdering(

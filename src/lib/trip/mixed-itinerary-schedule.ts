@@ -20,9 +20,20 @@ import {
   applyPlannerRouteAndCapacityAssembly,
   maxEffectivePlacesPerDay,
   minEffectivePlacesPerDay,
+  placeDistanceM,
+  PLANNER_DAY_ANCHOR_RADIUS_M,
   type AssemblyDayPlan,
   type PlannerPaceHint,
 } from "@/lib/ai/planner-day-route-assembly";
+import {
+  isClearlyClosedForSchedule,
+  isFullMealVenue,
+  mealWindowAt,
+  parseScheduleMinutes,
+  resolveDailyScheduleIntent,
+  surplusMealsAbove,
+  type DailyScheduleIntent,
+} from "@/lib/ai/daily-schedule-contract";
 import { computeMinimumPerSelectedCombination } from "@/lib/ai/combination-itinerary-integrity";
 import { enforceGlobalFamilyFeasibility } from "@/lib/ai/global-family-feasibility";
 import { assignDiversityAwareSeedDays } from "@/lib/ai/diversity-aware-seed-assignment";
@@ -214,6 +225,70 @@ function scheduleDayPlaces(
   });
 }
 
+/**
+ * Geography-first seeding can put every restaurant of one area on one day and leave
+ * another full day with none. Swap a surplus meal (already selected places only) with a
+ * stop of a meal-less full day within the day-anchor radius. Never adds or drops a place.
+ */
+function rebalanceMealsAcrossDays(
+  places: RoamieRecommendationItem[],
+  dayByKey: Map<string, number>,
+  dayCount: number,
+  intent: DailyScheduleIntent,
+): number {
+  if (intent.noMeals || dayCount < 2) return 0;
+  const surplusAbove = surplusMealsAbove(intent);
+  const isMeal = (p: RoamieRecommendationItem) => isFullMealVenue(recToLandmarkPlace(p));
+  let moved = 0;
+  for (let guard = 0; guard < places.length; guard += 1) {
+    const byDay = Array.from({ length: dayCount }, (_, day) =>
+      places.filter((p) => dayByKey.get(placeKey(p)) === day),
+    );
+    const receiver = byDay
+      .map((dayPlaces, day) => ({ day, dayPlaces }))
+      .filter(({ dayPlaces }) => dayPlaces.length >= 3 && !dayPlaces.some(isMeal))
+      .sort((a, b) => b.dayPlaces.length - a.dayPlaces.length)[0];
+    if (!receiver) break;
+    const anchors = receiver.dayPlaces.map(recToLandmarkPlace);
+    let best: { place: RoamieRecommendationItem; distance: number } | null = null;
+    for (const dayPlaces of byDay) {
+      const meals = dayPlaces.filter(isMeal);
+      if (meals.length <= surplusAbove) continue;
+      for (const meal of meals) {
+        if (meal.destinationScope === "nearby_extension") continue;
+        const landmark = recToLandmarkPlace(meal);
+        const distance = Math.min(...anchors.map((a) => placeDistanceM(a, landmark)));
+        if (!Number.isFinite(distance) || distance > PLANNER_DAY_ANCHOR_RADIUS_M) continue;
+        if (!best || distance < best.distance) best = { place: meal, distance };
+      }
+    }
+    if (!best) break;
+    const from = dayByKey.get(placeKey(best.place))!;
+    // Swap with the receiver's non-meal stop nearest the donor day so day sizes (pace
+    // capacity) are unchanged and assembly never has to trim a selected place.
+    const donor = byDay[from]!.map(recToLandmarkPlace);
+    const back = receiver.dayPlaces
+      .filter((p) => !isMeal(p) && p.destinationScope !== "nearby_extension")
+      .map((p) => ({
+        p,
+        d: Math.min(...donor.map((q) => placeDistanceM(q, recToLandmarkPlace(p)))),
+      }))
+      .sort((a, b) => a.d - b.d)[0]?.p;
+    if (!back) break;
+    dayByKey.set(placeKey(best.place), receiver.day);
+    dayByKey.set(placeKey(back), from);
+    moved += 1;
+    logAiPipeline(
+      "[DAILY_MEAL_REBALANCE]",
+      `name=${best.place.placeName ?? best.place.name}`,
+      `fromDay=${from + 1}`,
+      `toDay=${receiver.day + 1}`,
+      `distanceM=${Math.round(best.distance)}`,
+    );
+  }
+  return moved;
+}
+
 export type MixedItineraryBuildResult = {
   stops: RoamieItineraryItem[];
   candidateInsufficient: boolean;
@@ -241,6 +316,8 @@ export function buildMixedItineraryWithDiagnostics(
     selectedCombinationIds?: number[];
     nearbyExtensions?: string[];
     pace?: PlannerPaceHint;
+    /** Same text the Itinerary Validator reads, so Planner and Validator share intent. */
+    scheduleIntentText?: string;
   },
 ): MixedItineraryBuildResult {
   const dayCount = Math.max(days, 1);
@@ -441,6 +518,8 @@ export function buildMixedItineraryWithDiagnostics(
   });
   const dayByKey = seedAssignment.dayByKey;
   if (dayByKey.size < landmarkKept.length) candidateInsufficient = true;
+  const scheduleIntent = resolveDailyScheduleIntent(opts?.scheduleIntentText);
+  rebalanceMealsAcrossDays(landmarkKept, dayByKey, dayCount, scheduleIntent);
 
   const seedPlans: AssemblyDayPlan[] = Array.from({ length: dayCount }, (_, i) => {
     const dayPlaces = landmarkKept.filter((p) => dayByKey.get(placeKey(p)) === i);
@@ -468,6 +547,7 @@ export function buildMixedItineraryWithDiagnostics(
     style: "mixed",
     nearbyExtensions,
     pace,
+    scheduleIntent,
   });
   candidateInsufficient = candidateInsufficient || assembled.candidateInsufficient;
 
@@ -639,7 +719,34 @@ export function buildMixedItineraryWithDiagnostics(
   }
 
   const unusedDining = [...diningCandidates];
-  const usedDiningIds = new Set<string>();
+  // Dining already placed by assembly (capacity fill) is never allocated a second time.
+  const usedDiningIds = new Set<string>(
+    [...finalByDate.values()].flat().map((stop) => stop.googlePlaceId?.trim() ?? "").filter(Boolean),
+  );
+  const isMealStop = (stop: RoamieItineraryItem) =>
+    isFullMealVenue({
+      name: stop.placeName ?? stop.title ?? "",
+      primaryType: stop.placeType ?? null,
+      types: stop.types?.length ? stop.types : stop.placeType ? [stop.placeType] : [],
+    } as PlaceResult);
+  const mealSlotBlockReason = (
+    dayStops: RoamieItineraryItem[],
+    slot: "lunch" | "dinner",
+    time: string,
+  ): string => {
+    const at = parseScheduleMinutes(time)!;
+    const meals = dayStops.filter(isMealStop);
+    if (meals.some((m) => mealWindowAt(parseScheduleMinutes(m.time)) === slot)) {
+      return "existing_meal_in_window";
+    }
+    if (meals.some((m) => Math.abs((parseScheduleMinutes(m.time) ?? -999) - at) < 180)) {
+      return "existing_meal_too_close";
+    }
+    if (dayStops.some((stop) => stop.time === time)) return "slot_time_occupied";
+    const first = Math.min(...dayStops.map((stop) => parseScheduleMinutes(stop.time) ?? Infinity));
+    if (dayStops.length && first > at) return "before_day_start";
+    return "";
+  };
   const distanceToDay = (
     place: RoamieRecommendationItem,
     dayStops: RoamieItineraryItem[],
@@ -656,10 +763,28 @@ export function buildMixedItineraryWithDiagnostics(
     const date = dates[i]!;
     const dayStops = finalByDate.get(date) ?? [];
     for (const slot of ["lunch", "dinner"] as const) {
+      const slotTime = slot === "lunch" ? "12:00" : "18:30";
+      // Daily schedule contract: never stack a second meal in an occupied / nearby window,
+      // never before the day starts, and never at a time the venue is clearly closed.
+      const blocked = mealSlotBlockReason(dayStops, slot, slotTime);
+      if (blocked) {
+        logAiPipeline(
+          "[MEAL_SLOT_ALLOCATION]",
+          `day=${i + 1}`,
+          `slot=${slot}`,
+          "success=false",
+          `failureReason=${blocked}`,
+        );
+        continue;
+      }
       const candidate = unusedDining
         .filter((place) => {
           const key = placeKey(place);
-          return Boolean(key) && !usedDiningIds.has(key);
+          return (
+            Boolean(key) &&
+            !usedDiningIds.has(key) &&
+            !isClearlyClosedForSchedule(recToLandmarkPlace(place), slotTime)
+          );
         })
         .sort((a, b) => distanceToDay(a, dayStops) - distanceToDay(b, dayStops))[0];
       if (!candidate) {
@@ -679,12 +804,7 @@ export function buildMixedItineraryWithDiagnostics(
       }
       const key = placeKey(candidate);
       usedDiningIds.add(key);
-      const mealStop = makeStop(
-        candidate,
-        date,
-        "restaurant",
-        slot === "lunch" ? "12:00" : "18:30",
-      );
+      const mealStop = makeStop(candidate, date, "restaurant", slotTime);
       dayStops.push(mealStop);
       logAiPipeline(
         "[MEAL_SLOT_ALLOCATION]",

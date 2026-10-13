@@ -1,6 +1,7 @@
 import type { ComposedDayPlan, DayPlanEntry } from "@/lib/ai/ai-day-plan-source";
 import { isClearlyClosedAtSlot } from "@/lib/ai/itinerary-validator/place-checks";
 import { distanceMeters } from "@/lib/geo-distance";
+import { isFullMealVenue } from "@/lib/ai/daily-schedule-contract";
 
 export type ItineraryRouteOrderStage =
   | "initial"
@@ -136,6 +137,8 @@ function fixedAnchor(entry: DayPlanEntry, options: FinalRouteOrderingOptions): b
     options.isFixedAnchor?.(entry) ??
     (
       FIXED_SLOT_RE.test(entry.label) ||
+      // Full meals are time anchors by place type, even when labelled as a stop.
+      isFullMealVenue(entry.place) ||
       FIXED_TIME_PLACE_RE.test(
         [entry.label, entry.place.primaryType, ...(entry.place.types ?? [])].join(" "),
       )

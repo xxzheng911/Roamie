@@ -46,6 +46,13 @@ import {
 } from "@/lib/ai/time-budget-planner";
 import { summarizeDailyCategoryDiversity } from "@/lib/ai/daily-category-diversity";
 import {
+  arrangeDayWithMealAnchors,
+  isClearlyClosedForSchedule,
+  type DailyScheduleIntent,
+  type DayWindow,
+} from "@/lib/ai/daily-schedule-contract";
+import { SCHEDULED_DAY_TIME_SLOTS } from "@/lib/ai/day-time-slots";
+import {
   ensureAllDaysCovered,
   normalizeCompleteDayMap,
 } from "@/lib/ai/itinerary-day-coverage";
@@ -589,7 +596,11 @@ function cloneEntry(entry: AssemblyDayPlanEntry, place?: PlaceResult): AssemblyD
   };
 }
 
-function reorderDayEntriesByRoute(entries: AssemblyDayPlanEntry[]): {
+function reorderDayEntriesByRoute(
+  entries: AssemblyDayPlanEntry[],
+  intent?: DailyScheduleIntent,
+  dayWindow?: DayWindow | null,
+): {
   entries: AssemblyDayPlanEntry[];
   adjacentDistancesM: number[];
   longLegs: Array<{ from: string; to: string; meters: number }>;
@@ -597,30 +608,35 @@ function reorderDayEntriesByRoute(entries: AssemblyDayPlanEntry[]): {
   if (entries.length <= 1) {
     return { entries: [...entries], adjacentDistancesM: [], longLegs: [] };
   }
-  const times = entries.map((e) => e.time).sort((a, b) => a.localeCompare(b));
-  const places = entries.map((e) => e.place);
-  const { ordered, longLegs } = orderPlacesNearestNeighbor(places);
-  const byId = new Map(entries.map((e) => [entryPlaceId(e), e]));
-  const rebuilt: AssemblyDayPlanEntry[] = [];
+  // Meals stay on meal-window anchors; only the other stops are route-ordered (NN)
+  // into the remaining clocks, so distance never pulls every restaurant together.
+  const arranged = arrangeDayWithMealAnchors(entries, {
+    intent,
+    slotPool: SCHEDULED_DAY_TIME_SLOTS,
+    dayWindow,
+    isClosedAt: (place, time) => isClearlyClosedForSchedule(place, time),
+    orderFree: (free) => {
+      const byPlace = new Map(free.map((e) => [e.place, e]));
+      return orderPlacesNearestNeighbor(free.map((e) => e.place)).ordered.map(
+        (place) => cloneEntry(byPlace.get(place)!, place),
+      );
+    },
+  });
   const adjacentDistancesM: number[] = [];
-  for (let i = 0; i < ordered.length; i += 1) {
-    const place = ordered[i]!;
-    const prev = byId.get(placeId(place) || place.name || "") ?? entries[i]!;
-    rebuilt.push(cloneEntry(prev, place));
-    if (i > 0) {
-      const d = placeDistanceM(ordered[i - 1]!, place);
-      if (Number.isFinite(d)) adjacentDistancesM.push(Math.round(d));
+  const longLegs: Array<{ from: string; to: string; meters: number }> = [];
+  for (let i = 1; i < arranged.length; i += 1) {
+    const d = placeDistanceM(arranged[i - 1]!.place, arranged[i]!.place);
+    if (!Number.isFinite(d)) continue;
+    adjacentDistancesM.push(Math.round(d));
+    if (d > PLANNER_SAME_DAY_MAX_LEG_M) {
+      longLegs.push({
+        from: arranged[i - 1]!.place.name ?? "?",
+        to: arranged[i]!.place.name ?? "?",
+        meters: Math.round(d),
+      });
     }
   }
-  // 時間槽維持由早到晚，地點改為路線序
-  return {
-    entries: rebuilt.map((entry, index) => ({
-      ...entry,
-      time: times[index] ?? entry.time,
-    })),
-    adjacentDistancesM,
-    longLegs,
-  };
+  return { entries: arranged, adjacentDistancesM, longLegs };
 }
 
 function logSkip(day: number, name: string, reason: PlannerSkipReason): void {
@@ -652,6 +668,8 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
   nearbyExtensions?: string[];
   pace?: PlannerPaceHint;
   allowLongHaulDays?: boolean;
+  /** Meal-anchor intent (food trip / no meals / outdoor); neutral when omitted. */
+  scheduleIntent?: DailyScheduleIntent;
 }): PlannerAssemblyResult {
   const safeDays = Math.max(1, params.days);
   const minPerDay = minEffectivePlacesPerDay(params.pace);
@@ -1370,7 +1388,11 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
       `day=${plan.day}`,
       `count=${plan.entries.length}`,
     );
-    const routed = reorderDayEntriesByRoute(plan.entries);
+    const dayBudget = createEmptyDayBudget({ day: plan.day, totalDays: safeDays, pace: params.pace });
+    const routed = reorderDayEntriesByRoute(plan.entries, params.scheduleIntent, {
+      start: dayBudget.dayStartTime,
+      end: dayBudget.dayEndTime,
+    });
     for (const leg of routed.longLegs) {
       logAiPipeline(
         "[AI_PLANNER_ROUTE_LONG_LEG]",

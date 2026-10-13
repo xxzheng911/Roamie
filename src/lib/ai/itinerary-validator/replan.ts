@@ -27,7 +27,20 @@ import {
 } from "@/lib/ai/ai-multi-day-planner";
 import { dedupeByCanonicalLandmark } from "@/lib/ai/canonical-landmark";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
-import { applyPlannerRouteAndCapacityAssembly } from "@/lib/ai/planner-day-route-assembly";
+import {
+  applyPlannerRouteAndCapacityAssembly,
+  placeDistanceM,
+  PLANNER_DAY_ANCHOR_RADIUS_M,
+} from "@/lib/ai/planner-day-route-assembly";
+import {
+  dailyScheduleSeverity,
+  isClearlyClosedForSchedule,
+  repairDailyScheduleAcrossDays,
+  resolveDailyScheduleIntent,
+  type DailyScheduleIntent,
+} from "@/lib/ai/daily-schedule-contract";
+import { createEmptyDayBudget } from "@/lib/ai/time-budget-planner";
+import { SCHEDULED_DAY_TIME_SLOTS } from "@/lib/ai/day-time-slots";
 import { applyFinalDayRouteOrdering } from "@/lib/ai/final-day-route-ordering";
 import { repairCrossDayGeographicCohesion } from "@/lib/ai/cross-day-geographic-cohesion";
 import type { TripStyleKey } from "@/lib/ai/ai-trip-style";
@@ -115,6 +128,37 @@ function lockFromValidatorInput(
     selectedPlaceNames: [...(input.lockedPlaceNames ?? [])],
     placeIds: [...(input.lockedPlaceIds ?? [])],
   });
+}
+
+const DAILY_SCHEDULE_RULE_CODES = new Set<string>([
+  "meal_window_mismatch",
+  "consecutive_food_stops",
+  "long_stretch_without_break",
+]);
+
+/**
+ * Highest-priority schedule authority: locked must-visit stops must not disappear. Locked means
+ * must-visit, not a fixed clock; no structured time authority exists, so names / titles never
+ * count as one. (Locked day moves stay governed by the existing required-place repair contract.)
+ */
+function countScheduleAuthorityBreaches(
+  before: readonly ComposedDayPlan[],
+  after: readonly ComposedDayPlan[],
+  lock: SelectedPlaceLock | null,
+): number {
+  const afterById = new Map<string, string>();
+  for (const plan of after) {
+    for (const entry of plan.entries) afterById.set(placeIdOf(entry.place), `${plan.day}@${entry.time}`);
+  }
+  let breaches = 0;
+  for (const plan of before) {
+    for (const entry of plan.entries) {
+      const id = placeIdOf(entry.place);
+      if (!id) continue;
+      if (isLockedEntry(entry, lock) && !afterById.has(id)) breaches += 1;
+    }
+  }
+  return breaches;
 }
 
 function isLockedEntry(entry: DayPlanEntry, lock: SelectedPlaceLock | null): boolean {
@@ -1147,6 +1191,7 @@ function applyAutoRepairPass(
   lock: SelectedPlaceLock | null = null,
   partialDays?: readonly number[],
   failedDays?: readonly number[],
+  scheduleIntent?: DailyScheduleIntent,
 ): ComposedDayPlan[] {
   const reasonSet = new Set(reasons);
   let current = normalizeCompleteDayMap(
@@ -1317,6 +1362,22 @@ function applyAutoRepairPass(
   );
   current = repairEmptyDays(current, days, partialDays, lock);
   current = repairNightlifeTiming(current, days);
+  if (reasonSet.has("replan_daily_schedule_balance")) {
+    // Shared schedule contract: move/re-anchor meals; never drops a (locked) stop.
+    current = repairDailyScheduleAcrossDays<DayPlanEntry, ComposedDayPlan>(current, {
+      intent: scheduleIntent,
+      distanceM: placeDistanceM,
+      maxMoveM: PLANNER_DAY_ANCHOR_RADIUS_M,
+      slotPool: SCHEDULED_DAY_TIME_SLOTS,
+      // Must-visit (locked) keeps its day; only reservations / explicit times fix the clock.
+      isDayFixed: (entry) => isLockedEntry(entry, lock),
+      dayWindowFor: (day) => {
+        const budget = createEmptyDayBudget({ day, totalDays: days });
+        return { start: budget.dayStartTime, end: budget.dayEndTime };
+      },
+      isClosedAt: (place, time) => isClearlyClosedForSchedule(place, time),
+    });
+  }
   current = normalizeCompleteDayMap(
     ensureAllDayPlansExist(current, days).map((plan) => ({
       ...plan,
@@ -1645,6 +1706,7 @@ export function replanUntilItineraryValid(
       selectedLock,
       params.validatorInput.partialDays,
       failedDays,
+      resolveDailyScheduleIntent(params.validatorInput.userText),
     );
 
     const coverageGate = evaluateDayCoverageGate({
@@ -1831,6 +1893,35 @@ export function replanUntilItineraryValid(
           }`,
           `validatorPass=${validation.pass}`,
         );
+      }
+    }
+
+    // Daily schedule non-regression: never accept a round that breaks a reservation /
+    // explicit time or loses a locked stop, or that worsens the weighted schedule severity
+    // without improving any other rule or required coverage. Reverting makes the round a
+    // no-op, so the existing no-progress guard ends the loop instead of repairing again.
+    {
+      const scheduleIntent = resolveDailyScheduleIntent(params.validatorInput.userText);
+      const authorityBreaches = countScheduleAuthorityBreaches(before, plans, selectedLock);
+      const severityBefore = dailyScheduleSeverity(before, scheduleIntent);
+      const severityAfter = dailyScheduleSeverity(plans, scheduleIntent);
+      const otherFailures = (v: ItineraryValidationResult) =>
+        v.failedRules.filter((rule) => !DAILY_SCHEDULE_RULE_CODES.has(rule.code)).length;
+      const otherImproved =
+        otherFailures(validation) < otherFailures(validationBefore) ||
+        evaluateRequiredPlaceCoverage(plans, params.requiredPlaces).requiredSatisfiedCount >
+          requiredCoverageBefore.requiredSatisfiedCount;
+      if (authorityBreaches > 0 || (severityAfter > severityBefore && !otherImproved)) {
+        logAiPipeline(
+          "[ITINERARY_REPLAN_KEEP_ORIGINAL]",
+          "reason=daily_schedule_regression",
+          `attempt=${attempts}`,
+          `authorityBreaches=${authorityBreaches}`,
+          `severityBefore=${severityBefore}`,
+          `severityAfter=${severityAfter}`,
+        );
+        plans = before;
+        validation = validationBefore;
       }
     }
 

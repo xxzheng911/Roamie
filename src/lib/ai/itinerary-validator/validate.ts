@@ -40,6 +40,12 @@ import {
 } from "@/lib/ai/recommendation-exclusion";
 import { isForbiddenTransitAttraction } from "@/lib/ai/transit-station-filter";
 import { isBurialOrFuneralPlace } from "@/lib/burial-place-filter";
+import {
+  evaluateDailySchedule,
+  hasMovableSurplusMeal,
+  isRestBreakVenue,
+  resolveDailyScheduleIntent,
+} from "@/lib/ai/daily-schedule-contract";
 import { distanceMeters } from "@/lib/geo-distance";
 import { isLodgingPlace } from "@/lib/lodging-place-filter";
 import { isExplicitCampingPlace } from "@/lib/camping-place-classification";
@@ -532,6 +538,34 @@ function runRules(input: ItineraryValidatorInput): {
         `overflow_slow_day:${plan.day}:${count}`,
         plan.day,
       );
+    }
+  }
+
+  // ——— daily schedule contract (soft; repair re-anchors meals, never drops places) ———
+  const scheduleIntent = resolveDailyScheduleIntent(input.userText);
+  // A missing break is actionable (fail → replan) when the day already holds a meal/rest stop
+  // that can be re-anchored, or another day can lend a surplus meal. With no legal repair
+  // resource it stays a warning and every stop is kept.
+  const surplusElsewhere = hasMovableSurplusMeal(plans, scheduleIntent);
+  const finalStage = input.validationStage === "final";
+  for (const plan of plans) {
+    const breakRepairable =
+      surplusElsewhere || plan.entries.some((entry) => isRestBreakVenue(entry.place));
+    for (const violation of evaluateDailySchedule(plan.entries, scheduleIntent)) {
+      const ids = plan.entries
+        .filter((entry) => violation.names.includes(entry.name || entry.place.name || "?"))
+        .map((entry) => placeId(entry.place))
+        .filter((id): id is string => Boolean(id));
+      if (finalStage) {
+        // Final delivery authority: replan has already tried; an unrepaired daily-balance
+        // residue is delivered as a diagnosable warning (never recorded as fixed). Other
+        // rules — including every hard block — are unaffected.
+        pushWarn(warnings, violation.code, `unrepaired_at_final:${violation.detail}`, plan.day, ids);
+      } else if (violation.code === "long_stretch_without_break" && !breakRepairable) {
+        pushWarn(warnings, violation.code, violation.detail, plan.day, ids);
+      } else {
+        pushFail(failedRules, violation.code, violation.detail, plan.day, ids);
+      }
     }
   }
 
@@ -1264,6 +1298,13 @@ function buildReplanReasons(failedRules: ItineraryFailedRule[]): string[] {
   if (codes.has("place_duplicate")) reasons.push("replan_to_dedupe_places");
   if (codes.has("meal_slot_category") || codes.has("nightlife_timing")) {
     reasons.push("replan_meal_or_nightlife_slots");
+  }
+  if (
+    codes.has("meal_window_mismatch") ||
+    codes.has("consecutive_food_stops") ||
+    codes.has("long_stretch_without_break")
+  ) {
+    reasons.push("replan_daily_schedule_balance");
   }
   if (codes.has("business_hours_cover")) reasons.push("replan_for_open_hours");
   if (

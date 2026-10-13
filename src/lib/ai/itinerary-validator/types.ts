@@ -31,7 +31,11 @@ export type ItineraryRuleCode =
   | "timeline_conflict"
   | "nearby_extension_coverage"
   | "multi_day_balance"
-  | "persistence_mismatch";
+  | "persistence_mismatch"
+  /** Shared daily schedule contract (daily-schedule-contract.ts). */
+  | "meal_window_mismatch"
+  | "consecutive_food_stops"
+  | "long_stretch_without_break";
 
 /**
  * 可交由 Auto Repair 修正的規則 — 不得直接擋下整份行程交付。
@@ -45,6 +49,9 @@ export const SOFT_REPAIRABLE_RULE_CODES: readonly ItineraryRuleCode[] = [
   "route_backtrack",
   "meal_slot_category",
   "nightlife_timing",
+  "meal_window_mismatch",
+  "consecutive_food_stops",
+  "long_stretch_without_break",
 ];
 
 /**

@@ -536,6 +536,8 @@ export function buildFallbackItineraryFromPlaces(
     nearbyExtensions?: string[];
     pace?: "slow" | "medium" | "active";
     requireDeliverableCandidates?: boolean;
+    /** Validator-equivalent user text for meal/rest scheduling intent. */
+    scheduleIntentText?: string;
   },
 ): RoamieItineraryItem[] {
   const dayCount = Math.max(days, 1);
@@ -564,6 +566,7 @@ export function buildFallbackItineraryFromPlaces(
       selectedCombinationIds,
       nearbyExtensions: opts?.nearbyExtensions,
       pace: opts?.pace,
+      scheduleIntentText: opts?.scheduleIntentText,
     },
   );
 
