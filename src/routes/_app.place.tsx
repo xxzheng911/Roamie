@@ -498,6 +498,8 @@ function PlaceDetailPageContent() {
         id: place.id,
         googlePlaceId: isGooglePlaceId(place.id) ? place.id : null,
         name: place.name,
+        originalName: place.originalName,
+        localizationSource: place.localizationSource,
         primaryType: place.primaryType,
         types: place.types,
         rating: place.rating,

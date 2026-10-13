@@ -11,6 +11,9 @@ export type TicketAffiliatePlaceInput = {
   name?: string | null;
   title?: string | null;
   placeName?: string | null;
+  /** Provider (pre-localization) name; search uses it when the display name is a phonetic guess. */
+  originalName?: string | null;
+  localizationSource?: string | null;
   primaryType?: string | null;
   types?: string[] | null;
   placeType?: string | null;
@@ -49,6 +52,8 @@ export function buildAffiliatePlaceEvidence(
     name: place.name,
     title: place.title,
     placeName: place.placeName,
+    originalName: place.originalName,
+    localizationSource: place.localizationSource,
     primaryType,
     types,
     placeType: place.placeType,
@@ -413,6 +418,16 @@ function placeDisplayName(place: TicketAffiliatePlaceInput): string {
   return (place.placeName || place.name || place.title || "").trim();
 }
 
+/**
+ * Name sent to provider search. `canonical_zh` names may be phonetic transliterations
+ * that no platform indexes, so the provider's own name is the trusted keyword there.
+ */
+function searchPlaceName(place: TicketAffiliatePlaceInput): string {
+  const original = place.originalName?.trim();
+  if (original && place.localizationSource === "canonical_zh") return original;
+  return placeDisplayName(place);
+}
+
 function resolvePrimaryType(place: TicketAffiliatePlaceInput): string {
   const primary = (place.primaryType ?? "").trim().toLowerCase();
   if (primary) return mapPlaceLabelToGoogleType(primary) ?? primary;
@@ -575,7 +590,7 @@ export function buildTicketAffiliateSearchKeyword(
   place: TicketAffiliatePlaceInput,
   tripContext?: TicketAffiliateTripContext,
 ): string {
-  const name = placeDisplayName(place);
+  const name = searchPlaceName(place);
   const destination = tripDestination(tripContext);
   const keyword = resolveSearchKeywordCore(name);
 
@@ -837,12 +852,15 @@ export function hasRelatedExperienceSearchIntent(place: TicketAffiliatePlaceInpu
   if (/(?:橋|桥)$|\b(?:bridge|road|street)\s*$/i.test(placeDisplayName(place))) return false;
   // Specific attraction metadata permits searching, not asserting paid admission.
   if (highConfidenceTouristAttraction || scenicRail || types.includes("paid_garden")) return true;
-  const ticketCapableType = types.some(type => [
-    "museum", "art_gallery", "botanical_garden", "garden", "historical_site",
-    "historical_landmark", "historical_place", "heritage_site", "monument", "palace",
-    "temple", "place_of_worship", "hindu_temple", "national_park", "amusement_center",
+  // Venue types that normally run on admission keep type-based search intent.
+  const admissionVenueType = types.some(type => [
+    "museum", "art_gallery", "botanical_garden", "garden", "palace", "national_park",
+    "amusement_center",
   ].includes(type));
-  if (ticketCapableType && types.includes("tourist_attraction")) return true;
+  if (admissionVenueType && types.includes("tourist_attraction")) return true;
+  // Heritage / religious types are usually free-entry local sites (any listed shrine or
+  // burial mound); their type alone is not search intent and falls through to the
+  // prominence-gated identity check below.
   const attractionIdentity = types.some(type => CULTURAL_LANDMARK_TYPES.has(type) || MAJOR_NATURAL_DESTINATION_TYPES.has(type)) ||
     (types.includes("tourist_attraction") && (types.includes("landmark") || types.includes("park")));
   return attractionIdentity && (place.rating ?? 0) >= 4.2 && (place.userRatingCount ?? 0) >= 1000;

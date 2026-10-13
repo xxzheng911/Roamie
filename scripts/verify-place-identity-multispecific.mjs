@@ -137,7 +137,8 @@ const stellar = place(["bar", "restaurant", "breakfast_restaurant"], {
 test("Stellar synthetic scenario, not captured runtime", () => {
   assert.equal(label(stellar), "酒吧");
   assert.match(reason(stellar), /^這是一間酒吧/);
-  assert.match(reason(stellar), /07:00–10:30、12:00–16:30、17:00–01:00/);
+  // No review evidence: opening hours must not stand in for a reason.
+  assert.doesNotMatch(reason(stellar), /07:00–10:30/);
   assert.doesNotMatch(reason(stellar), /早餐店|夜景|浪漫|約會/);
 });
 const karaksa = place(["hotel", "lodging", "point_of_interest", "establishment"], {

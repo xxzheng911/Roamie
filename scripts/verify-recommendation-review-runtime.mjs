@@ -77,7 +77,7 @@ test("8 evidence reaches final reason", () =>
 const days = Array.from({ length: 7 }, (_, i) => `weekday ${i}: 上午10:00 – 下午6:00`);
 test("9 localized current hours survive", () =>
   assert.match(
-    reason({ ...base, currentOpeningHours: { weekdayDescriptions: days } }),
+    reason({ ...base, reviewEvidence: evidence, currentOpeningHours: { weekdayDescriptions: days } }),
     /10:00–18:00/,
   ));
 test("10 cold identity", () => assert.equal(reason(base), "這是一間咖啡廳。"));

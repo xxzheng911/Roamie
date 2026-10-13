@@ -125,6 +125,7 @@ import {
   buildHotelAffiliateOffers,
   buildPlaceTicketOffers,
   logTripAffiliateRuleCheck,
+  resolveRenderedCtaMode,
 } from "@/lib/affiliate/affiliate-links";
 import { buildTripAffiliateContext, parseTripTravelers, type AffiliateLinkOffer } from "@/lib/affiliate/affiliate-types";
 import { TripRemoveDayConfirmDialog } from "@/components/saved/TripRemoveDayConfirmDialog";
@@ -2145,13 +2146,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
                         const offers =
                           placeTicketOffersByKey.get(placeAffiliateKey(item)) ?? [];
                         if (offers.length === 0) return null;
-                        const renderedCtaMode = offers.some((offer) =>
-                          offer.label.includes("搜尋體驗"),
-                        )
-                          ? "experience_search"
-                          : offers.some((offer) => offer.label.includes("搜尋"))
-                            ? "ticket_search"
-                            : "exact_product";
+                        const renderedCtaMode = resolveRenderedCtaMode(offers);
                         return (
                           <TripAffiliateSection
                             kind="ticket"

@@ -93,8 +93,8 @@ try {
     assert.match(r, /價格與內容相稱/);
     assert.doesNotMatch(r, /CP|便宜|餐點|超值/);
   });
-  test("no review keeps factual fallback", () =>
-    assert.equal(reason(base), "這是一間咖啡廳。今天 07:00–23:00 營業。"));
+  test("no review: hours are not presented as the reason", () =>
+    assert.equal(reason(base), "這是一間咖啡廳。"));
   test("identity and hours retain order", () =>
     assert.equal(
       reason(place([signal("outlets"), signal("value")])),
@@ -120,6 +120,36 @@ try {
       reason(place([signal("quiet"), signal("service")]), "explore", "en"),
       /In the available review sample, one mentions a quiet atmosphere; one mentions friendly service/,
     ));
+  // Device cases: 「這是一個景點。今天公休。」/「這是一個景點。Google 評分 3.9（124 則評價）。」
+  const attraction = (extra) =>
+    resolveRecommendationReasonPlace({
+      id: "reason-device-fixture",
+      name: "Fixture",
+      primaryType: "tourist_attraction",
+      types: ["tourist_attraction"],
+      ...extra,
+    });
+  const facts = [
+    attraction({ todayHoursLabel: "今日 公休" }),
+    attraction({ rating: 3.9, userRatingCount: 124 }),
+    attraction({ todayHoursLabel: "今日 公休", rating: 3.9, userRatingCount: 124 }),
+  ];
+  const statusOrRating =
+    /公休|休業|휴무|Closed today|營業|営業|영업|open|Google ?評分|Google rating|Google評価|Google 평점|則評價/i;
+  for (const locale of ["zh-TW", "en", "ja", "ko"]) {
+    test(`R10/R12 ${locale}: status and rating never stand in for a reason`, () => {
+      for (const p of facts) {
+        const r = reason(p, "details", locale);
+        assert.ok(r.trim(), "identity sentence is still shown");
+        assert.doesNotMatch(r, statusOrRating, r);
+      }
+    });
+    test(`R11/R12 ${locale}: real review evidence keeps its reason and hours`, () => {
+      const r = reason(place([signal("outlets"), signal("value")]), "details", locale);
+      assert.match(r, /07:00/);
+      assert.ok(r.length > reason(base, "details", locale).length);
+    });
+  }
   test("API and LLM requests remain zero", () => assert.equal(requests, 0));
 } finally {
   globalThis.fetch = originalFetch;

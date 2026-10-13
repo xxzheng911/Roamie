@@ -264,26 +264,21 @@ export function buildPlaceRecommendationReason(
       REVIEW_TOPIC_COPY[limitation.topic][i] +
       stop;
   }
+  // Opening hours and the rating are place facts shown elsewhere on every surface; on their
+  // own they are not a reason to go. Only append hours as context to real evidence.
+  const hasReasonEvidence = chosen.length > 0 || Boolean(resolved.reasonClaimEvidence?.length);
   const at =
     currentTime instanceof Date ? currentTime : currentTime ? new Date(currentTime) : new Date();
   let hours = "";
-  try {
-    hours = placeReasonHours(resolved, language, at);
-  } catch {
-    /* Optional malformed hours must not hide identity/review evidence. */
+  if (hasReasonEvidence) {
+    try {
+      hours = placeReasonHours(resolved, language, at);
+    } catch {
+      /* Optional malformed hours must not hide identity/review evidence. */
+    }
   }
-  const supporting =
-    !chosen.length && !resolved.reasonClaimEvidence?.length && !hours && resolved.rating != null
-      ? i === 0
-        ? `Google 評分 ${resolved.rating.toFixed(1)}${resolved.userRatingCount ? `（${resolved.userRatingCount} 則評價）` : ""}。`
-        : i === 1
-          ? `Google rating: ${resolved.rating.toFixed(1)}.`
-          : i === 2
-            ? `Google評価は${resolved.rating.toFixed(1)}です。`
-            : `Google 평점은 ${resolved.rating.toFixed(1)}입니다.`
-      : "";
   // Surface affects only the supporting sentence, never selection of core evidence.
-  const finalReason = core + (context?.presentation === "compact" ? "" : hours || supporting);
+  const finalReason = core + (context?.presentation === "compact" ? "" : hours);
   emitRecommendationReasonTrace(
     buildRecommendationReasonTrace(
       resolved,

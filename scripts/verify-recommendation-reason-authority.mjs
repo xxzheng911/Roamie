@@ -90,16 +90,19 @@ for (const [n, claim] of [
   test(`${n} no inferred ${claim}`, () => assert.ok(!reason(base).includes(claim)));
 test("8 unknown hours omitted", () =>
   assert.doesNotMatch(reason({ ...base, todayHoursLabel: "營業時間待確認" }), /今天|今日/));
-test("9 closed today", () =>
-  assert.match(reason({ ...base, todayHoursLabel: "今日休息" }), /今天公休/));
+// Hours are context for real evidence only; without evidence they are never the reason.
+test("9 closed today", () => {
+  assert.match(reason({ ...rich, todayHoursLabel: "今日休息" }), /今天公休/);
+  assert.doesNotMatch(reason({ ...base, todayHoursLabel: "今日休息" }), /今天公休/);
+});
 test("10 split hours", () =>
   assert.match(
-    reason({ ...base, todayHoursLabel: "今日 11:30–14:30、17:30–21:00" }),
+    reason({ ...rich, todayHoursLabel: "今日 11:30–14:30、17:30–21:00" }),
     /11:30–14:30、17:30–21:00/,
   ));
 test("11 review outranks popularity", () =>
   assert.doesNotMatch(reason(rich), /1832|熱門|Google 評分/));
-test("12 sparse fallback", () => assert.match(reason(base), /^這是一間咖啡廳.*Google 評分/));
+test("12 sparse fallback", () => assert.equal(reason(base), "這是一間咖啡廳。"));
 test("13 cross-surface same snapshot", () => {
   const expected = reason(rich);
   assert.equal(

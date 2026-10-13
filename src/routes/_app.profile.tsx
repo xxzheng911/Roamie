@@ -17,6 +17,7 @@ import { useAvatar } from "@/hooks/use-avatar";
 import { ProfileAvatar } from "@/components/profile/ProfileAvatar";
 import { useCover } from "@/hooks/use-cover";
 import { useI18n } from "@/hooks/use-i18n";
+import { ProfileFeedbackLinks } from "@/components/profile/ProfileFeedbackLinks";
 import { ROAMIE_BUILD_DEBUG } from "@/lib/app-bundle-version";
 import { getClientAuthSession, isAuthSessionMissingError } from "@/lib/auth-session";
 import { ImageSourceSheet } from "@/components/ImageSourceSheet";
@@ -1144,6 +1145,7 @@ function Profile() {
           {t("settings.signOutAccount")}
         </button>
       ) : null}
+      <ProfileFeedbackLinks />
       <div aria-hidden className="h-6 shrink-0" />
     </div>
   );

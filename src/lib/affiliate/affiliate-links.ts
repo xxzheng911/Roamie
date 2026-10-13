@@ -318,21 +318,27 @@ export function buildTicketAffiliateOffers(
   };
   const klookMode = resolveTicketAffiliateProviderMode(decision, "klook");
   const kkdayMode = resolveTicketAffiliateProviderMode(decision, "kkday");
+  // No product identity source exists, so every URL here is a provider search. A provider
+  // flag (exact_product mode) must not present that search as a confirmed product.
+  const searchIntentFor = (mode: typeof klookMode) =>
+    decision.searchIntent ?? (mode === "exact_product" ? "related_experiences" : undefined);
+  const klookSearchIntent = searchIntentFor(klookMode);
+  const kkdaySearchIntent = searchIntentFor(kkdayMode);
 
   const offers = [
-    offer("klook", "activity_ticket", decision.searchIntent ? "Klook 搜尋相關體驗" : resolveTicketAffiliateOfferLabel("klook", klookMode, decision.commerceType), buildKlookUrl(q, env, ctx?.locale), {
+    offer("klook", "activity_ticket", klookSearchIntent ? "Klook 搜尋相關體驗" : resolveTicketAffiliateOfferLabel("klook", klookMode, decision.commerceType), buildKlookUrl(q, env, ctx?.locale), {
       destination,
       placeName: placeDisplayName(evidence),
       keyword: q,
       disabledReason: "missing_klook_env",
-      searchIntent: decision.searchIntent,
+      searchIntent: klookSearchIntent,
     }),
-    offer("kkday", "activity_ticket", decision.searchIntent ? "KKday 搜尋相關體驗" : resolveTicketAffiliateOfferLabel("kkday", kkdayMode, decision.commerceType), buildKkdayUrl(kkdayInput, env), {
+    offer("kkday", "activity_ticket", kkdaySearchIntent ? "KKday 搜尋相關體驗" : resolveTicketAffiliateOfferLabel("kkday", kkdayMode, decision.commerceType), buildKkdayUrl(kkdayInput, env), {
       destination,
       placeName: placeDisplayName(evidence),
       keyword: q,
       disabledReason: "missing_kkday_env",
-      searchIntent: decision.searchIntent,
+      searchIntent: kkdaySearchIntent,
     }),
   ].filter((o) => {
     if (!o.enabled) return false;
@@ -356,6 +362,47 @@ export function resolveTicketAffiliateOfferLabel(
   }
   if (commerceType === "transport") return `在 ${providerLabel} 搜尋交通票券`;
   return `在 ${providerLabel} 搜尋票券`;
+}
+
+export type RenderedCtaMode = "exact_product" | "ticket_search" | "experience_search" | "hidden";
+
+/**
+ * URL shape of a product page (KKday `/product/{id}`, Klook `/activity/{id}`). Necessary but not
+ * sufficient: a verified product also needs a matching `productId` (see hasVerifiedProductIdentity).
+ */
+export function isAffiliateProductPageUrl(url: string): boolean {
+  try {
+    const { hostname, pathname } = new URL(url);
+    if (/(^|\.)kkday\.com$/i.test(hostname)) return /\/product\/(?!productlist\b)[^/]+/i.test(pathname);
+    if (/(^|\.)klook\.com$/i.test(hostname)) return /\/activity\/\d+/i.test(pathname);
+  } catch {
+    /* Malformed URL is never a verified product. */
+  }
+  return false;
+}
+
+/** Verified only when the offer's product identity and its product-page URL agree. */
+function hasVerifiedProductIdentity(offer: AffiliateLinkOffer): boolean {
+  const productId = offer.productId?.trim();
+  if (!productId || !isAffiliateProductPageUrl(offer.url)) return false;
+  try {
+    const segments = new URL(offer.url).pathname.split("/").map((s) => decodeURIComponent(s));
+    return segments.some((s) => s === productId || s.startsWith(`${productId}-`));
+  } catch {
+    return false;
+  }
+}
+
+/** Telemetry CTA mode shared by itinerary and place detail. */
+export function resolveRenderedCtaMode(offers: readonly AffiliateLinkOffer[]): RenderedCtaMode {
+  const visible = offers.filter((offer) => offer.enabled && offer.url);
+  if (visible.length === 0) return "hidden";
+  if (visible.every(hasVerifiedProductIdentity)) return "exact_product";
+  return visible.some(
+    (offer) => offer.searchIntent === "related_experiences" || offer.label.includes("搜尋體驗"),
+  )
+    ? "experience_search"
+    : "ticket_search";
 }
 
 export function affiliatePlaceHash(value: string): string {
@@ -407,7 +454,7 @@ function logAffiliateCtaEligibility(
       decision.providerSearchFallbackAllowed && offers.some((offer) => offer.enabled),
     renderedCtaMode: !offers.some((offer) => offer.enabled)
       ? "hidden"
-      : decision.exactProviderEvidence
+      : resolveRenderedCtaMode(offers) === "exact_product"
         ? "exact_product"
         : decision.commerceType === "experience" ||
             decision.commerceType === "tour" ||
@@ -442,6 +489,8 @@ export function buildPlaceTicketOffers(
   const place = buildAffiliatePlaceEvidence({
     googlePlaceId: item.googlePlaceId,
     placeName: item.placeName,
+    originalName: item.originalName,
+    localizationSource: item.localizationSource,
     title: item.title,
     placeType: item.placeType,
     category: item.category,
@@ -490,6 +539,8 @@ export function logPlaceDetailAffiliateRender(input: {
 export function buildPlaceDetailTicketOffers(
   place: {
     name?: string | null;
+    originalName?: string | null;
+    localizationSource?: string | null;
     id?: string | null;
     googlePlaceId?: string | null;
     primaryType?: string | null;
@@ -517,6 +568,8 @@ export function buildPlaceDetailTicketOffers(
     id: place.id,
     googlePlaceId: place.googlePlaceId,
     name: place.name,
+    originalName: place.originalName,
+    localizationSource: place.localizationSource,
     primaryType: place.primaryType,
     types: place.types,
     category: place.category,

@@ -443,24 +443,27 @@ function tryBareLandmarkTransliteration(
   const worship =
     /\b(place_of_worship|hindu_temple|temple|pagoda|stupa|shrine)\b/i.test(types) ||
     /\b(temple|pagoda|stupa|shrine)\b/i.test(original);
+  // A place_of_worship type does not say whether it is a shrine, church, mosque or pagoda,
+  // and romanized religious names embed local type words (jinja, wat, chùa) that phonetic
+  // transliteration turns into noise. Keep the original name unless a verified/structural
+  // translation (handled earlier) exists — never invent a building kind.
+  if (worship) return null;
   const hasLocalDiacritics =
     /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i.test(
       original,
     ) || /[\u0300-\u036f]/.test(original.normalize("NFD"));
-  // Bare multi-word Latin without worship context is too risky without verified dict —
-  // except local-diacritic romanization (VN/TH/…) where phonetic 繁中 is the recovery path.
-  if (!worship && !hasLocalDiacritics && tokens.length > 1 && !translit.usedKnownTokens) {
+  // Bare multi-word Latin is too risky without verified dict — except local-diacritic
+  // romanization (VN/TH/…) where phonetic 繁中 is the recovery path.
+  if (!hasLocalDiacritics && tokens.length > 1 && !translit.usedKnownTokens) {
     return null;
   }
 
-  const suffix = worship ? "佛塔" : "";
-  const zh = `${translit.zh}${suffix}`;
   return {
     originalName: original,
-    localizedDisplayName: zh,
+    localizedDisplayName: translit.zh,
     languageCode: "zh-TW",
     localizationSource: "canonical_zh",
-    translationConfidence: Math.min(translit.confidence, worship ? 0.86 : 0.82),
+    translationConfidence: Math.min(translit.confidence, 0.82),
     placeId: input.placeId ?? undefined,
     canonicalPlaceId: input.canonicalPlaceId ?? undefined,
     countryCode: input.countryCode ?? undefined,

@@ -31,7 +31,7 @@ import type { PlaceResult } from "@/lib/place-result";
 import { displayNameForPlaceLike } from "@/lib/place-display-name";
 import type { AffiliateLinkOffer } from "@/lib/affiliate/affiliate-types";
 import { TripAffiliateSection } from "@/components/trip/TripAffiliateSection";
-import { affiliatePlaceHash } from "@/lib/affiliate/affiliate-links";
+import { affiliatePlaceHash, resolveRenderedCtaMode } from "@/lib/affiliate/affiliate-links";
 import { TabelogExternalLink } from "@/components/TabelogExternalLink";
 import { PlaceActionRow } from "@/components/PlaceActionRow";
 import { openExternal } from "@/lib/maps-navigation";
@@ -409,13 +409,7 @@ export function PlaceDetailSheet({
               place.googlePlaceId?.trim() || place.placeName || place.name,
             )}
             eligible
-            renderedCtaMode={
-              ticketOffers.some((offer) => offer.label.includes("搜尋體驗"))
-                ? "experience_search"
-                : ticketOffers.some((offer) => offer.label.includes("搜尋"))
-                  ? "ticket_search"
-                  : "exact_product"
-            }
+            renderedCtaMode={resolveRenderedCtaMode(ticketOffers)}
           />
         ) : null}
 

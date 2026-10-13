@@ -15,10 +15,12 @@ try {
     { types: ['botanical_garden', 'tourist_attraction'] },
     { types: ['garden'], ticketingAvailable: true },
     { types: ['museum', 'tourist_attraction'] },
-    { types: ['historical_site', 'tourist_attraction'] },
-    { types: ['monument', 'tourist_attraction'] },
     { types: ['palace', 'tourist_attraction'] },
-    { types: ['temple', 'tourist_attraction'] },
+    // Heritage / religious types are search intent only with prominence (no names, no lists).
+    { types: ['historical_site', 'tourist_attraction'], rating: 4.5, userRatingCount: 2000 },
+    { types: ['monument', 'tourist_attraction'], rating: 4.5, userRatingCount: 2000 },
+    { types: ['temple', 'tourist_attraction'], rating: 4.5, userRatingCount: 2000 },
+    { types: ['place_of_worship', 'tourist_attraction'], rating: 4.6, userRatingCount: 30000 },
     { types: ['national_park', 'tourist_attraction'] },
     { placeType: '摩天輪', placeName: '天保山大摩天輪' },
   ];
@@ -35,6 +37,17 @@ try {
   }
   for (const type of ['park', 'bridge', 'road', 'neighborhood', 'train_station', 'museum', 'temple', 'garden']) {
     assert.equal(shouldShowTicketAffiliate({ ...base, types: [type] }).show, false, `ordinary ${type}`);
+  }
+  // Device case shapes: small listed shrine / burial mound with tourist metadata only.
+  for (const extra of [
+    { types: ['historical_site', 'tourist_attraction'] },
+    { types: ['monument', 'tourist_attraction'] },
+    { types: ['temple', 'tourist_attraction'] },
+    { types: ['place_of_worship', 'tourist_attraction', 'point_of_interest'], rating: 4.0, userRatingCount: 300 },
+    { types: ['historical_landmark', 'tourist_attraction', 'park'], rating: 3.9, userRatingCount: 124 },
+  ]) {
+    assert.equal(shouldShowTicketAffiliate({ ...base, ...extra }).show, false, `low-prominence heritage ${JSON.stringify(extra)}`);
+    assert.equal(buildPlaceTicketOffers({ ...base, ...extra }).length, 0);
   }
   for (const type of ['bridge', 'road', 'train_station']) {
     assert.equal(shouldShowTicketAffiliate({ ...base, types: [type, 'tourist_attraction'] }).show, false);

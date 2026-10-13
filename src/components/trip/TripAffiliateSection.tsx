@@ -4,7 +4,11 @@ import { useI18n } from "@/hooks/use-i18n";
 import { ExternalLink } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AffiliateLinkOffer } from "@/lib/affiliate/affiliate-types";
-import { openAffiliateUrl } from "@/lib/affiliate/affiliate-links";
+import {
+  openAffiliateUrl,
+  resolveRenderedCtaMode,
+  type RenderedCtaMode,
+} from "@/lib/affiliate/affiliate-links";
 import { cn } from "@/lib/utils";
 import { recordAnalyticsEvent } from "@/lib/analytics/record";
 
@@ -22,7 +26,7 @@ type Props = {
   placeHash?: string;
   eligibilityResolved?: boolean;
   eligible?: boolean;
-  renderedCtaMode?: "exact_product" | "ticket_search" | "experience_search" | "hidden";
+  renderedCtaMode?: RenderedCtaMode;
 };
 
 const OPEN_RESET_MS = 800;
@@ -59,7 +63,7 @@ export function TripAffiliateSection({
       surface,
       eligibilityResolved,
       eligible: eligible ?? visible.length > 0,
-      renderedCtaMode: renderedCtaMode ?? (visible.length > 0 ? "exact_product" : "hidden"),
+      renderedCtaMode: renderedCtaMode ?? resolveRenderedCtaMode(visible),
       offerCount: visible.length,
       sectionInvoked: true,
       sectionRendered: visible.length > 0,

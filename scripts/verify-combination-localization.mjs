@@ -18,6 +18,7 @@ import {
 } from "../src/lib/place-display-name.ts";
 import { clearLocalizedPlaceNameCache } from "../src/lib/place-localization/localized-place-name-cache.ts";
 import { formatBrandDisplayNameZh } from "../src/lib/place-localization/place-name-translation-policy.ts";
+import { lookupCanonicalPlaceTranslation } from "../src/lib/place-localization/canonical-place-translations.ts";
 
 clearLocalizedPlaceNameCache();
 
@@ -231,3 +232,33 @@ console.log(
 console.log(
   `deliveryPass=${gated.tripCombinationDeliveryPass} displayPass=${gated.localizationDisplayPass} englishFallback=${gated.englishFallbackCount} droppedEnglish=${gated.droppedEnglishFallback}`,
 );
+
+// --- Religious sites: a place_of_worship type never invents a building kind ---
+{
+  const worship = (types) => ({ types, primaryType: types[0] });
+  const W = ["place_of_worship", "tourist_attraction"];
+  const lookup = (name, types, placeId = "ChIJ_worship_fixture") =>
+    lookupCanonicalPlaceTranslation({ originalName: name, placeId, ...worship(types) });
+  // R1 device case: Hakusan Shrine was rendered as 哈庫薩納希里內佛塔.
+  for (const name of ["Hakusan Shrine", "Hakusan Jinja", "Hakusan", "Kanda Myojin"]) {
+    const r = lookup(name, W);
+    assert.equal(r, null, `${name} must keep its original name, got ${r?.localizedDisplayName}`);
+  }
+  // R3 shrine / church / mosque / Thai & Vietnamese wat-chùa forms keep original names.
+  for (const [name, types] of [
+    ["Notre Dame", ["church", "place_of_worship"]],
+    ["Sultan Mosque", ["mosque", "place_of_worship"]],
+    ["Wat Pho", W],
+    ["Chùa Một Cột", W],
+    ["Shwesandaw", W],
+  ]) {
+    const r = lookup(name, types);
+    assert.ok(!r || !/佛塔/.test(r.localizedDisplayName), `${name} must not gain 佛塔: ${r?.localizedDisplayName}`);
+  }
+  // R2 genuine pagoda names still translate; verified dictionary still wins.
+  assert.match(lookup("Shwedagon Pagoda", W)?.localizedDisplayName ?? "", /佛塔$/);
+  assert.equal(lookup("Bulethi", W)?.localizedDisplayName, "布雷迪佛塔");
+  // R4 Place ID is carried, never rewritten.
+  assert.equal(lookup("Shwedagon Pagoda", W, "ChIJ_keep_id")?.placeId, "ChIJ_keep_id");
+  console.log("OK worship naming: no fabricated 佛塔, real pagodas intact, placeId unchanged");
+}

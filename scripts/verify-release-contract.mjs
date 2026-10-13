@@ -11,7 +11,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, resolve, join } from "node:path";
+import { dirname, resolve, join, posix } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync, execFileSync } from "node:child_process";
 import { openSync, closeSync, statSync } from "node:fs";
@@ -252,6 +252,7 @@ try {
   assert.match(lifecycle.postbuild, /capacitor-prepare.*verify-release-artifacts/);
   assert.match(lifecycle.postbuild, /verify-google-client-bundle\.mjs --artifact dist\/client/);
   const calls = [];
+  const removals = [];
   const ios = readFileSync(resolve(repo, "scripts/ios-release-build.mjs"), "utf8")
     .replace(/^import .*;$/gm, "")
     .replace(
@@ -266,11 +267,22 @@ try {
       },
     },
     console: { info() {} },
+    resolve: (...parts) => posix.resolve(...parts),
+    // Native fs is mocked like spawnSync: record the removal and its position between commands.
+    rmSync(path, options) {
+      removals.push({ path, options, afterCommand: calls.length });
+    },
     spawnSync(cmd, args, options) {
       calls.push({ cmd, args, options });
       return { status: 0 };
     },
   });
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(removals)),
+    [{ path: "/isolated/ios/App/App/public", options: { recursive: true, force: true }, afterCommand: 2 }],
+    "iOS release removes only the stale synced copy, after the iOS client build and before capacitor prepare",
+  );
+  pass("iOS release removes the stale synced iOS public copy before prepare/cap sync; fs mocked");
   assert.deepEqual(JSON.parse(JSON.stringify(calls.map((x) => [x.cmd, ...x.args]))), [
     ["node", "scripts/sync-app-bundle-meta.mjs"],
     ["node", "scripts/production-build.mjs", "--maps-client=ios"],

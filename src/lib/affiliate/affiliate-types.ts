@@ -21,6 +21,8 @@ export type AffiliateLinkOffer = {
   kind: AffiliateOfferKind;
   label: string;
   url: string;
+  /** Provider product identity; set only from verified product evidence, never inferred from a URL. */
+  productId?: string;
   enabled: boolean;
   /** env 缺失等原因 */
   disabledReason?: string;
