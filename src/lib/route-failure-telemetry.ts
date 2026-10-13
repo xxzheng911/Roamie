@@ -19,6 +19,8 @@ export type RouteApiFailureTelemetry = {
   httpStatus: number;
   httpOk: boolean;
   googleStatus: string;
+  /** Status read from a genuine Google body only; never an HTTP-code backfill or proxy-synthesized value. */
+  upstreamGoogleStatus?: string | null;
   googleErrorMessage: string;
   routesCount: number;
   legsCount: number;

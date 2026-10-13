@@ -121,7 +121,7 @@ function logFailedRouteAttempt(params: {
       `attemptedMode=${params.attemptedMode}`,
       `httpStatus=${params.telemetry.httpStatus}`,
       `httpOk=${params.telemetry.httpOk}`,
-      `googleStatus=${params.telemetry.googleStatus}`,
+      `upstreamGoogleStatus=${params.telemetry.upstreamGoogleStatus ?? "unknown"}`,
       `googleErrorMessage=${params.telemetry.googleErrorMessage || "none"}`,
       `routesCount=${params.telemetry.routesCount}`,
       `legsCount=${params.telemetry.legsCount}`,

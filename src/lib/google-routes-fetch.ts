@@ -63,6 +63,7 @@ function routesFailureTelemetry(params: {
   routesCount?: number;
   legsCount?: number;
   exception?: unknown;
+  upstreamGoogleStatus?: string | null;
 }): RouteApiFailureTelemetry {
   const exceptionName = params.exception instanceof Error ? params.exception.name : "";
   const exceptionMessage = params.exception instanceof Error ? params.exception.message : "";
@@ -71,6 +72,7 @@ function routesFailureTelemetry(params: {
     httpStatus: params.httpStatus,
     httpOk: params.httpOk,
     googleStatus: params.googleStatus,
+    upstreamGoogleStatus: params.upstreamGoogleStatus ?? null,
     googleErrorMessage: sanitizeRouteTelemetryText(params.googleErrorMessage),
     routesCount: params.routesCount ?? 0,
     legsCount: params.legsCount ?? 0,

@@ -1,7 +1,13 @@
 import { authorizeGoogleBilling, runtimeGuardEnv } from "@/lib/abuse-guard.server";
 import { utcDay } from "@/lib/abuse-guard-clock";
 import type { GoogleBillingFamily } from "@/lib/abuse-guard-policy";
-import { googleObservation, configureGoogleObservation, observeProviderAttempt } from "@/lib/abuse-guard-telemetry.server";
+import {
+  googleObservation,
+  configureGoogleObservation,
+  guardRejectionReason,
+  observeProviderAttempt,
+  type GuardTelemetryReason,
+} from "@/lib/abuse-guard-telemetry.server";
 import type { CloudflareRuntimeEnv } from "@/lib/server-request-context";
 import { resolveTrustedIp, resolveTrustedUserId } from "@/lib/worker-request-scope";
 
@@ -23,7 +29,7 @@ export async function runGoogleUpstreamAttempt(
     photoPrincipal?: { userId: string | null; audience: "guest" | "authenticated" | "legacy_capability" };
   },
   dispatch: () => Promise<Response>,
-): Promise<{ denied: Response } | { response: Response }> {
+): Promise<{ denied: Response; denialReason: GuardTelemetryReason | null } | { response: Response }> {
   const env = runtimeGuardEnv(input.env);
   const userId = input.photoPrincipal ? input.photoPrincipal.userId : resolveTrustedUserId();
   const audience = input.photoPrincipal?.audience ?? (userId ? "authenticated" : "guest");
@@ -43,7 +49,7 @@ export async function runGoogleUpstreamAttempt(
     ip: resolveTrustedIp(input.request),
     observation,
   });
-  if (denied) return { denied };
+  if (denied) return { denied, denialReason: guardRejectionReason(observation) };
   const finish = observeProviderAttempt(observation);
   let success = false;
   try {

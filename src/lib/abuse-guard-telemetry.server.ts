@@ -228,6 +228,18 @@ export function observeGuardRejection(observation: GuardObservation, reason: str
   }
 }
 
+/** Read-only: the rejection reason this observation actually recorded, or null. Never alters decisions. */
+export function guardRejectionReason(observation: GuardObservation): GuardTelemetryReason | null {
+  const seen = observations.get(observation)?.seen;
+  if (!seen) return null;
+  for (const key of seen) {
+    const [decision, reason] = key.split(":");
+    if ((decision === "deny" || decision === "unavailable") && reasons[decision].includes(reason as GuardTelemetryReason))
+      return reason as GuardTelemetryReason;
+  }
+  return null;
+}
+
 /** Capture at the real fetch boundary; terminal callback remains safe after request scope ends. */
 export function observeProviderAttempt(observation: GuardObservation): (success: boolean) => void {
   const state = observations.get(observation);

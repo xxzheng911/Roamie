@@ -49,6 +49,7 @@ function directionsFailureTelemetry(params: {
   legsCount?: number;
   parserResult?: RouteApiFailureTelemetry["parserResult"];
   exception?: unknown;
+  upstreamGoogleStatus?: string | null;
 }): RouteApiFailureTelemetry {
   const exceptionName =
     params.exception instanceof Error ? params.exception.name : params.exception ? "UnknownError" : "";
@@ -64,6 +65,7 @@ function directionsFailureTelemetry(params: {
     httpStatus: params.httpStatus,
     httpOk: params.httpOk,
     googleStatus: params.googleStatus,
+    upstreamGoogleStatus: params.upstreamGoogleStatus ?? null,
     googleErrorMessage: sanitizeRouteTelemetryText(params.googleErrorMessage),
     routesCount: params.routesCount ?? 0,
     legsCount: params.legsCount ?? 0,
@@ -293,6 +295,8 @@ export async function fetchGoogleDirectionsRoute(
           httpStatus: res.status,
           httpOk: res.ok,
           googleStatus: bodyStatus,
+          // Only a 2xx proxy body is Google's own; non-2xx bodies are masked by the proxy.
+          upstreamGoogleStatus: res.ok && typeof json.status === "string" ? json.status : null,
           googleErrorMessage: errorMessage,
           routesCount,
           legsCount,
