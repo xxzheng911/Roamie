@@ -58,7 +58,7 @@ const cold = place(["point_of_interest"], {
   primaryType: "point_of_interest",
 });
 const reviewEvidence = extractPlaceReviewEvidence(cold.id, [{ text: { text: "有提供插座" } }]);
-assert.match(reason(cold), /^這是一個地點/);
+assert.equal(reason(cold), "可以視當天安排，作為這趟行程的候選地點。");
 const rich = {
   ...cold,
   primaryType: "bakery",
@@ -68,7 +68,7 @@ const rich = {
 };
 writePlaceRuntimeCache(cold.id, { reasonPlace: rich });
 test("13 enrichment recomputes cold persisted identity", () =>
-  assert.match(reason({ ...cold, reason: "這是一個地點。" }), /^這是一間烘焙店/));
+  assert.match(reason({ ...cold, reason: "這是一個地點。" }), /插座/));
 test("14 review retained", () => assert.match(reason(cold), /插座/));
 test("15 hours retained", () => assert.match(reason(cold), /07:00–23:00/));
 test("16 surface parity", () => {

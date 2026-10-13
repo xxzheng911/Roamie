@@ -222,7 +222,7 @@ export function resolvePlaceDetailReasonWithSource(
       null,
       null,
       undefined,
-      { presentation: "detail" },
+      { ...snap?.reasonContext, presentation: "detail" },
       locale,
     ),
     source: place.reviewEvidence?.signals.length ? "review_evidence" : "place_metadata_fallback",
@@ -485,7 +485,8 @@ export function mergeFetchedPlace(
       null,
       null,
       undefined,
-      { presentation: "detail" },
+      // Hydration only refreshes Place facts; the card's reason context is preserved.
+      { ...base.reasonContext, presentation: "detail" },
       locale,
     ),
     website: fetched.website,

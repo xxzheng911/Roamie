@@ -1,4 +1,5 @@
 import { PlaceRecommendationReason } from "@/components/PlaceRecommendationReason";
+import type { PlaceReasonContextSnapshot } from "@/lib/build-place-recommendation-reason";
 import { useI18n } from "@/hooks/use-i18n";
 import { useRef, useState } from "react";
 import {
@@ -54,6 +55,8 @@ function TransportModeIcon({ mode }: { mode: TravelModeId }) {
 
 export type PlaceDetailData = PlaceResult & {
   reason: string;
+  /** Non-private V2 reason context carried from the originating card. */
+  reasonContext?: PlaceReasonContextSnapshot;
   website?: string | null;
   phone?: string | null;
 };

@@ -7,7 +7,11 @@ import { spawn } from "node:child_process";
 import { build } from "esbuild";
 const root = process.cwd();
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "roamie-review-browser-"));
-const mocks = { "@/hooks/use-i18n": `export const useI18n=()=>({locale:"zh-TW"});` };
+const mocks = {
+  "@/hooks/use-i18n": `export const useI18n=()=>({locale:"zh-TW"});`,
+  // Guest renderer: no access provider, no private reason profile.
+  "@/hooks/use-access": `export const useAccessOptional=()=>null;`,
+};
 const entry = `import React from 'react';import {createRoot} from 'react-dom/client';
 import {PlaceRecommendationReason} from './src/components/PlaceRecommendationReason';
 import {writePlaceRuntimeCache} from './src/lib/place-runtime-cache';
@@ -20,17 +24,17 @@ const until=async(fn,msg)=>{for(let i=0;i<100;i++){if(fn())return;await tick();}
 window.run=async()=>{
  root.render(<>{['Explore','Search','Favorites','Itinerary'].map(surface=><article key={surface}><PlaceRecommendationReason place={p} presentation="detail"/></article>)}</>);
  await until(()=>document.querySelectorAll('article').length===4,'cold mount');
- await tick();if(document.querySelector('article').textContent!=='這是一個地點。')throw Error('cold reason');
+ await tick();if(document.querySelector('article').textContent!=='可以視當天安排，作為這趟行程的候選地點。')throw Error('cold reason');
  const enriched={...p,primaryType:'bakery',types:['bakery','food','store'],reviewEvidence:extractPlaceReviewEvidence(p.id,[{name:'a',text:{text:'有提供插座'}},{name:'b',text:{text:'座位旁有插座'}}]),todayHoursLabel:'10:00–18:00'};
  writePlaceRuntimeCache(p.id,{reasonPlace:enriched});
- await until(()=>[...document.querySelectorAll('article')].every(el=>el.textContent.startsWith('這是一間烘焙店')&&el.textContent.includes('插座')&&el.textContent.includes('18:00')),'enrichment event updates all mounted surfaces');
+ await until(()=>[...document.querySelectorAll('article')].every(el=>el.textContent.startsWith('多則評論提到')&&el.textContent.includes('插座')&&el.textContent.includes('18:00')),'enrichment event updates all mounted surfaces');
  const texts=[...document.querySelectorAll('article')].map(el=>el.textContent);
  if(new Set(texts).size!==1)throw Error('different core reason');
  const hotel={...p,id:'ChIJ_BrowserHotel',name:'Example'};
  root.render(<>{['Explore','Search','Favorites','Itinerary'].map(surface=><article key={surface}><PlaceRecommendationReason place={hotel} presentation="detail"/></article>)}</>);
- await until(()=>[...document.querySelectorAll('article')].every(el=>el.textContent==='這是一個地點。'),'cold hotel');
+ await until(()=>[...document.querySelectorAll('article')].every(el=>el.textContent==='可以視當天安排，作為這趟行程的候選地點。'),'cold hotel');
  writePlaceRuntimeCache(hotel.id,{reasonPlace:{...hotel,primaryType:'hotel',types:['hotel','lodging'],reviewEvidence:extractPlaceReviewEvidence(hotel.id,[{text:{text:'環境安靜，服務親切'}}]),todayHoursLabel:'07:00–23:00'}});
- await until(()=>[...document.querySelectorAll('article')].every(el=>el.textContent.startsWith('這是一間飯店')&&el.textContent.includes('安靜')&&el.textContent.includes('親切')&&el.textContent.includes('23:00')),'hotel enrichment retains reviews and hours');
+ await until(()=>[...document.querySelectorAll('article')].every(el=>el.textContent.startsWith('有評論提到')&&el.textContent.includes('安靜')&&el.textContent.includes('親切')&&el.textContent.includes('23:00')),'hotel enrichment retains reviews and hours');
  const hotelReason=document.querySelector('article').textContent;
  if(calls!==0)throw Error('render fetched');
  root.unmount();return {result:'PASS',hotelReason,hotelUpgrade:true,mountedColdToEnriched:true,stalePersistedReasonIgnored:true,fourSurfacesSameCore:true,providerRequests:calls,finalReason:texts[0]};};`;

@@ -80,7 +80,7 @@ test("9 localized current hours survive", () =>
     reason({ ...base, reviewEvidence: evidence, currentOpeningHours: { weekdayDescriptions: days } }),
     /10:00–18:00/,
   ));
-test("10 cold identity", () => assert.equal(reason(base), "這是一間咖啡廳。"));
+test("10 cold identity", () => assert.equal(reason(base), "可以作為行程中途補充飲品或點心的一站。"));
 // Simulate a persisted pre-upgrade payload without clearing unrelated storage.
 const stored = new Map();
 globalThis.localStorage = {

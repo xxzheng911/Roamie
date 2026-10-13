@@ -16,6 +16,7 @@ import { buildPlaceMapsUrl } from "@/lib/maps-navigation";
 import type { PlaceResult } from "@/lib/place-result";
 import {
   buildPlaceRecommendationReason,
+  type PlaceReasonContextSnapshot,
   resolveRecommendationReasonPlace,
   type UserProfileForReason,
 } from "@/lib/build-place-recommendation-reason";
@@ -157,6 +158,8 @@ export type ChatDiscovery = {
 };
 
 export type ChatPlaceItem = RoamieRecommendationItem & {
+  /** Non-private reason context so renderers/restore re-derive the same V2 reason. */
+  reasonContext?: PlaceReasonContextSnapshot;
   lat?: number | null;
   lng?: number | null;
   googleMapsUrl?: string;
@@ -837,6 +840,12 @@ export function mapPlaceResultToChatItem(
   );
   return {
     ...base,
+    // The normalizer re-derives without card context; keep the context-aware authority text.
+    reason,
+    reasonContext: {
+      categoryIntent: ctx.categoryIntent,
+      preferenceEvidenceSource: ctx.preferenceEvidenceSource,
+    },
     placeId: p.id,
     displayName,
     localizedDisplayName: displayName,

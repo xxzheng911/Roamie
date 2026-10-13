@@ -10,6 +10,7 @@ import {
   buildPlaceRecommendationReason,
   resolveRecommendationReasonPlace,
 } from "../src/lib/build-place-recommendation-reason";
+import { recommendationPlaceType } from "../src/lib/place-identity";
 import { buildUnifiedPlaceCard, buildUnifiedPlaceCards } from "../src/lib/unified-place-card";
 import { mapPlaceResultToChatItem } from "../src/lib/chat-session";
 import { buildDiversePlaceRecommendationReasons } from "../src/lib/place-reason-diversity";
@@ -66,7 +67,11 @@ function test(name, fn) {
   console.log("PASS", name);
 }
 const rich = withReviews(["有插座可以工作", "插座很多，適合带筆電工作", "有插座，適合使用筆電"]);
-test("1 identity leads", () => assert.match(reason(rich), /^這是一間咖啡廳/));
+// V2: the card already shows the type; the reason leads with evidence, not "這是一間X".
+test("1 evidence leads without type template", () => {
+  assert.match(reason(rich), /^可取得的多則評論一致提到/);
+  assert.doesNotMatch(reason(rich), /這是一/);
+});
 test("2 multiple positive evidence", () => assert.match(reason(rich), /多則.*插座/));
 test("3 single mention wording", () => {
   const r = reason(withReviews(["停車很方便"]));
@@ -102,7 +107,7 @@ test("10 split hours", () =>
   ));
 test("11 review outranks popularity", () =>
   assert.doesNotMatch(reason(rich), /1832|熱門|Google 評分/));
-test("12 sparse fallback", () => assert.equal(reason(base), "這是一間咖啡廳。"));
+test("12 sparse fallback is neutral and claim-free", () => assert.equal(reason(base), "可以作為行程中途補充飲品或點心的一站。"));
 test("13 cross-surface same snapshot", () => {
   const expected = reason(rich);
   assert.equal(
@@ -135,7 +140,9 @@ test("13 cross-surface same snapshot", () => {
   );
   const trip = tripPlaceToItineraryItem(tripPlaceFromPlaceResult(rich), { date: "2026-09-23" });
   assert.deepEqual(trip.reviewEvidence, rich.reviewEvidence);
-  assert.equal(itineraryItemToPlaceHandoff(trip).reason, expected);
+  // Without a confirmed slot the trip handoff equals the card; with one it only appends context.
+  assert.equal(itineraryItemToPlaceHandoff({ ...trip, time: "" }).reason, expected);
+  assert.ok(itineraryItemToPlaceHandoff(trip).reason.startsWith(reason(rich, "compact")));
 });
 test("14 presentation preserves core", () => {
   const p = { ...rich, todayHoursLabel: "今日 10:00–18:00" };
@@ -189,7 +196,7 @@ test("19 raw types hidden", () =>
   ));
 test("20 Traditional Chinese without duplicated template", () => {
   const r = reason(rich);
-  assert.equal((r.match(/這是一間/g) || []).length, 1);
+  assert.equal((r.match(/這是一間/g) || []).length, 0);
   assert.doesNotMatch(r, /。。|多數評論|所有評論|熱門選擇/);
 });
 test("negation, conditionals and contradiction", () => {
@@ -218,7 +225,12 @@ test("semantic types", () => {
     ["buddhist_temple", "寺廟"],
     ["observation_deck", "展望台"],
   ])
-    assert.ok(reason({ ...base, id: type, primaryType: type, types: [type] }).includes(label));
+    // Identity authority is unchanged; V2 prose no longer repeats it.
+    assert.ok(
+      recommendationPlaceType(
+        resolveRecommendationReasonPlace({ ...base, id: type, primaryType: type, types: [type] }),
+      )[0].includes(label),
+    );
 });
 test("closed now does not mean closed today", () =>
   assert.doesNotMatch(
@@ -253,7 +265,8 @@ test("server merge rejects unchecked AI prose and preserves locale", () => {
     categoryId: "coffee",
   };
   const result = mergeAiWithVerifiedCandidates(ai, [candidate], { minCount: 1 });
-  assert.match(result.recommendations[0].reason, /^This is a café/);
+  assert.match(result.recommendations[0].reason, /drink or a snack/);
+  assert.doesNotMatch(result.recommendations[0].reason, /^This is a/);
   assert.doesNotMatch(result.recommendations[0].reason, /sockets|parking/);
 });
 test("planner delivery preserves structured evidence", () => {

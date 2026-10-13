@@ -1,5 +1,6 @@
 import {
   buildPlaceRecommendationReason,
+  pickReasonContextSnapshot,
   resolveRecommendationReasonPlace,
 } from "@/lib/build-place-recommendation-reason";
 import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
@@ -35,6 +36,10 @@ export function recommendationToPlaceSnapshot(
   const id = rec.googlePlaceId?.trim();
   if (!id) return null;
   const categoryId = inferExploreCategoryId(rec.type);
+  // Chat cards carry a non-private reason context; keep it so Detail re-derives the same reason.
+  const reasonContext = pickReasonContextSnapshot(
+    (rec as { reasonContext?: unknown }).reasonContext,
+  );
   const photoName = rec.photoName ?? null;
   const primaryType = rec.primaryType?.trim() || rec.type?.trim() || null;
   const types = rec.types?.filter((type) => type.trim().length > 0) ?? [];
@@ -71,9 +76,10 @@ export function recommendationToPlaceSnapshot(
       null,
       null,
       undefined,
-      undefined,
+      reasonContext,
       effectiveAppLocale(),
     ),
+    reasonContext,
     categoryId,
     displayCategory: resolvePlaceDisplayCategory(placeTypeMetadata),
     coverImageUrl: photoName

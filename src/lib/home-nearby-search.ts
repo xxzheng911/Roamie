@@ -47,7 +47,10 @@ import { beginPlacesFlow, endPlacesFlow, placesStatsPayload } from "@/lib/places
 import { homeNearbySearchRadiusMeters } from "@/lib/search-radius";
 import { withSearchTimeout } from "@/lib/search-timeout";
 import { buildUnifiedPlaceCards } from "@/lib/unified-place-card";
-import type { UserProfileForReason } from "@/lib/build-place-recommendation-reason";
+import type {
+  PlaceReasonContextSnapshot,
+  UserProfileForReason,
+} from "@/lib/build-place-recommendation-reason";
 import type { SavedPlace } from "@/lib/places-storage";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { prioritizeWeatherAwareHomeWaves } from "@/lib/ai/weather-place-search";
@@ -90,6 +93,8 @@ export type HomeNearbyPick = ExplorePlaceCard & {
   displayCategory?: string;
   coverImageUrl?: string | null;
   distanceLabel?: string;
+  /** Non-private V2 reason context carried across handoff/restore. */
+  reasonContext?: PlaceReasonContextSnapshot;
 };
 
 export type HomeSearchWave = {

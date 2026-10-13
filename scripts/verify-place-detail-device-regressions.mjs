@@ -83,7 +83,7 @@ test("metadata fallback contains no fabricated review claim", () => {
   const resolved = resolvePlaceDetailReasonWithSource(handoff);
   assert.equal(resolved.source, "place_metadata_fallback");
   // Rating alone is a place fact, not a recommendation reason.
-  assert.equal(resolved.reason, "這是一個地點。");
+  assert.equal(resolved.reason, "可以視當天安排，作為這趟行程的候選地點。");
   assert.doesNotMatch(resolved.reason, /Google 評分/);
   assert.doesNotMatch(
     resolved.reason,

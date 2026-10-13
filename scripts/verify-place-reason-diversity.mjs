@@ -545,7 +545,8 @@ test("fallback reasonSource is accepted by the formal recommendation schema", ()
     "legacy evidence metadata remains available",
   );
   assert.doesNotMatch(expected, /Google 評分|5000|熱門/);
-  assert.match(expected, /^這是一間咖啡廳/);
+  assert.doesNotMatch(expected, /^這是一間/);
+  assert.match(expected, /評論提到/);
   console.log(
     "PASS canonical batch authority: stable across single/batch/order, preserves places and evidence metadata",
   );

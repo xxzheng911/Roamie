@@ -61,8 +61,20 @@ test("Add-to-Trip stores canonical prose and provenance", () => {
   assert.equal(stop.recommendationReason, expected);
   assert.equal(stop.recommendationSource, "explore");
 });
-test("Trip to Detail uses same evidence", () =>
-  assert.equal(itineraryItemToPlaceHandoff(stop, locale).reason, expected));
+// V2: Detail opened from the trip keeps the same verified primary and may add the confirmed slot.
+test("Trip to Detail uses same evidence", () => {
+  const primary = buildPlaceRecommendationReason(
+    resolveRecommendationReasonPlace(recommendation),
+    null,
+    null,
+    undefined,
+    { presentation: "compact" },
+    locale,
+  );
+  const handoff = itineraryItemToPlaceHandoff(stop, locale).reason;
+  assert.ok(handoff.startsWith(primary), handoff);
+  assert.equal(itineraryItemToPlaceHandoff({ ...stop, time: "" }, locale).reason, expected);
+});
 test("JSON hydration preserves evidence", () =>
   assert.deepEqual(
     normalizeItineraryItem(JSON.parse(JSON.stringify(stop)), locale).reviewEvidence,
@@ -114,10 +126,10 @@ test("different trips retain same evidence with independent notes", () => {
 });
 test("detail reads structured evidence", () => {
   const h = itineraryItemToPlaceHandoff(stop, locale);
-  assert.deepEqual(resolvePlaceDetailReasonWithSource(h, h.snapshot, locale), {
-    reason: expected,
-    source: "review_evidence",
-  });
+  // V2: Detail honours the handoff's confirmed itinerary slot, so it matches the handoff reason.
+  const detail = resolvePlaceDetailReasonWithSource(h, h.snapshot, locale);
+  assert.deepEqual(detail, { reason: h.reason, source: "review_evidence" });
+  assert.ok(detail.reason.startsWith(expected), detail.reason);
 });
 test("handoff delegates to authority", () =>
   assert.match(

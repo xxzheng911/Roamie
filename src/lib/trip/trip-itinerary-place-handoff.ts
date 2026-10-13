@@ -71,10 +71,22 @@ export function itineraryItemToPlaceHandoff(
   const googlePlaceId = item.googlePlaceId?.trim() ?? "";
   const resolvedGooglePlaceId = isGooglePlaceId(googlePlaceId) ? googlePlaceId : "";
   const place = itineraryItemToPlaceResult(item, resolvedGooglePlaceId);
-  const reason = buildPlaceRecommendationReason(place, null, null, undefined, undefined, locale);
+  // Only the confirmed itinerary slot is carried; no durations or travel times are inferred.
+  const reasonContext = item.time?.trim()
+    ? { itinerary: { scheduledTime: item.time.trim() } }
+    : undefined;
+  const reason = buildPlaceRecommendationReason(
+    place,
+    null,
+    null,
+    undefined,
+    reasonContext,
+    locale,
+  );
   const categoryId = inferExploreCategoryId(place);
   const snapshot: HomeNearbyPick = {
     ...place,
+    reasonContext,
     reason: reason ?? "",
     categoryId,
     displayCategory: resolvePlaceDisplayCategory(place),
