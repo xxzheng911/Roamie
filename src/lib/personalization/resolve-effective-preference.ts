@@ -163,10 +163,16 @@ export function updateSessionPreferenceFromExplicitText(
     next.walkability = /一定|必須|只能/.test(text) ? "required" : "preferred";
     touched.push("walkability");
   }
-  if (/今天想放鬆|慢慢走|不想趕/.test(text)) {
+  // `節奏：悠閒／排滿` is the chat session pace as written into the client conversation summary
+  // (chat-session buildConversationSummary), i.e. the user's explicit choice for this trip.
+  if (/今天想放鬆|慢慢走|不想趕|節奏：(?:悠閒|慢旅)/.test(text)) {
     next.temporaryPace = "slow";
     next.temporaryMood = "放鬆";
     touched.push("temporaryPace", "temporaryMood");
+  }
+  if (/積極探索|行程排滿|排滿一點|多排一點|緊湊一點|多跑幾個|節奏：排滿|pack(?:ed)? (?:it|the (?:day|itinerary)) (?:full|in)|as much as possible/i.test(text)) {
+    next.temporaryPace = "active";
+    touched.push("temporaryPace");
   }
   if (/熱鬧一點|想熱鬧|有生活感/.test(text)) {
     next.temporaryVibe = "lively";

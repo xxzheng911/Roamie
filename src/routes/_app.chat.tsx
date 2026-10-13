@@ -11109,16 +11109,17 @@ function Chat() {
           logAiCreateItineraryDay(day.dayIndex, day.date, day.items.length);
         }
         const recommendations = dayPlanToRecommendations(dayPlan);
+        // The session pace is this turn's explicit choice (chat-session writes 悠閒 / 排滿), not the
+        // Plus quiz; with no choice it stays unset so trip style / defaults apply.
         const pace = resolvePlannerPaceFromProfile({
+          requestPace: /悠閒|慢旅/.test(workingSession.pace ?? "")
+            ? "slow"
+            : workingSession.pace === "排滿"
+              ? "active"
+              : undefined,
           style: resolvePlannerStyleKey(
             workingSession.tripStyles || (workingSession.pace === "排滿" ? "緊湊" : "慢旅行"),
           ),
-          quizPace:
-            workingSession.pace === "慢旅" || workingSession.pace === "慢旅行"
-              ? "slow"
-              : workingSession.pace === "排滿"
-                ? "active"
-                : "medium",
         });
         createResult = {
           ok: true,

@@ -12,7 +12,14 @@ import {
   repairDailyScheduleAcrossDays,
   resolveDailyScheduleIntent,
 } from "@/lib/ai/daily-schedule-contract";
-import { placeDistanceM, PLANNER_DAY_ANCHOR_RADIUS_M } from "@/lib/ai/planner-day-route-assembly";
+import {
+  maxEffectivePlacesPerDay,
+  placeDistanceM,
+  PLANNER_DAY_ANCHOR_RADIUS_M,
+} from "@/lib/ai/planner-day-route-assembly";
+import { applyTierToAiContext } from "@/lib/access/context";
+import { updateSessionPreferenceFromExplicitText } from "@/lib/personalization/resolve-effective-preference";
+import type { TravelPreferences } from "@/lib/preferences-storage";
 import { SCHEDULED_DAY_TIME_SLOTS } from "@/lib/ai/day-time-slots";
 import { createEmptyDayBudget } from "@/lib/ai/time-budget-planner";
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
@@ -472,11 +479,13 @@ function buildItineraryFromSelectedPlaces(
   selectedCombinationIds?: number[],
   requireDeliverableCandidates = false,
   scheduleIntentText?: string,
+  pace?: "slow" | "medium" | "active",
 ): RoamieItineraryItem[] {
   return buildFallbackItineraryFromPlaces(selectedPlaces, days, startDate, destination, {
     selectedCombinationIds,
     requireDeliverableCandidates,
     scheduleIntentText,
+    pace,
   });
 }
 
@@ -879,6 +888,34 @@ export const generateItinerary = createServerFn({ method: "POST" })
     });
 
     const interestsText = [data.interests, data.conversationSummary].filter(Boolean).join("\n\n");
+    // Plus personalization authority: the credits middleware already resolved the server
+    // entitlement (resolve_user_plus_entitlement); plusBypass is true only for verified Plus.
+    // Client-sent preferences never grant Plus. Priority (plus-personalization-v1): this turn's
+    // explicit request > trip style > Plus long-term quiz > default.
+    const serverPlusEntitlement = context.itineraryCreditReservation?.plusBypass === true;
+    const requestPreference = updateSessionPreferenceFromExplicitText(null, interestsText, "itinerary_request");
+    const quizPreferences = data.preferences as TravelPreferences | undefined;
+    const effectivePreferences: TravelPreferences | undefined =
+      serverPlusEntitlement && quizPreferences
+        ? {
+            ...quizPreferences,
+            ...(requestPreference.temporaryPace ? { pace: requestPreference.temporaryPace } : {}),
+            ...(requestPreference.temporaryVibe ? { vibe: requestPreference.temporaryVibe } : {}),
+          }
+        : quizPreferences;
+    const effectivePace = resolvePlannerPaceFromProfile({
+      requestPace: requestPreference.temporaryPace,
+      style: resolvePlannerStyleKey(data.style),
+      quizPace: serverPlusEntitlement
+        ? (quizPreferences?.pace as "slow" | "medium" | "active" | undefined)
+        : null,
+    });
+    // A slower pace never drops selected must-visit places: fall back to the default pace when
+    // the slow daily capacity cannot hold every selected place.
+    const selectedPlannerPace =
+      effectivePace === "slow" && selectedPlaces.length > data.days * maxEffectivePlacesPerDay("slow")
+        ? "medium"
+        : effectivePace;
     const startDate = data.startDate?.trim() || new Date().toISOString().slice(0, 10);
     const selectedCombinationIds = data.selectedCombinationIds ?? [];
     const requiredPlaceNames = requiredSelectedPlaces.map((p) => p.placeName ?? p.name);
@@ -928,6 +965,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
         selectedCombinationIds,
         false,
         interestsText,
+        selectedPlannerPace,
       );
       const coverageCheck = validateGeneratedItinerary({
         tripDays: data.days,
@@ -951,11 +989,11 @@ export const generateItinerary = createServerFn({ method: "POST" })
 
     if (!ai) {
       try {
-        const aiResponse: RoamieResponse = await callRoamieAI({
+        const aiResponse: RoamieResponse = await callRoamieAI(applyTierToAiContext({
           mode: "itinerary",
           locale: data.locale,
           mood: data.mood,
-          preferences: data.preferences as never,
+          preferences: effectivePreferences as never,
           location: data.location,
           weather: data.weather as never,
           time: data.time,
@@ -979,7 +1017,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
             selectedPlaces,
             selectedCombinationIds,
           },
-        });
+        }, serverPlusEntitlement ? "plus" : "free"));
 
         aiResponse.generatedLocale = data.locale ?? "zh-TW";
         let rawItinerary = coalesceItineraryItems(aiResponse.itinerary);
@@ -1054,6 +1092,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
         selectedCombinationIds,
         false,
         interestsText,
+        selectedPlannerPace,
       );
       ai = buildFallbackTripPayload(data, builtItems, selectedPlaces);
       usedDeterministic = true;
@@ -1141,6 +1180,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
           selectedCombinationIds,
           false,
           interestsText,
+          selectedPlannerPace,
         );
         ai = buildFallbackTripPayload(data, rebuilt, selectedPlaces);
         usedDeterministic = true;
@@ -1177,10 +1217,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
           generationId,
           stage,
           plannedDate: startDate,
-          pace: resolvePlannerPaceFromProfile({
-            style: data.style,
-            quizPace: data.preferences?.pace as "slow" | "medium" | "active" | null,
-          }),
+          pace: effectivePace,
           normalizationOutcome,
         });
         if (normalizationOutcome) finalTimelineNormalization = normalizationOutcome;
@@ -1260,6 +1297,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
         selectedCombinationIds,
         false,
         interestsText,
+        selectedPlannerPace,
       );
       ai = buildFallbackTripPayload(data, rebuilt, selectedPlaces);
       finalStops = coalesceItineraryItems(ai.itinerary);
@@ -1371,6 +1409,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
           selectedCombinationIds,
           false,
           interestsText,
+          selectedPlannerPace,
         );
         ai = { ...ai, itinerary: finalStops };
       } else {
@@ -1405,6 +1444,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
           selectedCombinationIds,
           false,
           interestsText,
+          selectedPlannerPace,
         );
         ai = { ...ai, itinerary: finalStops };
       }
@@ -1452,6 +1492,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
           selectedCombinationIds,
           false,
           interestsText,
+          selectedPlannerPace,
         );
         ai = { ...ai, itinerary: finalStops };
       }
@@ -1609,6 +1650,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
         selectedCombinationIds,
         false,
         interestsText,
+        selectedPlannerPace,
       );
       if (rebuilt.length > finalStops.length) {
         finalStops = rebuilt;
@@ -1860,6 +1902,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
                 selectedCombinationIds,
                 true,
                 interestsText,
+                selectedPlannerPace,
               );
           if (rebuiltStops.length) {
             const rebuiltRoutedPlans = applyFinalDayRouteOrdering(
@@ -2429,7 +2472,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
         destination: data.destination,
         preferences: {
           transportation: data.transport,
-          pace: data.preferences?.pace as string | undefined,
+          pace: effectivePace,
         },
         weather: weatherHint
           ? {
@@ -2445,10 +2488,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
         time: data.time,
         useAiReasons: true,
       });
-      const pace = resolvePlannerPaceFromProfile({
-        style: resolvePlannerStyleKey(data.style),
-        quizPace: data.preferences?.pace as "slow" | "medium" | "active" | null,
-      });
+      const pace = effectivePace;
       const localizedGate = applyItineraryLocalizationGate(coalesceItineraryItems(ai.itinerary), {
         softPassEnglish: true,
       });
@@ -2484,10 +2524,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
       softPassEnglish: true,
     });
     const itineraryItems = gated.items;
-    const paceForLegs = resolvePlannerPaceFromProfile({
-      style: resolvePlannerStyleKey(data.style),
-      quizPace: data.preferences?.pace as "slow" | "medium" | "active" | null,
-    });
+    const paceForLegs = effectivePace;
     if (!tripSettings) {
       tripSettings = {
         startTime: coalesceItineraryItems(itineraryItems)[0]?.time?.slice(0, 5) ?? "09:30",

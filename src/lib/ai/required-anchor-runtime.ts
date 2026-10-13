@@ -452,14 +452,20 @@ export function plannerDeliveryCheck(params: {
 }
 
 /** Resolve planner pace from trip style + Plus quiz pace. */
+/**
+ * Planner pace priority (plus-personalization-v1): this turn's explicit request > this trip's
+ * style choice > Plus long-term quiz > default. Callers pass `quizPace` only for server-verified Plus.
+ */
 export function resolvePlannerPaceFromProfile(params: {
+  requestPace?: "slow" | "medium" | "active" | null;
   style?: string | null;
   quizPace?: "slow" | "medium" | "active" | null;
 }): "slow" | "medium" | "active" {
-  if (params.quizPace === "slow" || params.quizPace === "active" || params.quizPace === "medium") {
-    return params.quizPace;
-  }
+  const valid = (pace: unknown): pace is "slow" | "medium" | "active" =>
+    pace === "slow" || pace === "medium" || pace === "active";
+  if (valid(params.requestPace)) return params.requestPace;
   if (params.style === "slow_nature") return "slow";
+  if (valid(params.quizPace)) return params.quizPace;
   return "medium";
 }
 
