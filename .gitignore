@@ -38,3 +38,5 @@ dist-ssr
 
 # Supabase CLI local cache (cli-latest, linked project, service versions)
 supabase/.temp/
+.claude/dispatch-scope.json
+.claude/worktrees/
