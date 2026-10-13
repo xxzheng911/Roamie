@@ -69,6 +69,40 @@ export function resolvePlaceCategoryFamily(place: PlaceResult): PlaceCategoryFam
   const types = typeSet(place);
   const blob = blobOf(place);
 
+  // Structured dining authority precedes name/address hints (e.g. a restaurant named 酒吧).
+  // A specific primary cafe/bar/club remains that role even when Google also includes food
+  // or restaurant. Without a specific primary, explicit restaurant evidence beats names.
+  const diningRole = (type: string): PlaceCategoryFamily | null => {
+    if (type === "cafe" || type === "coffee_shop" || type === "tea_house") return "cafe";
+    if (
+      [
+        "bar",
+        "pub",
+        "wine_bar",
+        "cocktail_bar",
+        "live_music_bar",
+        "night_club",
+        "nightclub",
+        "adult_entertainment",
+      ].includes(type)
+    )
+      return "nightlife";
+    if (type === "restaurant" || type.endsWith("_restaurant")) return "restaurant";
+    return null;
+  };
+  const primary = (place.primaryType ?? "").trim().toLowerCase();
+  const primaryRole = diningRole(primary);
+  if (primaryRole) return primaryRole;
+  // A museum/park with an ancillary restaurant is still a museum/park.
+  if (
+    !primary ||
+    ["tourist_attraction", "point_of_interest", "establishment", "food"].includes(primary)
+  ) {
+    if ([...types].some((type) => diningRole(type) === "restaurant")) return "restaurant";
+    if ([...types].some((type) => diningRole(type) === "cafe")) return "cafe";
+    if ([...types].some((type) => diningRole(type) === "nightlife")) return "nightlife";
+  }
+
   // Wildlife wins before park/name matching: e.g. "Bird Park" occupies only wildlife_family.
   if (
     types.has("zoo") ||
@@ -156,21 +190,13 @@ export function resolvePlaceCategoryFamily(place: PlaceResult): PlaceCategoryFam
   ) {
     return "historic_district";
   }
-  if (types.has("cafe") || types.has("coffee_shop") || /咖啡|cafe|coffee/i.test(blob)) {
+  if (types.has("cafe") || types.has("coffee_shop")) {
     return "cafe";
   }
-  if (
-    types.has("night_club") ||
-    types.has("bar") ||
-    /酒吧|nightlife|夜店/i.test(blob)
-  ) {
+  if (types.has("night_club") || types.has("bar")) {
     return "nightlife";
   }
-  if (
-    types.has("restaurant") ||
-    types.has("food") ||
-    /餐|料理|restaurant|dining/i.test(blob)
-  ) {
+  if ([...types].some((type) => diningRole(type) === "restaurant")) {
     return "restaurant";
   }
   return "other";

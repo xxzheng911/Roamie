@@ -87,13 +87,20 @@ export function isRestBreakVenue(place: PlaceResult): boolean {
 }
 
 function isLatePinned(entry: { label: string; place: PlaceResult }): boolean {
+  if (isFullMealVenue(entry.place)) return false;
   return LATE_PINNED_RE.test(
-    [entry.label, entry.place.primaryType, ...(entry.place.types ?? []), entry.place.name].join(" "),
+    [entry.label, entry.place.primaryType, ...(entry.place.types ?? []), entry.place.name].join(
+      " ",
+    ),
   );
 }
 
 /** Meal label matching a full-meal venue's time; non-meal labels on non-meal stops are kept. */
-export function scheduleLabelFor(entry: { time: string; label: string; place: PlaceResult }): string {
+export function scheduleLabelFor(entry: {
+  time: string;
+  label: string;
+  place: PlaceResult;
+}): string {
   if (isFullMealVenue(entry.place)) {
     const window = mealWindowForEntry(entry);
     if (window) return MEAL_LABEL[window];
@@ -114,15 +121,74 @@ export type DailyScheduleViolation = {
   names: string[];
 };
 
-type ScheduleEntry = { time: string; label: string; name?: string; place: PlaceResult };
+type ScheduleEntry = {
+  time: string;
+  label: string;
+  name?: string;
+  place: PlaceResult;
+  /** Optional known timing only. Category estimates / text guesses are not timing evidence. */
+  timing?: { stayMinutes?: number; travelToNextMinutes?: number };
+};
+
+const knownMinutes = (value: number | undefined): number | null =>
+  value != null && Number.isFinite(value) && value >= 0 ? value : null;
+
+function hasKnownMealBreak(entries: readonly ScheduleEntry[], window: MealWindow): boolean {
+  const timed = entries
+    .map((entry) => ({ entry, start: parseScheduleMinutes(entry.time) }))
+    .filter((e): e is { entry: ScheduleEntry; start: number } => e.start != null)
+    .sort((a, b) => a.start - b.start);
+  const w = MEAL_WINDOWS[window];
+  return timed.slice(0, -1).some(({ entry, start }, i) => {
+    const stay = knownMinutes(entry.timing?.stayMinutes);
+    const travel = knownMinutes(entry.timing?.travelToNextMinutes);
+    if (stay == null || travel == null) return false;
+    return Math.min(timed[i + 1]!.start - travel, w.end) - Math.max(start + stay, w.start) >= 45;
+  });
+}
+
+/** Missing main-meal windows, not a restaurant count. Unknown dwell/travel stays unknown.
+ * A day must span the window, so morning/afternoon half days do not acquire extra meals.
+ * A proven >=45 minute free gap is a meal opportunity, not an invented restaurant visit.
+ * Outdoor meal planning remains opt-in; its existing longer break rule still applies.
+ */
+export function missingDailyMealWindows(
+  entries: readonly ScheduleEntry[],
+  intent: DailyScheduleIntent = NEUTRAL_DAILY_SCHEDULE_INTENT,
+): Array<"lunch" | "dinner"> {
+  if (intent.noMeals || intent.outdoor) return [];
+  const timed = entries
+    .map((entry) => ({ entry, start: parseScheduleMinutes(entry.time) }))
+    .filter((e): e is { entry: ScheduleEntry; start: number } => e.start != null)
+    .sort((a, b) => a.start - b.start);
+  if (!timed.length) return [];
+  const first = timed[0]!.start;
+  const last = Math.max(
+    ...timed.map(({ entry, start }) => start + (knownMinutes(entry.timing?.stayMinutes) ?? 0)),
+  );
+  return (["lunch", "dinner"] as const).filter((window) => {
+    const w = MEAL_WINDOWS[window];
+    if (first > w.start || last < w.end) return false;
+    if (
+      timed.some(
+        ({ entry, start }) => isFullMealVenue(entry.place) && mealWindowAt(start) === window,
+      )
+    )
+      return false;
+    // Do not treat a large difference between start clocks as proven free time: the visit
+    // and journey may occupy it. Both durations must be supplied by a trusted caller.
+    return !hasKnownMealBreak(entries, window);
+  });
+}
 
 /**
  * Evaluates one day. Time- and intent-aware: counts alone never fail a day.
  * - consecutive_food_stops: adjacent full meals closer than a reasonable gap.
  * - meal_window_mismatch: full meal outside every meal window, or a meal label
  *   whose time is outside that meal's window.
- * - long_stretch_without_break: ≥4 consecutive non-rest stops spanning ≥5h through a
- *   meal anchor (outdoor: ≥5 stops, ≥7h). Skipped when the user asked for no meals.
+ * - long_stretch_without_break: uncovered full meal window, or ≥4 consecutive non-rest
+ *   stops spanning ≥5h (outdoor: ≥5 stops, ≥7h), without a proven meal break.
+ *   Skipped when the user asked for no meals. Missing durations are never guessed.
  */
 export function evaluateDailySchedule(
   entries: readonly ScheduleEntry[],
@@ -182,6 +248,14 @@ export function evaluateDailySchedule(
   }
 
   if (!intent.noMeals) {
+    const missingWindows = missingDailyMealWindows(entries, intent);
+    for (const window of missingWindows) {
+      violations.push({
+        code: "long_stretch_without_break",
+        detail: `missing_${window}_coverage`,
+        names: timed.map(({ entry }) => name(entry)),
+      });
+    }
     const minStops = intent.outdoor ? 5 : 4;
     const minSpan = intent.outdoor ? 420 : 300;
     let start = 0;
@@ -197,7 +271,17 @@ export function evaluateDailySchedule(
       const crossesMeal = [MEAL_WINDOWS.lunch.center, MEAL_WINDOWS.dinner.center].some(
         (center) => first <= center && last >= center,
       );
-      if (end - start + 1 >= minStops && last - first >= minSpan && crossesMeal) {
+      const runEntries = timed.slice(start, end + 1).map((e) => e.entry);
+      const knownBreak = (["lunch", "dinner"] as const).some((window) =>
+        hasKnownMealBreak(runEntries, window),
+      );
+      if (
+        !missingWindows.length &&
+        !knownBreak &&
+        end - start + 1 >= minStops &&
+        last - first >= minSpan &&
+        crossesMeal
+      ) {
         violations.push({
           code: "long_stretch_without_break",
           detail: `${timed[start]!.entry.time}-${timed[end]!.entry.time}:stops=${end - start + 1}`,
@@ -285,7 +369,11 @@ export function arrangeDayWithMealAnchors<T extends ScheduleEntry>(
     .filter((m): m is number => m != null && inRange(m));
 
   type Slot = { m: number; own: T; owner: T | null };
-  const slots: Slot[] = movable.map((e) => ({ m: parseScheduleMinutes(e.time)!, own: e, owner: null }));
+  const slots: Slot[] = movable.map((e) => ({
+    m: parseScheduleMinutes(e.time)!,
+    own: e,
+    owner: null,
+  }));
   // A movable clock outside the valid range is re-homed to a free in-range standard clock.
   for (const slot of slots) {
     if (inRange(slot.m)) continue;
@@ -322,7 +410,9 @@ export function arrangeDayWithMealAnchors<T extends ScheduleEntry>(
   const plannedFor = new Map<T, MealWindow>();
   const pending: T[] = [];
   // 1) Keep meals already in a reasonable, open meal window (dinner stays dinner).
-  for (const meal of [...meals].sort((a, b) => parseScheduleMinutes(a.time)! - parseScheduleMinutes(b.time)!)) {
+  for (const meal of [...meals].sort(
+    (a, b) => parseScheduleMinutes(a.time)! - parseScheduleMinutes(b.time)!,
+  )) {
     const slot = slots.find((s) => s.own === meal && !s.owner);
     const window = mealWindowForEntry(meal);
     if (
@@ -381,6 +471,21 @@ export function arrangeDayWithMealAnchors<T extends ScheduleEntry>(
           .sort((a, b) => distanceToMeals(b.m) - distanceToMeals(a.m))[0] ??
         own ??
         slots.find((s) => !s.owner);
+      // If full repair is impossible, use an existing standard clock only when it reduces
+      // crowding. The residual remains a violation; never label it as a successful repair.
+      if (slot) {
+        const used = new Set([...slots.filter((s) => s !== slot).map((s) => s.m), ...fixedClocks]);
+        const safer = pool
+          .filter(
+            (m) =>
+              !used.has(m) &&
+              mealWindowAt(m) != null &&
+              !closed(meal.place, m) &&
+              distanceToMeals(m) > distanceToMeals(slot!.m),
+          )
+          .sort((a, b) => distanceToMeals(b) - distanceToMeals(a))[0];
+        if (safer != null) slot.m = safer;
+      }
     }
     if (slot) slot.owner = meal;
   }
@@ -406,7 +511,12 @@ export function arrangeDayWithMealAnchors<T extends ScheduleEntry>(
         planned && mealWindowAt(s.m) === planned
           ? MEAL_LABEL[planned]
           : scheduleLabelFor({ ...entry, time });
-      return { ...entry, time, label };
+      return {
+        ...entry,
+        time,
+        label,
+        timing: entry.timing ? { stayMinutes: entry.timing.stayMinutes } : undefined,
+      };
     });
   return [...arranged, ...fixed].sort(
     (a, b) => parseScheduleMinutes(a.time)! - parseScheduleMinutes(b.time)!,
@@ -475,56 +585,169 @@ export function repairDailyScheduleAcrossDays<
   const intent = options.intent ?? NEUTRAL_DAILY_SCHEDULE_INTENT;
   const isTimeFixed = (e: E) => options.isTimeFixed?.(e) ?? false;
   const isDayFixed = (e: E) => isTimeFixed(e) || (options.isDayFixed?.(e) ?? false);
-  let current = plans.map((plan) => ({ ...plan, entries: [...plan.entries] }));
-  if (!intent.noMeals) {
-    const surplusAbove = surplusMealsAbove(intent);
-    for (let guard = 0; guard < 8; guard += 1) {
-      const receiver = current
-        .filter((p) => p.entries.length >= 3 && !p.entries.some((e) => isFullMealVenue(e.place)))
-        .sort((a, b) => b.entries.length - a.entries.length)[0];
-      if (!receiver) break;
-      let best: { from: number; entry: E; distance: number } | null = null;
-      for (let index = 0; index < current.length; index += 1) {
-        const plan = current[index]!;
-        const meals = plan.entries.filter((e) => isFullMealVenue(e.place));
-        if (plan === receiver || meals.length <= surplusAbove) continue;
-        for (const meal of meals) {
-          if (isDayFixed(meal) || meal.place.destinationScope === "nearby_extension") continue;
-          const distance = Math.min(
-            ...receiver.entries.map((e) => options.distanceM(e.place, meal.place)),
-          );
-          if (!Number.isFinite(distance) || distance > options.maxMoveM) continue;
-          if (!best || distance < best.distance) best = { from: index, entry: meal, distance };
+  let current = reanchorViolatingDays(plans, { ...options, intent, isTimeFixed });
+  const count = (ps: readonly P[]) =>
+    ps.reduce((n, p) => n + evaluateDailySchedule(p.entries, intent).length, 0);
+  const foodFailures = (ps: readonly P[]) =>
+    ps.reduce(
+      (n, p) =>
+        n +
+        evaluateDailySchedule(p.entries, intent).filter((v) => v.code === "consecutive_food_stops")
+          .length,
+      0,
+    );
+  if (intent.noMeals || intent.outdoor) return current;
+  for (let guard = 0; guard < 8; guard += 1) {
+    let best: P[] | null = null;
+    let bestSeverity = dailyScheduleSeverity(current, intent);
+    const beforeCount = count(current),
+      beforeFood = foodFailures(current);
+    for (let to = 0; to < current.length; to += 1) {
+      const receiver = current[to]!;
+      const missing = missingDailyMealWindows(receiver.entries, intent);
+      // A short day is never required to add a meal. It may accept an existing surplus
+      // meal at an available clock when that strictly repairs the donor's violation.
+      const available = (["lunch", "dinner"] as const).filter(
+        (window) =>
+          receiver.entries.length >= 3 &&
+          receiver.entries.some((e) => mealWindowAt(parseScheduleMinutes(e.time)) === window) &&
+          !receiver.entries.some(
+            (e) =>
+              isFullMealVenue(e.place) && mealWindowAt(parseScheduleMinutes(e.time)) === window,
+          ),
+      );
+      for (const window of [...new Set([...missing, ...available])]) {
+        const w = MEAL_WINDOWS[window];
+        const clocks = receiver.entries
+          .map((e) => parseScheduleMinutes(e.time))
+          .filter((m): m is number => m != null);
+        const budget = options.dayWindowFor?.(receiver.day);
+        const low = Math.max(Math.min(...clocks), parseScheduleMinutes(budget?.start) ?? 0);
+        const high = Math.min(Math.max(...clocks), parseScheduleMinutes(budget?.end) ?? 1440);
+        const targets = [
+          ...new Set([
+            ...clocks,
+            ...(options.slotPool ?? [])
+              .map(parseScheduleMinutes)
+              .filter((m): m is number => m != null),
+          ]),
+        ]
+          .filter((m) => m >= low && m <= high && m >= w.start && m <= w.end)
+          .sort((a, b) => Math.abs(a - w.center) - Math.abs(b - w.center));
+        for (let from = 0; from < current.length; from += 1) {
+          if (from === to) continue;
+          const donor = current[from]!;
+          if (
+            !missing.includes(window) &&
+            !evaluateDailySchedule(donor.entries, intent).some(
+              (v) => v.code === "consecutive_food_stops" || v.code === "meal_window_mismatch",
+            )
+          )
+            continue;
+          const meals = donor.entries.filter((e) => isFullMealVenue(e.place));
+          if (meals.length <= surplusMealsAbove(intent)) continue;
+          for (const meal of meals) {
+            if (isDayFixed(meal) || meal.place.destinationScope === "nearby_extension") continue;
+            const distance = Math.min(
+              ...receiver.entries.map((e) => options.distanceM(e.place, meal.place)),
+            );
+            if (!Number.isFinite(distance) || distance > options.maxMoveM) continue;
+            for (const back of receiver.entries) {
+              if (
+                isFullMealVenue(back.place) ||
+                isDayFixed(back) ||
+                back.place.destinationScope === "nearby_extension"
+              )
+                continue;
+              const backDistance = Math.min(
+                ...donor.entries.map((e) => options.distanceM(e.place, back.place)),
+              );
+              if (!Number.isFinite(backDistance) || backDistance > options.maxMoveM) continue;
+              for (const target of targets) {
+                const time = formatMinutes(target);
+                if (
+                  receiver.entries.some((e) => e !== back && e.time === time) ||
+                  options.isClosedAt?.(meal.place, time)
+                )
+                  continue;
+                if (options.isClosedAt?.(back.place, meal.time)) continue;
+                // Travel evidence describes an adjacency, so it cannot survive a swap.
+                const moved = (entry: E, time: string): E => ({
+                  ...entry,
+                  time,
+                  timing: entry.timing ? { stayMinutes: entry.timing.stayMinutes } : undefined,
+                });
+                const swapped = current.map((plan, i) =>
+                  i === from
+                    ? {
+                        ...plan,
+                        entries: plan.entries.map((e) =>
+                          e === meal ? moved(back, meal.time) : moved(e, e.time),
+                        ),
+                      }
+                    : i === to
+                      ? {
+                          ...plan,
+                          entries: plan.entries.map((e) =>
+                            e === back ? moved(meal, time) : moved(e, e.time),
+                          ),
+                        }
+                      : plan,
+                ) as P[];
+                const candidate = reanchorViolatingDays(swapped, {
+                  ...options,
+                  intent,
+                  isTimeFixed,
+                });
+                if (
+                  !candidate[to]!.entries.some(
+                    (e) =>
+                      isFullMealVenue(e.place) &&
+                      mealWindowAt(parseScheduleMinutes(e.time)) === window,
+                  )
+                )
+                  continue;
+                if (missingDailyMealWindows(candidate[to]!.entries, intent).includes(window))
+                  continue;
+                const priorMissing = missingDailyMealWindows(donor.entries, intent);
+                if (
+                  missingDailyMealWindows(candidate[from]!.entries, intent).some(
+                    (w) => !priorMissing.includes(w),
+                  )
+                )
+                  continue;
+                const score = dailyScheduleSeverity(candidate, intent);
+                // Never trade a new consecutive meal or donor violation for receiver coverage.
+                if (
+                  score >= bestSeverity ||
+                  count(candidate) >= beforeCount ||
+                  foodFailures(candidate) > beforeFood
+                )
+                  continue;
+                if (
+                  [from, to].some(
+                    (i) =>
+                      evaluateDailySchedule(candidate[i]!.entries, intent).filter(
+                        (v) => v.code === "consecutive_food_stops",
+                      ).length >
+                      evaluateDailySchedule(current[i]!.entries, intent).filter(
+                        (v) => v.code === "consecutive_food_stops",
+                      ).length,
+                  )
+                )
+                  continue;
+                best = candidate;
+                bestSeverity = score;
+              }
+            }
+          }
         }
       }
-      if (!best) break;
-      const { from, entry } = best;
-      // Swap with the receiver's movable non-meal stop closest to the donor day, so neither
-      // day's stop count (pace capacity) changes and nothing gets trimmed later.
-      const donorPlaces = current[from]!.entries.map((e) => e.place);
-      const back = receiver.entries
-        .filter(
-          (e) =>
-            !isFullMealVenue(e.place) &&
-            !isDayFixed(e) &&
-            e.place.destinationScope !== "nearby_extension",
-        )
-        .sort(
-          (a, b) =>
-            Math.min(...donorPlaces.map((p) => options.distanceM(p, a.place))) -
-            Math.min(...donorPlaces.map((p) => options.distanceM(p, b.place))),
-        )[0];
-      if (!back) break;
-      current = current.map((plan, index) =>
-        index === from
-          ? { ...plan, entries: plan.entries.map((e) => (e === entry ? { ...back, time: entry.time } : e)) }
-          : plan === receiver
-            ? { ...plan, entries: plan.entries.map((e) => (e === back ? { ...entry, time: back.time } : e)) }
-            : plan,
-      );
     }
+    if (!best) break;
+    current = best;
   }
-  return reanchorViolatingDays(current as P[], { ...options, intent, isTimeFixed });
+  return current;
 }
 
 /**
@@ -546,25 +769,31 @@ export function reanchorViolatingDays<
   },
 ): P[] {
   const intent = options.intent ?? NEUTRAL_DAILY_SCHEDULE_INTENT;
-  return plans.map((plan) =>
-    (options.onlyDays && !options.onlyDays.has(plan.day)) ||
-    evaluateDailySchedule(plan.entries, intent).length === 0
-      ? plan
-      : ({
-          ...plan,
-          entries: arrangeDayWithMealAnchors(
-            [...plan.entries].sort(
-              (a, b) => (parseScheduleMinutes(a.time) ?? 0) - (parseScheduleMinutes(b.time) ?? 0),
-            ),
-            {
-              intent,
-              slotPool: options.slotPool,
-              orderFree: (free) => free,
-              isTimeFixed: options.isTimeFixed,
-              dayWindow: options.dayWindowFor?.(plan.day) ?? null,
-              isClosedAt: options.isClosedAt,
-            },
-          ),
-        } as P),
-  );
+  return plans.map((plan) => {
+    const before = evaluateDailySchedule(plan.entries, intent);
+    if ((options.onlyDays && !options.onlyDays.has(plan.day)) || before.length === 0) return plan;
+    const entries = arrangeDayWithMealAnchors(
+      [...plan.entries].sort(
+        (a, b) => (parseScheduleMinutes(a.time) ?? 0) - (parseScheduleMinutes(b.time) ?? 0),
+      ),
+      {
+        intent,
+        slotPool: options.slotPool,
+        orderFree: (free) => free,
+        isTimeFixed: options.isTimeFixed,
+        dayWindow: options.dayWindowFor?.(plan.day) ?? null,
+        isClosedAt: options.isClosedAt,
+      },
+    );
+    const candidate = { ...plan, entries } as P;
+    const after = evaluateDailySchedule(entries, intent);
+    if (
+      after.length > before.length ||
+      dailyScheduleSeverity([candidate], intent) > dailyScheduleSeverity([plan], intent) ||
+      after.filter((v) => v.code === "consecutive_food_stops").length >
+        before.filter((v) => v.code === "consecutive_food_stops").length
+    )
+      return plan;
+    return candidate;
+  });
 }

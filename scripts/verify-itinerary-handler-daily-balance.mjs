@@ -40,17 +40,17 @@ const D1 = "2026-11-02";
 const D2 = "2026-11-03";
 const item = (date, time, p, title = p.n) => ({
   date, time, title, description: p.n, placeName: p.n, lat: p.lat, lng: p.lng,
-  address: "東京都", googlePlaceId: p.gid, placeType: p.t, notes: "",
+  address: "東京都", googlePlaceId: p.gid, placeType: p.t, types: p.types ?? [p.t], notes: "",
 });
 const toRec = (p, combo) => ({
-  name: p.n, placeName: p.n, type: p.t, types: [p.t], primaryType: p.t, description: p.n, reason: "",
+  name: p.n, placeName: p.n, type: p.t, types: p.types ?? [p.t], primaryType: p.t, description: p.n, reason: "",
   estimatedTime: "1 小時", address: "東京都", lat: p.lat, lng: p.lng, googleMapsUrl: "", reasonSource: "template",
   googlePlaceId: p.gid, photoName: null, rating: 4.5, userRatingCount: 1200, businessStatus: "OPERATIONAL",
   ...(combo ? { matchedSelectedCombinationIds: [1], sourceCombinationId: 1 } : {}),
 });
 
 // ── Harness ──
-async function run({ days, places, it = [], interests = "", selected = false, credits = { plusBypass: true } }) {
+async function run({ days, places, endDate, it = [], interests = "", selected = false, credits = { plusBypass: true } }) {
   aiJson = { summary: "東京", recommendations: [], itinerary: it };
   const rpc = [];
   let captured = null;
@@ -75,7 +75,7 @@ async function run({ days, places, it = [], interests = "", selected = false, cr
   let thrown = null;
   try {
     const data = InputSchema.parse({
-      destination: "東京", days, startDate: D1, locale: "zh-TW", interests,
+      destination: "東京", days, startDate: D1, ...(endDate ? {endDate} : {}), locale: "zh-TW", interests,
       selectedPlaces: places.map((p) => toRec(p, selected)),
       ...(selected ? { selectedCombinationIds: [1], placeAuthority: "selected_only" } : {}),
     });
@@ -286,6 +286,51 @@ await test("H18 credits settlement contract unchanged (commit on success, rollba
   assert.equal(H1.rpc.length, 0, "plus bypass never settles");
 });
 
+
+const { productionA, productionB } = await import("./fixtures/daily-balance-production.mjs");
+const productionRuns=[];
+for (const [name,fixture] of [["A",productionA],["B-pre-release",productionB]]) {
+  const places=fixture.flatMap(d=>d.places.map(p=>({...p,n:p.name,t:p.primaryType,gid:p.googlePlaceId})));
+  const it=fixture.flatMap(d=>d.places.map(p=>item(d.day===1?D1:D2,p.time,{...p,n:p.name,t:p.primaryType,gid:p.googlePlaceId})));
+  const r=await run({days:2,places,it,endDate:D2}); productionRuns.push(r);
+  await test(`PROD ${name}: real Handler repairs schedule without adding providers`,()=>{
+    ok(r);
+    for(const {list} of byDay(r.stops)) {
+      assert.ok(list.some(s=>isMeal(s)&&min(s.time)>=660&&min(s.time)<=870),"missing lunch");
+      assert.deepEqual(mealGaps(list).filter(g=>g<120),[],"consecutive full meals");
+    }
+    assert.equal(r.stops.length,places.length);
+    assert.deepEqual([...ids(r.stops)].sort(),places.map(p=>p.gid).sort());
+    assert.ok(r.aiCalls<=2);assert.equal(r.googleCalls,0);
+  });
+}
+await test("PROD A: initial validator detects two structured meals and requests repair",()=>{
+  const r=productionRuns[0];
+  assert.ok(r.logs.some(l=>/rule=consecutive_food_stops pass=false/.test(l)));
+  assert.ok(r.logs.some(l=>l.includes("[ITINERARY_REPLAN_INPUT]")));
+});
+
+await test("R11 production selected-only preserves all IDs, capacity and zero Google calls",async()=>{
+  const places=productionA.flatMap(d=>d.places.map(p=>({...p,n:p.name,t:p.primaryType,gid:p.googlePlaceId})));
+  const r=await run({days:2,places,selected:true,endDate:D2});ok(r);
+  assert.deepEqual([...ids(r.stops)].sort(),places.map(p=>p.gid).sort());
+  assert.ok(byDay(r.stops).every(d=>d.list.length<=6));
+  assert.equal(r.googleCalls,0);assert.equal(r.aiCalls,0);
+});
+await test("R15 no candidates: final warning never claims repaired",()=>{
+  assert.ok(H11.logs.some(l=>l.includes("unrepaired_at_final:")));
+});
+await test("R16 real Handler payload survives JSON persistence and saved normalization",async()=>{
+  const {normalizeStoredTrip}=await import("../src/lib/saved-trip/normalize.ts");
+  for(const r of productionRuns){
+    ok(r);
+    const payload=JSON.parse(JSON.stringify(r.out.trip.payload));
+    const view=normalizeStoredTrip({id:"fixture",title:"fixture",payload,created_at:"2026-11-01",updated_at:"2026-11-01"});
+    const expected=byDay(r.stops).flatMap(d=>d.list.map(s=>`${s.date}|${s.time}|${s.googlePlaceId}`));
+    const actual=view.days.flatMap(d=>d.items.map(s=>`${d.date}|${s.time}|${s.placeId}`));
+    assert.deepEqual(actual,expected);
+  }
+});
 let failed = 0;
 for (const [name, error] of results) {
   if (error) failed += 1;

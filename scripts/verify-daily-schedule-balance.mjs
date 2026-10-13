@@ -424,6 +424,85 @@ await test("B4 explicit no-meal intent is respected", () => {
 
 await test("Provider calls stay at zero", () => assert.equal(requests, 0));
 
+
+// Production shapes: neutral intent, offline only; B is pre-release evidence.
+const { productionA, productionB, asPlans } = await import("./fixtures/daily-balance-production.mjs");
+const { resolvePlaceCategoryFamily } = await import("../src/lib/ai/place-category-family.ts");
+const { evaluateTourismQuality } = await import("../src/lib/ai/tourism-quality-gate.ts");
+const prodA = asPlans(productionA), prodB = asPlans(productionB);
+const repairOpts = { distanceM: () => 100, maxMoveM: 5000,
+  slotPool: ["09:30", "11:00", "12:30", "14:00", "15:30", "17:00", "18:30", "19:00"],
+  dayWindowFor: () => ({ start:"09:00", end:"21:00" }) };
+const violations = ps => ps.flatMap(p => contract.evaluateDailySchedule(p.entries));
+const missingLunch = p => !p.entries.some(x => contract.isFullMealVenue(x.place) && inLunch(minutes(x.time)));
+await test("R1 structured restaurant beats the name 酒吧", () => {
+  assert.equal(resolvePlaceCategoryFamily(productionA[0].places[2]), "restaurant");
+  assert.equal(resolvePlaceCategoryFamily({...productionA[0].places[2], types:["japanese_restaurant"]}), "restaurant");
+});
+await test("R2 structured cafe / bar / nightclub roles survive conflicting names", () => {
+  for (const [primaryType, expected] of [["bar","nightlife"],["night_club","nightlife"],["cafe","cafe"]]) {
+    assert.equal(resolvePlaceCategoryFamily({...productionA[0].places[2], primaryType, types:[primaryType,"food"]}), expected);
+  }
+  assert.equal(resolvePlaceCategoryFamily({...productionA[0].places[2],primaryType:"cafe",types:["cafe","restaurant"]}),"cafe");
+  assert.equal(resolvePlaceCategoryFamily({...productionA[0].places[2],primaryType:"cocktail_bar",types:["cocktail_bar","food"]}),"nightlife");
+  assert.equal(resolvePlaceCategoryFamily({...productionA[0].places[2],name:"博物館",primaryType:"museum",types:["museum","restaurant"]}),"museum_family");
+  assert.equal(resolvePlaceCategoryFamily({...productionA[0].places[2],name:"餐廳酒吧",primaryType:"establishment",types:["establishment"]}),"other");
+});
+await test("R3 two real meal types at 12:00/12:30 are detected", () => {
+  assert.ok(violations([prodA[0]]).some(v => v.code === "consecutive_food_stops"));
+});
+await test("R4/R7 four sights plus dinner still need lunch", () => {
+  assert.ok(violations([prodA[1]]).some(v => v.code === "long_stretch_without_break"));
+});
+await test("R5 five sights all day are detected", () => assert.ok(violations([prodB[0]]).some(v => v.code === "long_stretch_without_break")));
+await test("R6/R8/R9 cross-day swaps fill the missing window and improve", () => {
+  for (const ps of [prodA,prodB]) {
+    const repaired=contract.repairDailyScheduleAcrossDays(ps,repairOpts);
+    assert.ok(repaired.every(p => !missingLunch(p)), JSON.stringify(repaired.map(p=>p.entries.map(e=>e.time+" "+e.name))));
+    assert.ok(violations(repaired).length < violations(ps).length);
+    assert.ok(contract.dailyScheduleSeverity(repaired) < contract.dailyScheduleSeverity(ps));
+    assert.deepEqual(repaired.map(p=>p.entries.length),ps.map(p=>p.entries.length));
+    assert.deepEqual(repaired.flatMap(p=>p.entries.map(e=>e.place.id)).sort(),ps.flatMap(p=>p.entries.map(e=>e.place.id)).sort());
+  }
+});
+await test("R10 locked day/time entries never move", () => {
+  const repaired=contract.repairDailyScheduleAcrossDays(prodA,{...repairOpts,isDayFixed:()=>true,isTimeFixed:()=>true});
+  assert.deepEqual(repaired,prodA);
+});
+await test("R12 half day is not extended or forced to lunch", () => {
+  const half=prodA[1].entries.slice(0,3);
+  assert.deepEqual(contract.evaluateDailySchedule(half),[]);
+});
+await test("R timing: evidence-backed dwell/travel and a real meal break", () => {
+  const p=prodA[1].entries.slice(0,4).map(e=>({...e}));
+  p[3]={...p[3],timing:{stayMinutes:90}};
+  assert.ok(contract.evaluateDailySchedule(p).length>0,"known stay crosses the lunch window");
+  const free=p.map(e=>({...e,timing:{stayMinutes:20,travelToNextMinutes:10}}));
+  free[3].timing.stayMinutes=90;
+  assert.deepEqual(contract.evaluateDailySchedule(free),[],"verified free meal time is not missing");
+  free[2]={...free[2],timing:{stayMinutes:90,travelToNextMinutes:60}};
+  free[1]={...free[1],timing:{stayMinutes:90,travelToNextMinutes:30}};
+  assert.ok(contract.evaluateDailySchedule(free).length>0,"travel consumes the apparent lunch gap");
+});
+await test("R timing: a verified meal gap also breaks the long sightseeing streak",()=>{
+  const entries=prodB[0].entries.map(e=>({...e,timing:{stayMinutes:20,travelToNextMinutes:10}}));
+  assert.deepEqual(contract.evaluateDailySchedule(entries),[]);
+  assert.ok(contract.evaluateDailySchedule(prodB[0].entries).length>0,"unknown time is not a proven break");
+});
+await test("R dinner coverage is independent of lunch; cafe is not a meal",()=>{
+  const entries=prodA[1].entries.map((e,i)=>({...e,time:["09:30","12:30","15:30","19:00","21:00"][i]}));
+  entries[1]={...entries[1],place:prodA[0].entries[1].place};
+  entries[4]={...entries[4],place:prodA[1].entries[0].place};
+  assert.ok(contract.evaluateDailySchedule(entries).some(v=>v.detail==="missing_dinner_coverage"));
+  const cafe=prodA[1].entries.map((e,i)=>i===2?{...e,place:{...e.place,primaryType:"cafe",types:["cafe"]}}:e);
+  assert.ok(contract.evaluateDailySchedule(cafe).some(v=>v.detail==="missing_lunch_coverage"));
+});
+await test("P1 evidence gap: marker and visitable heritage are currently indistinguishable", () => {
+  // Same Google metadata, different real-world visitability: neither names nor popularity prove it.
+  const common=place("heritage", "文化史跡", "historical_landmark",35.69,139.70,{types:["historical_landmark","tourist_attraction"],rating:3.7,userRatingCount:38});
+  assert.deepEqual(evaluateTourismQuality(common),{ok:true});
+  assert.deepEqual(evaluateTourismQuality({...common,id:"heritage2"}),{ok:true});
+});
 let failed = 0;
 for (const [name, status] of results) {
   if (status !== "PASS") failed += 1;
