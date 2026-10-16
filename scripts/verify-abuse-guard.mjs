@@ -74,6 +74,26 @@ function authClient(calls) {
   };
 }
 
+// Formal contract since 75d5eb0: Google billing denials carry a fixed diagnostic bucket only.
+const GOOGLE_BILLING_DENIAL_REASONS = new Set(["user_rate_limited", "ip_rate_limited", "global_budget_limited"]);
+async function assertGoogleBillingDenied(response, reason, secrets) {
+  assert.ok(GOOGLE_BILLING_DENIAL_REASONS.has(reason), `unexpected expected reason ${reason}`);
+  assert.equal(response.status, 429);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  const retryAfter = response.headers.get("Retry-After");
+  assert.match(retryAfter ?? "", /^[1-9]\d*$/, "Retry-After must be a positive integer of seconds");
+  const body = await response.json();
+  assert.deepEqual(body, { error: "rate_limited", reason });
+  assert.deepEqual(Object.keys(body).sort(), ["error", "reason"]);
+  assert.ok(GOOGLE_BILLING_DENIAL_REASONS.has(body.reason));
+  const serialized = JSON.stringify(body);
+  assert.equal(/\d/.test(serialized), false, "denial body must not expose budget values, dates or IPs");
+  for (const secret of [...secrets, "global:", "user:", "ip:", "weight", "family", placesKey, "AIza"]) {
+    assert.equal(serialized.includes(secret), false, `denial body leaked ${secret}`);
+  }
+  return { body, retryAfter: Number(retryAfter) };
+}
+
 const logs = [];
 const originalInfo = console.info;
 console.info = (...parts) => {
@@ -99,6 +119,7 @@ try {
       }),
     );
     assert.equal(photo.status, 429);
+    await assertGoogleBillingDenied(photo, "user_rate_limited", ["photos-user", "203.0.113.10"]);
     const textAllowed = await asUser(guard, "photos-user", "203.0.113.10", () =>
       authorizeGoogleBilling({
         family: "places_text",
@@ -130,6 +151,7 @@ try {
       }),
     );
     assert.equal(denied.status, 429);
+    await assertGoogleBillingDenied(denied, "user_rate_limited", ["weight-user", "203.0.113.11"]);
     assert.equal(guard.counter("user:weight-user", `user:family:places_text:${nowDay}`), 0);
     const autocompleteAllowed = await asUser(guard, "weight-user", "203.0.113.11", () =>
       authorizeGoogleBilling({
@@ -160,6 +182,7 @@ try {
       }),
     );
     assert.equal(denied.status, 429);
+    await assertGoogleBillingDenied(denied, "ip_rate_limited", ["ip-user", "203.0.113.12"]);
     assert.equal(guard.counter("user:ip-user", `user:family:places_text:${nowDay}`), 0);
   }
 
@@ -190,11 +213,20 @@ try {
       { GOOGLE_GLOBAL_DAILY_UNITS: "8" },
     );
     assert.equal(second.status, 429);
-    const body = await second.json();
-    assert.deepEqual(body, { error: "rate_limited" });
     assert.equal(second.headers.get("Retry-After") > "0", true);
+    const { body } = await assertGoogleBillingDenied(second, "global_budget_limited", [
+      "global-user",
+      "203.0.113.13",
+      "global:google",
+      "global:weight",
+      "GOOGLE_GLOBAL_DAILY_UNITS",
+      nowDay,
+    ]);
     assert.equal(JSON.stringify(body).includes("100000"), false);
-    assert.equal(JSON.stringify(body).includes("global"), false);
+    // "global" may only appear as the fixed enum bucket name, never as an internal key / budget detail.
+    const { reason: _bucket, ...rest } = body;
+    assert.equal(JSON.stringify(rest).includes("global"), false);
+    assert.equal(JSON.stringify(body).replace('"global_budget_limited"', "").includes("global"), false);
     assert.equal(guard.counter("global:google", `global:weight:${nowDay}`), 8);
     const auto = await asUser(guard, "global-user", "203.0.113.13", () =>
       authorizeGoogleBilling({
@@ -208,6 +240,7 @@ try {
       { GOOGLE_GLOBAL_DAILY_UNITS: "8" },
     );
     assert.equal(auto.status, 429, "Autocomplete is now subject to global daily cost protection");
+    await assertGoogleBillingDenied(auto, "global_budget_limited", ["global-user", "203.0.113.13", "global:google", nowDay]);
     assert.equal(guard.counter("global:google", `global:weight:${nowDay}`), 8);
     const photo = await asUser(guard, "global-user", "203.0.113.13", () =>
       authorizeGoogleBilling({
@@ -241,6 +274,7 @@ try {
       }),
     );
     assert.equal(denied.status, 429);
+    await assertGoogleBillingDenied(denied, "user_rate_limited", ["utc-user", "203.0.113.14"]);
     setAbuseGuardClockForTests(() => Date.parse("2026-09-30T00:00:01.000Z"));
     const reset = await asUser(guard, "utc-user", "203.0.113.14", () =>
       authorizeGoogleBilling({
@@ -413,7 +447,7 @@ try {
       signing,
     );
     assert.equal(response.status, 429);
-    assert.deepEqual(await response.json(), { error: "rate_limited" });
+    await assertGoogleBillingDenied(response, "ip_rate_limited", ["203.0.113.21", photo, token.signature, "PLACE_PHOTO_SIGNING_SECRET"]);
     assert.equal(upstream, 0);
   }
 
