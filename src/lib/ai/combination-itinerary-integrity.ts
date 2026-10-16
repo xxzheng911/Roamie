@@ -4,6 +4,11 @@
 import type { RoamieItineraryItem, RoamieRecommendationItem } from "@/lib/ai/types";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { getDestinationCombinations } from "@/lib/ai/destination-combination-suggestions";
+import type { OfferedTouristQualityVerdict } from "@/lib/ai/travel-context";
+import {
+  TOURIST_QUALITY_REJECT_REASON,
+  type TouristQualityIntent,
+} from "@/lib/tourist-quality-gate";
 import {
   getCachedDiscoveredCombinations,
   getStructuredCombinationByIndex,
@@ -14,6 +19,10 @@ import {
   resolveThemeKeyFromTitle,
   validateCandidateIntent,
   logRejectedCandidate,
+  candidateTouristQualityDecision,
+  canonicalCombinationTouristQualityIntent,
+  legacyTitleCombinationTouristQualityIntent,
+  normalizeTrustedGooglePlaceId,
 } from "@/lib/ai/combination-candidate-quality";
 import { collapseParentLandmarkCandidates } from "@/lib/ai/ai-parent-landmark-dedup";
 import { listTripDates } from "@/lib/outfit/group-by-date";
@@ -67,12 +76,87 @@ type OfferedIdentityPlace = {
   types?: string[];
   primaryType?: string | null;
   rating?: number | null;
+  userRatingCount?: number | null;
+  /** Counter-evidence already on the offered place (tourist quality gate only). */
+  regularOpeningHours?: CombinationPlaceCandidate["regularOpeningHours"];
+  currentOpeningHours?: CombinationPlaceCandidate["currentOpeningHours"];
+  reviewEvidence?: CombinationPlaceCandidate["reviewEvidence"];
+  address?: string;
+  /** First-pass Tourist Quality Gate verdict from the session snapshot (optional; older sessions lack it). */
+  touristQuality?: OfferedTouristQualityVerdict;
 };
+
+/**
+ * Canonical intent the snapshot recorded for an offered combination. Every verdict in one
+ * combination is computed under that combination's intent, so they must all agree; none (older
+ * session) or a disagreement means there is no trustworthy intent (null).
+ */
+function offeredPinTouristQualityIntent(
+  places: readonly OfferedIdentityPlace[],
+): TouristQualityIntent | null {
+  const intents = new Set(
+    places
+      .map((p) => p.touristQuality)
+      .filter(isWellFormedOfferedVerdict)
+      .map((v) => v.intent),
+  );
+  return intents.size === 1 ? [...intents][0]! : null;
+}
+
+const TOURIST_QUALITY_TIERS: ReadonlySet<unknown> = new Set([
+  "VISIT_WORTHY",
+  "LOW_EXPERIENCE_VALUE",
+  "INSUFFICIENT_EVIDENCE",
+]);
+const TOURIST_QUALITY_INTENTS: ReadonlySet<unknown> = new Set([
+  "general_sightseeing",
+  "cultural_exploration",
+]);
+
+/** Only a structurally complete verdict (trusted Place ID, legal tier/intent, boolean admit) counts. */
+function isWellFormedOfferedVerdict(v: unknown): v is OfferedTouristQualityVerdict {
+  if (!v || typeof v !== "object") return false;
+  const r = v as Record<string, unknown>;
+  return (
+    typeof r.placeId === "string" &&
+    normalizeTrustedGooglePlaceId(r.placeId) !== null &&
+    TOURIST_QUALITY_TIERS.has(r.tier) &&
+    typeof r.admit === "boolean" &&
+    TOURIST_QUALITY_INTENTS.has(r.intent)
+  );
+}
+
+/**
+ * Reuse the snapshot's first-pass verdict only when it is bound to this exact (normalized)
+ * Google Place ID and was computed under the same canonical intent. Otherwise null (re-judge).
+ */
+function reusableOfferedTouristQuality(
+  place: OfferedIdentityPlace,
+  candidate: CombinationPlaceCandidate,
+  intent: TouristQualityIntent | null,
+): OfferedTouristQualityVerdict | null {
+  const verdict = place.touristQuality;
+  const placeId = normalizeTrustedGooglePlaceId(candidate.googlePlaceId);
+  if (!isWellFormedOfferedVerdict(verdict) || !intent || !placeId) return null;
+  if (normalizeTrustedGooglePlaceId(verdict.placeId) !== placeId) return null;
+  // Only cultural_exploration can ever admit LOW; any other admitting LOW verdict is malformed.
+  if (
+    verdict.admit &&
+    verdict.tier === "LOW_EXPERIENCE_VALUE" &&
+    intent !== "cultural_exploration"
+  ) {
+    return null;
+  }
+  return verdict.intent === intent ? verdict : null;
+}
 
 export type OfferedCombinationIdentity = {
   readonly token: number;
   readonly destination: string;
-  readonly combinations: ReadonlyMap<number, { title: string; places: OfferedIdentityPlace[] }>;
+  readonly combinations: ReadonlyMap<
+    number,
+    { title: string; themeKey?: string; places: OfferedIdentityPlace[] }
+  >;
 };
 
 let offeredIdentityToken = 0;
@@ -85,13 +169,24 @@ let activeOfferedIdentity: OfferedCombinationIdentity | null = null;
  */
 export function createOfferedCombinationIdentity(
   destination: string,
-  offered?: Array<{ id: number; title: string; places: OfferedIdentityPlace[] }>,
+  offered?: Array<{ id: number; title: string; themeKey?: string; places: OfferedIdentityPlace[] }>,
 ): OfferedCombinationIdentity | null {
   if (!offered?.length) return null;
   return {
     token: ++offeredIdentityToken,
     destination: normalizePlaceNameKey(destination),
-    combinations: new Map(offered.map((c) => [c.id, { title: c.title, places: c.places }])),
+    combinations: new Map(
+      offered.map((c) => [
+        c.id,
+        {
+          title: c.title,
+          ...(typeof c.themeKey === "string" && c.themeKey.trim()
+            ? { themeKey: c.themeKey.trim() }
+            : {}),
+          places: c.places,
+        },
+      ]),
+    ),
   };
 }
 
@@ -146,21 +241,62 @@ export function isCombinationIdDriftedFromOffered(destination: string, id: numbe
 function offeredPinnedPool(destination: string, id: number): CombinationCandidatePool | null {
   if (!isCombinationIdDriftedFromOffered(destination, id)) return null;
   const pin = offeredPin(destination, id)!;
-  const primary: CombinationPlaceCandidate[] = pin.places.map((p) => ({
-    name: p.originalName ?? p.name,
-    googlePlaceId: p.googlePlaceId,
-    searchCandidateId: p.googlePlaceId ?? `name:${p.originalName ?? p.name}`,
-    coordinates:
-      p.latitude != null && p.longitude != null ? { lat: p.latitude, lng: p.longitude } : undefined,
-    types: p.types ?? [],
-    primaryType: p.primaryType,
-    rating: p.rating,
-  }));
+  // Trusted canonical intent, in order: (1) the snapshot's stable theme key (new sessions);
+  // (2) the snapshot verdicts' single consistent intent (older sessions). Only a trusted intent may
+  // reuse a first-pass verdict.
+  // (3) Older session with neither: re-judge under the title-derived intent (explicit themes only,
+  // else general_sightseeing). Never trusted, so no verdict reuse; the Gate still rejects LOW
+  // without cultural evidence under cultural_exploration.
+  // Pool theme (category contract / supplement search) stays title-derived as before; the snapshot
+  // theme key only decides the Tourist Quality Gate intent below.
+  const theme = resolveThemeKeyFromTitle(pin.title);
+  const pinIntent: TouristQualityIntent | null = pin.themeKey
+    ? canonicalCombinationTouristQualityIntent(pin.themeKey)
+    : offeredPinTouristQualityIntent(pin.places);
+  const gateIntent: TouristQualityIntent =
+    pinIntent ?? legacyTitleCombinationTouristQualityIntent(pin.title);
+  const primary: CombinationPlaceCandidate[] = pin.places
+    .map((p): { offered: OfferedIdentityPlace; candidate: CombinationPlaceCandidate } => ({
+      offered: p,
+      candidate: {
+        name: p.originalName ?? p.name,
+        googlePlaceId: p.googlePlaceId,
+        searchCandidateId: p.googlePlaceId ?? `name:${p.originalName ?? p.name}`,
+        coordinates:
+          p.latitude != null && p.longitude != null
+            ? { lat: p.latitude, lng: p.longitude }
+            : undefined,
+        types: p.types ?? [],
+        primaryType: p.primaryType,
+        rating: p.rating,
+        userRatingCount: p.userRatingCount,
+        regularOpeningHours: p.regularOpeningHours,
+        currentOpeningHours: p.currentOpeningHours,
+        reviewEvidence: p.reviewEvidence,
+      },
+    }))
+    // Tourist Quality Gate: same decision as first-pass candidate validation (LOW never re-enters).
+    // A Place-ID-bound first-pass verdict under the same canonical intent is reused (including
+    // rejections); anything else is re-judged here, never admitted by default.
+    .filter(({ offered, candidate: c }) => {
+      const prior = reusableOfferedTouristQuality(offered, c, pinIntent);
+      const decision = prior
+        ? {
+            admit: prior.admit,
+            reason: prior.admit
+              ? `tourist_quality_first_pass:${prior.tier.toLowerCase()}`
+              : TOURIST_QUALITY_REJECT_REASON,
+          }
+        : candidateTouristQualityDecision(c, { theme }, null, gateIntent);
+      if (!decision.admit) logRejectedCandidate(c, id, decision.reason);
+      return decision.admit;
+    })
+    .map(({ candidate }) => candidate);
   logAiPipeline("[COMBINATION_POOL_OFFERED_PIN]", `combinationId=${id}`, "reason=cache_drift");
   return {
     combinationId: id,
     title: pin.title,
-    theme: resolveThemeKeyFromTitle(pin.title),
+    theme,
     primary,
     fallback: [],
     all: primary,
@@ -187,6 +323,10 @@ export function resolveSelectedCombinationPools(
     const lightCombo = light[id - 1];
     const title = structured?.title ?? lightCombo?.title ?? `組合 ${id}`;
     const theme = structured?.theme ?? resolveThemeKeyFromTitle(title);
+    // Gate intent: the offered snapshot's theme key (what the user chose) wins over the current
+    // cache theme, so intact and drifted Replan judge under the same intent as the snapshot.
+    const pinThemeKey = offeredPin(destination, id)?.themeKey;
+    const gateIntent = canonicalCombinationTouristQualityIntent(pinThemeKey ?? structured?.theme);
 
     let primary: CombinationPlaceCandidate[] = [];
     let fallback: CombinationPlaceCandidate[] = [];
@@ -223,9 +363,15 @@ export function resolveSelectedCombinationPools(
           lng: c.coordinates?.lng,
           rating: c.rating,
           googlePlaceId: c.googlePlaceId,
+          userRatingCount: c.userRatingCount,
+          regularOpeningHours: c.regularOpeningHours,
+          currentOpeningHours: c.currentOpeningHours,
+          reviewEvidence: c.reviewEvidence,
         },
         { title, theme },
         destination,
+        // Gate intent = the combination's theme key only (no localized-title guess).
+        { touristQualityIntent: gateIntent },
       );
       if (!result.ok) {
         logRejectedCandidate(c, comboId, result.reason ?? "quality");

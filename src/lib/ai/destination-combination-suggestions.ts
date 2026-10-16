@@ -22,8 +22,18 @@ import {
   validateCombinationOptions,
   getCachedDiscoveredCombinations,
   PRIMARY_PLACES_PER_COMBO,
+  resolvePrimarySemanticFamily,
+  type CombinationPlaceCandidate,
   type StructuredCombinationOption,
 } from "@/lib/ai/destination-combination-discovery";
+import {
+  candidateTouristQualityDecision,
+  canonicalCombinationTouristQualityIntent,
+  normalizeTrustedGooglePlaceId,
+  touristQualityIntentForCombination,
+} from "@/lib/ai/combination-candidate-quality";
+import type { TouristQualityIntent } from "@/lib/tourist-quality-gate";
+import type { OfferedTouristQualityVerdict } from "@/lib/ai/travel-context";
 import {
   buildThemeSearchDirections,
   type ThemeSearchDirection,
@@ -429,6 +439,90 @@ export function flattenDestinationCombinationPlaces(destination: string): string
   return out;
 }
 
+type TouristQualityEvidenceCandidate = Pick<
+  CombinationPlaceCandidate,
+  | "name"
+  | "address"
+  | "types"
+  | "primaryType"
+  | "googlePlaceId"
+  | "regularOpeningHours"
+  | "currentOpeningHours"
+  | "reviewEvidence"
+>;
+
+/**
+ * Place-level semantic family of one place, expressed as an intent. Auxiliary evidence only: the
+ * Tourist Quality Gate always uses the combination's canonical intent (its theme key).
+ */
+export function offeredPlaceTouristQualityIntent(candidate: TouristQualityEvidenceCandidate): {
+  theme: string;
+  intent: TouristQualityIntent;
+} {
+  const theme = resolvePrimarySemanticFamily({
+    ...candidate,
+    types: candidate.types ?? [],
+  } as CombinationPlaceCandidate).resolvedPrimaryTheme;
+  return { theme, intent: touristQualityIntentForCombination({ theme }) };
+}
+
+/**
+ * First-pass verdict for the session snapshot: pure, no API / AI calls, computed from the
+ * discovery candidate's full evidence under the combination's canonical intent (theme key).
+ * Only places with a (normalized, non-synthetic) Google Place ID get a verdict.
+ */
+function offeredTouristQualityVerdict(
+  candidate: TouristQualityEvidenceCandidate,
+  combinationTheme: string | undefined,
+): OfferedTouristQualityVerdict | undefined {
+  const placeId = normalizeTrustedGooglePlaceId(candidate.googlePlaceId);
+  if (!placeId) return undefined;
+  const theme = combinationTheme ?? "";
+  const intent = canonicalCombinationTouristQualityIntent(theme);
+  const decision = candidateTouristQualityDecision(
+    {
+      name: candidate.name,
+      types: candidate.types,
+      primaryType: candidate.primaryType,
+      googlePlaceId: placeId,
+      regularOpeningHours: candidate.regularOpeningHours,
+      currentOpeningHours: candidate.currentOpeningHours,
+      reviewEvidence: candidate.reviewEvidence,
+    },
+    { theme },
+    null,
+    intent,
+  );
+  return { placeId, tier: decision.tier, admit: decision.admit, intent };
+}
+
+/**
+ * Raw (pre-localization) discovery candidates keyed by Google Place ID. The localization gate
+ * drops opening hours / reviewEvidence, so first-pass evidence must come from the raw entry.
+ * In-memory cache read only (no logging, no API).
+ */
+function rawDiscoveryCandidatesByPlaceId(
+  label: string,
+  locale: import("@/lib/i18n/types").Locale,
+): Map<string, CombinationPlaceCandidate> {
+  const byId = new Map<string, CombinationPlaceCandidate>();
+  const raw = getCachedDiscoveredCombinations(label, undefined, undefined, {
+    locale,
+    skipLocalizationGate: true,
+  });
+  for (const combo of raw ?? []) {
+    for (const c of [
+      ...combo.placeCandidates,
+      ...(combo.primaryCandidates ?? []),
+      ...(combo.fallbackCandidates ?? []),
+    ]) {
+      const id = normalizeTrustedGooglePlaceId(c.googlePlaceId);
+      if (id && !byId.has(id)) byId.set(id, c);
+    }
+  }
+  return byId;
+}
+
 /** Persist combination options as structured session data (never text-only). */
 export function buildOfferedCombinationsForSession(
   destination: string,
@@ -437,6 +531,7 @@ export function buildOfferedCombinationsForSession(
   const label = normalizeDestinationLabel(destination);
   const cached = getCachedDiscoveredCombinations(label,undefined,undefined,{locale});
   if (cached?.length) {
+    const rawById = rawDiscoveryCandidatesByPlaceId(label, locale);
     return cached.map((combo, index) => {
       const primary = combo.primaryCandidates?.length
         ? combo.primaryCandidates
@@ -444,6 +539,7 @@ export function buildOfferedCombinationsForSession(
       return {
         id: index + 1,
         title: localizeCombinationThemeTitle(combo.title, locale),
+        ...(combo.theme?.trim() ? { themeKey: combo.theme.trim() } : {}),
         places: primary.map((c) => {
           const resolved = resolvePlaceDisplayName(
             {
@@ -485,6 +581,13 @@ export function buildOfferedCombinationsForSession(
               | "resolved"
               | "unresolved"
               | "pending",
+            // Verdict only from the raw discovery candidate with the same Place ID (full evidence),
+            // under this combination's canonical intent (its theme key).
+            touristQuality: (() => {
+              const id = normalizeTrustedGooglePlaceId(c.googlePlaceId);
+              const raw = id ? rawById.get(id) : undefined;
+              return raw ? offeredTouristQualityVerdict(raw, combo.theme) : undefined;
+            })(),
           };
           logAffiliateFactualEvidenceLifecycle("offered_combination", offeredPlace);
           return offeredPlace;
@@ -689,14 +792,22 @@ export function buildDestinationCombinationSuggestionPayload(
           userRatingCount: sourcePlace.userRatingCount,
           businessStatus: sourcePlace.businessStatus,
           resolutionStatus: "resolved" as const,
+          // Verdict intent belongs to the source group's theme: carry it only when the display row
+          // is index-aligned with that source (same condition as themeKey); else Replan re-judges.
+          ...(verifiedSource && sourcePlace.touristQuality
+            ? { touristQuality: sourcePlace.touristQuality }
+            : {}),
         },
       ];
     });
     if (places.length < 2) return [];
+    // Theme key only when the display row is index-aligned with its discovery source.
+    const themeKey = verifiedSource ? sourceGroup?.themeKey : undefined;
     return [
       {
         id: groupId,
         title: combo.title,
+        ...(themeKey ? { themeKey } : {}),
         places,
       },
     ];

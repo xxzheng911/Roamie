@@ -19,7 +19,17 @@ import {
   validatePlaceForCombination,
 } from "@/lib/ai/combination-category-contract";
 import { isTourismLandmarkException } from "@/lib/ai/tourism-quality-gate";
+import { isFallbackPlanningPlaceId, isHardGooglePlaceId } from "@/lib/ai/planning-place-id";
 import type { PlaceResult } from "@/lib/place-result";
+import { combinationThemeTitle } from "@/lib/ai/combination-theme-titles";
+import { destinationEditorialMessages } from "@/lib/i18n/destination-editorial";
+import type { Locale } from "@/lib/i18n/types";
+import {
+  touristQualityDecision,
+  type TouristQualityDecision,
+  type TouristQualityIntent,
+  type TouristQualityProtection,
+} from "@/lib/tourist-quality-gate";
 
 export type CandidateIntentInput = {
   name: string;
@@ -30,7 +40,147 @@ export type CandidateIntentInput = {
   lng?: number | null;
   rating?: number | null;
   googlePlaceId?: string;
+  /** Tourist Quality Gate evidence (optional, read-only). */
+  userRatingCount?: number | null;
+  regularOpeningHours?: unknown;
+  currentOpeningHours?: unknown;
+  reviewEvidence?: unknown;
 };
+
+const CULTURAL_THEME_FACETS = new Set(["culture", "museum", "art", "historic", "heritage"]);
+
+/** Tourist Quality Gate intent for a combination (culture / historic themes → cultural_exploration). */
+export function touristQualityIntentForCombination(combination: {
+  title?: string;
+  theme?: string;
+}): TouristQualityIntent {
+  const facets = primaryThemesForCombinationTheme(
+    (combination.theme ?? "").trim().toLowerCase(),
+    combination.title,
+  );
+  return facets.some((f) => CULTURAL_THEME_FACETS.has(f))
+    ? "cultural_exploration"
+    : "general_sightseeing";
+}
+
+/**
+ * Canonical travel intent of a combination: derived from its stable theme key only, never from a
+ * (localized) title. A missing theme yields general_sightseeing (strictest: never admits LOW).
+ */
+export function canonicalCombinationTouristQualityIntent(
+  theme: string | null | undefined,
+): TouristQualityIntent {
+  return touristQualityIntentForCombination({ theme: theme ?? "" });
+}
+
+/**
+ * Older-session compatibility only (snapshot has no themeKey and no consistent verdict intent):
+ * derive the intent from the combination title. Only an explicitly recognizable theme counts;
+ * unrecognized titles (incl. non-zh localized ones) stay general_sightseeing. The result is a
+ * re-judging intent — never a trusted original intent, never grounds to reuse a first-pass verdict.
+ */
+export function legacyTitleCombinationTouristQualityIntent(
+  title: string | null | undefined,
+): TouristQualityIntent {
+  if (typeof title !== "string") return "general_sightseeing";
+  // Only explicit Chinese theme titles are recognizable; kana / hangul (ja / ko localized titles
+  // that may share CJK characters such as 文化・寺院) stay conservative.
+  if (/[぀-ヿㇰ-ㇿｦ-ﾟᄀ-ᇿ㄰-㆏가-힯]/.test(title)) {
+    return "general_sightseeing";
+  }
+  // Kanji-only ja product copy (e.g. 寺院文化) is not distinguishable by script: an exact match
+  // against a non-zh app localization of a theme title is never a zh title.
+  if (nonZhLocalizedThemeTitles().has(title.trim())) return "general_sightseeing";
+  const key = resolveThemeKeyFromTitle(title);
+  return key === "attraction"
+    ? "general_sightseeing"
+    : canonicalCombinationTouristQualityIntent(key);
+}
+
+/** App theme-title keys (combination-theme-titles THEME_TITLES rows). */
+const APP_THEME_TITLE_KEYS = [
+  "historic",
+  "culture",
+  "nature",
+  "coast",
+  "cafe",
+  "food",
+  "shopping",
+  "market",
+  "attraction",
+  "suburb",
+  "temple_trail",
+  "sunset_views",
+  "temple_culture",
+  "classic_pagoda",
+  "landmark_walk",
+  "culture_stroll",
+] as const;
+const NON_ZH_LOCALES: readonly Locale[] = ["en", "ja", "ko"];
+let nonZhLocalizedThemeTitleSet: Set<string> | null = null;
+
+/** Every app-produced en/ja/ko theme title that differs from its zh-TW source. */
+function nonZhLocalizedThemeTitles(): Set<string> {
+  if (nonZhLocalizedThemeTitleSet) return nonZhLocalizedThemeTitleSet;
+  const set = new Set<string>();
+  for (const key of APP_THEME_TITLE_KEYS) {
+    const zh = combinationThemeTitle(key, "zh-TW");
+    for (const loc of NON_ZH_LOCALES) {
+      const title = combinationThemeTitle(key, loc).trim();
+      if (title && title !== zh) set.add(title);
+    }
+  }
+  const zhEditorial = destinationEditorialMessages["zh-TW"];
+  for (const [key, zh] of Object.entries(zhEditorial)) {
+    if (!key.startsWith("theme_")) continue;
+    for (const loc of NON_ZH_LOCALES) {
+      const title = destinationEditorialMessages[loc]?.[key]?.trim();
+      if (title && title !== zh) set.add(title);
+    }
+  }
+  nonZhLocalizedThemeTitleSet = set;
+  return set;
+}
+
+/** Non-Google identity prefixes (same set isHardGooglePlaceId / discovery top-up exclude). */
+const NON_GOOGLE_PLACE_ID_RE =
+  /^(?:name|synthetic|generated|fallback|landmark-cache|core|dayplan|latlng|session|trip|memory):|^(?:saved|mock|rec)-|fallback/i;
+/** Google Place IDs are opaque URL-safe tokens; the ChIJ prefix is common but not guaranteed. */
+const OPAQUE_GOOGLE_PLACE_ID_RE = /^[A-Za-z0-9_-]{16,}$/;
+
+/**
+ * Place ID used for Tourist Quality Gate identity (selected-place protection, snapshot verdicts):
+ * `places/` stripped; synthetic / fallback / name-derived IDs rejected (null). Identity is strict
+ * equality of two normalized IDs — the format check only excludes IDs we generate ourselves.
+ */
+export function normalizeTrustedGooglePlaceId(placeId: string | null | undefined): string | null {
+  const id = (placeId ?? "").trim().replace(/^places\//i, "");
+  if (!id) return null;
+  if (isHardGooglePlaceId(id)) return id;
+  if (isFallbackPlanningPlaceId(id) || NON_GOOGLE_PLACE_ID_RE.test(id)) return null;
+  return OPAQUE_GOOGLE_PLACE_ID_RE.test(id) ? id : null;
+}
+
+/** Shared Tourist Quality Gate decision for combination / itinerary candidates. */
+export function candidateTouristQualityDecision(
+  candidate: CandidateIntentInput,
+  combination: { title?: string; theme?: string },
+  protection?: TouristQualityProtection | null,
+  /** Explicit intent (Gate only); defaults to the intent derived from `combination`. */
+  intent?: TouristQualityIntent,
+): TouristQualityDecision {
+  return touristQualityDecision(
+    {
+      name: candidate.name,
+      primaryType: candidate.primaryType,
+      types: candidate.types,
+      regularOpeningHours: candidate.regularOpeningHours,
+      currentOpeningHours: candidate.currentOpeningHours,
+      reviewEvidence: candidate.reviewEvidence,
+    },
+    { intent: intent ?? touristQualityIntentForCombination(combination), protection },
+  );
+}
 
 export type CandidateValidationResult = {
   ok: boolean;
@@ -177,6 +327,10 @@ export function validateCandidateIntent(
     center?: { lat: number; lng: number } | null;
     requireTourismType?: boolean;
     source?: string;
+    /** Explicit / Required / Locked / Selected-only: Tourist Quality Gate never removes these. */
+    protection?: TouristQualityProtection | null;
+    /** Tourist Quality Gate intent override; affects only the Gate, never the theme contract. */
+    touristQualityIntent?: TouristQualityIntent;
   },
 ): CandidateValidationResult {
   const label = normalizeDestinationLabel(destination);
@@ -298,6 +452,16 @@ export function validateCandidateIntent(
     if (dist > MAX_DISTANCE_FROM_CENTER_M) {
       return { ok: false, reason: "outside_destination_radius" };
     }
+  }
+
+  const touristQuality = candidateTouristQualityDecision(
+    candidate,
+    combination,
+    opts?.protection,
+    opts?.touristQualityIntent,
+  );
+  if (!touristQuality.admit) {
+    return { ok: false, reason: touristQuality.reason };
   }
 
   const themeKey = (combination.theme ?? "").trim().toLowerCase();
@@ -494,7 +658,9 @@ export function primaryThemesForCombinationTheme(
   return facets[key] ?? facets.attraction!;
 }
 
-export function resolveThemeKeyFromTitle(title: string): string {
+export function resolveThemeKeyFromTitle(title: string | null | undefined): string {
+  // Old / corrupt sessions may carry a non-string title: unrecognizable → conservative default.
+  if (typeof title !== "string") return "attraction";
   const t = title.replace(/\s+/g, "");
   if (/人氣美食|美食|餐廳|小吃|夜市小吃|在地美食|美食咖啡|美食市集|美食夜生活/.test(t)) {
     if (/購物|百貨|商場/.test(t) && !/美食|餐廳|小吃/.test(t)) return "shopping";

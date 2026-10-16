@@ -525,6 +525,11 @@ type StructuredCombinationSeedCandidate = {
   types?: string[];
   primaryType?: string | null;
   rating?: number | null;
+  userRatingCount?: number | null;
+  /** Counter-evidence already on the source candidate (tourist quality gate only). */
+  regularOpeningHours?: PlaceResult["regularOpeningHours"];
+  currentOpeningHours?: PlaceResult["currentOpeningHours"];
+  reviewEvidence?: PlaceResult["reviewEvidence"];
 };
 
 export type CombinationGenerationSeedPlan = {
@@ -581,7 +586,11 @@ export function buildCombinationGenerationSeedPlan(params: {
         lat,
         lng,
         rating: candidate.rating,
+        userRatingCount: candidate.userRatingCount,
         googlePlaceId: id,
+        regularOpeningHours: candidate.regularOpeningHours,
+        currentOpeningHours: candidate.currentOpeningHours,
+        reviewEvidence: candidate.reviewEvidence,
       },
       combination,
       params.destination,
@@ -664,6 +673,10 @@ export function buildCombinationGenerationSeedPlan(params: {
           types: candidate.types,
           primaryType: candidate.primaryType,
           rating: candidate.rating,
+          userRatingCount: candidate.userRatingCount,
+          regularOpeningHours: candidate.regularOpeningHours,
+          currentOpeningHours: candidate.currentOpeningHours,
+          reviewEvidence: candidate.reviewEvidence,
         },
         pool.combinationId,
         pool,
@@ -1423,6 +1436,10 @@ async function mergeSessionPlacesWithFetch(params: {
         lat: found.lat,
         lng: found.lng,
         googlePlaceId: found.id,
+        userRatingCount: found.userRatingCount,
+        regularOpeningHours: found.regularOpeningHours,
+        currentOpeningHours: found.currentOpeningHours,
+        reviewEvidence: found.reviewEvidence,
       },
       {
         theme: comboPools.find((p) => p.combinationId === comboId)?.theme,
@@ -1569,6 +1586,10 @@ async function mergeSessionPlacesWithFetch(params: {
                   lat: place.lat,
                   lng: place.lng,
                   googlePlaceId: place.id,
+                  userRatingCount: place.userRatingCount,
+                  regularOpeningHours: place.regularOpeningHours,
+                  currentOpeningHours: place.currentOpeningHours,
+                  reviewEvidence: place.reviewEvidence,
                 },
                 { theme: pool.theme, title: pool.title },
                 params.destination,
@@ -1793,6 +1814,10 @@ async function mergeSessionPlacesWithFetch(params: {
                 lat: place.lat,
                 lng: place.lng,
                 googlePlaceId: place.id,
+                userRatingCount: place.userRatingCount,
+                regularOpeningHours: place.regularOpeningHours,
+                currentOpeningHours: place.currentOpeningHours,
+                reviewEvidence: place.reviewEvidence,
               },
               { theme: pool.theme, title: pool.title },
               params.destination,

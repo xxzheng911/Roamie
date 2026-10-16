@@ -6,6 +6,11 @@ import { recommendationTypeMetadataFromItem } from "@/lib/ai/recommendation-plac
 import { isExplicitFamilyPlace } from "@/lib/family-place-classification";
 import { isPlaceOperationalForRecommendation } from "@/lib/place-operational-eligibility";
 import { resolveExploreSemanticEligibility, type PlaceLike } from "@/lib/place-category";
+import {
+  touristQualityDecision,
+  type TouristQualityIntent,
+  type TouristQualityProtection,
+} from "@/lib/tourist-quality-gate";
 
 export type RecommendablePlaceContext =
   | "home_nearby"
@@ -33,6 +38,8 @@ export type RecommendablePlaceInput = PlaceLike & {
   categoryId?: string | null;
   isSavedFavorite?: boolean;
   explicitConvenienceSearch?: boolean;
+  /** Existing PlaceReviewEvidence (read-only Tourist Quality Gate counter-evidence). */
+  reviewEvidence?: unknown;
 };
 
 export type RecommendablePlaceResult = {
@@ -380,6 +387,10 @@ export function isRecommendablePlace(
     allowLodging?: boolean;
     /** Selection family lane: only explicit Google family types bypass the generic travel-friendly gate. */
     allowExplicitFamilyPlace?: boolean;
+    /** Tourist Quality Gate intent (default general_sightseeing). */
+    touristQualityIntent?: TouristQualityIntent;
+    /** Explicit / Required / Locked / Selected-only: Tourist Quality Gate never removes these. */
+    touristQualityProtection?: TouristQualityProtection | null;
   },
 ): RecommendablePlaceResult {
   const name = (place.name ?? "").trim();
@@ -430,6 +441,23 @@ export function isRecommendablePlace(
     const reviews = place.userRatingCount ?? 0;
     if (rating <= 0 || reviews < 10) return fail("insufficient_reviews");
   }
+
+  // Tourist Quality Gate V2: shared evidence-based classification (only removes LOW).
+  const touristQuality = touristQualityDecision(
+    {
+      name,
+      primaryType: place.primaryType,
+      types: place.types,
+      regularOpeningHours: place.regularOpeningHours,
+      currentOpeningHours: place.currentOpeningHours,
+      reviewEvidence: place.reviewEvidence,
+    },
+    {
+      intent: options?.touristQualityIntent ?? "general_sightseeing",
+      protection: options?.touristQualityProtection,
+    },
+  );
+  if (!touristQuality.admit) return fail(touristQuality.reason);
 
   if (cityMode && isLowValueCityExplorePlace(place)) return fail("low_value_city_marker");
   if (CLOSED_NAME_RE.test(name)) return fail("closed_name");
@@ -612,6 +640,9 @@ export function recommendationToRecommendableInput(
     userRatingCount?: number | null;
     businessStatus?: string | null;
     openStatusLabel?: string;
+    regularOpeningHours?: unknown;
+    currentOpeningHours?: unknown;
+    reviewEvidence?: unknown;
   },
   availability?: {
     businessStatus?: string | null;
@@ -638,6 +669,9 @@ export function recommendationToRecommendableInput(
     userRatingCount: rec.userRatingCount ?? null,
     primaryType: typeMetadata.primaryType,
     types: typeMetadata.types.length > 0 ? typeMetadata.types : null,
+    regularOpeningHours: rec.regularOpeningHours,
+    currentOpeningHours: rec.currentOpeningHours,
+    reviewEvidence: rec.reviewEvidence,
   };
 }
 
@@ -654,8 +688,22 @@ export function itineraryToRecommendableInput(
     businessStatus?: string | null;
     openStatus?: PlaceOpenStatus;
   },
+  /**
+   * Tourist Quality Gate counter-evidence. Callers pass only opening hours whose Google
+   * Place ID was verified to equal item.googlePlaceId; otherwise omit.
+   */
+  verifiedHours?: {
+    regularOpeningHours?: unknown;
+    currentOpeningHours?: unknown;
+  } | null,
 ): RecommendablePlaceInput {
   return {
+    ...(verifiedHours
+      ? {
+          regularOpeningHours: verifiedHours.regularOpeningHours,
+          currentOpeningHours: verifiedHours.currentOpeningHours,
+        }
+      : {}),
     id: item.googlePlaceId,
     placeId: item.googlePlaceId,
     name: item.placeName,

@@ -48,6 +48,8 @@ import {
 import {
   validateCandidateIntent,
   logRejectedCandidate,
+  candidateTouristQualityDecision,
+  canonicalCombinationTouristQualityIntent,
 } from "@/lib/ai/combination-candidate-quality";
 import {
   isLikelyPlaceName,
@@ -122,6 +124,10 @@ export type CombinationPlaceCandidate = {
   rating?: number | null;
   userRatingCount?: number | null;
   businessStatus?: string | null;
+  /** Counter-evidence carried from the source PlaceResult (tourist quality gate only). */
+  regularOpeningHours?: PlaceResult["regularOpeningHours"];
+  currentOpeningHours?: PlaceResult["currentOpeningHours"];
+  reviewEvidence?: PlaceResult["reviewEvidence"];
   /** Coarse category from Google types + name signals (category contract). */
   normalizedCategory?: NormalizedPlaceCategory;
   /** Combination id this place was validated into (1-based when offered). */
@@ -1005,6 +1011,9 @@ function toCandidate(
     rating: place.rating,
     userRatingCount: place.userRatingCount,
     businessStatus: place.businessStatus,
+    regularOpeningHours: place.regularOpeningHours,
+    currentOpeningHours: place.currentOpeningHours,
+    reviewEvidence: place.reviewEvidence,
     normalizedCategory,
   };
 
@@ -1017,11 +1026,23 @@ function toCandidate(
       lat: candidate.coordinates?.lat,
       lng: candidate.coordinates?.lng,
       rating: candidate.rating,
+      userRatingCount: candidate.userRatingCount,
       googlePlaceId: candidate.googlePlaceId,
+      regularOpeningHours: candidate.regularOpeningHours,
+      currentOpeningHours: candidate.currentOpeningHours,
+      reviewEvidence: candidate.reviewEvidence,
     },
     { theme: assignThemeKey(candidate) },
     destination,
-    { center: center ?? null, requireTourismType: false, source: "places_discovery" },
+    {
+      center: center ?? null,
+      requireTourismType: false,
+      source: "places_discovery",
+      // Tourist Quality Gate pre-screen only: no combination exists yet, so use the most
+      // permissive intent (rejects LOW without cultural evidence, which every intent rejects).
+      // The combination's canonical intent decides at grouping (admitsForCombinationIntent).
+      touristQualityIntent: "cultural_exploration",
+    },
   );
   if (!quality.ok) {
     logRejectedCandidate(candidate, "discovery", quality.reason ?? "quality");
@@ -1033,6 +1054,21 @@ function toCandidate(
 
 function assignThemeKey(candidate: CombinationPlaceCandidate): string {
   return resolvePrimarySemanticFamily(candidate).resolvedPrimaryTheme;
+}
+
+/**
+ * Tourist Quality Gate at grouping time: the combination's canonical travel intent (from its
+ * theme key) decides; the place's own semantic family is never the intent.
+ */
+function admitsForCombinationIntent(place: CombinationPlaceCandidate, themeKey: string): boolean {
+  const decision = candidateTouristQualityDecision(
+    place,
+    { theme: themeKey },
+    null,
+    canonicalCombinationTouristQualityIntent(themeKey),
+  );
+  if (!decision.admit) logRejectedCandidate(place, `theme:${themeKey}`, decision.reason);
+  return decision.admit;
 }
 
 function previousFirstMatchedTheme(candidate: CombinationPlaceCandidate): string {
@@ -1411,6 +1447,10 @@ function filterPoolByCategoryContract(
   let rejectedCount = 0;
   const validated: CombinationPlaceCandidate[] = [];
   for (const place of pool) {
+    if (!admitsForCombinationIntent(place, themeKey)) {
+      rejectedCount += 1;
+      continue;
+    }
     if (!themeRequiresCategoryContract(themeKey, title)) {
       validated.push({
         ...place,
@@ -2127,6 +2167,10 @@ function buildSoftCombinationsFromPlaces(
     let rejectedCount = 0;
     const validated: CombinationPlaceCandidate[] = [];
     for (const place of pool) {
+      if (!admitsForCombinationIntent(place, slot.themeKey)) {
+        rejectedCount += 1;
+        continue;
+      }
       const check = validatePlaceForCombination(place, slot.themeKey, {
         title: slot.defaultTitle,
         combinationId,
@@ -2171,7 +2215,11 @@ function buildSoftCombinationsFromPlaces(
   }
 
   // Remaining untyped places → classic attraction combo (no food/shopping labels).
-  const leftover = usable.filter((p) => !used.has(p.name.replace(/\s+/g, "").toLowerCase()));
+  const leftover = usable.filter(
+    (p) =>
+      !used.has(p.name.replace(/\s+/g, "").toLowerCase()) &&
+      admitsForCombinationIntent(p, "attraction"),
+  );
   if (combos.length < MAX_COMBINATIONS && leftover.length >= MIN_PLACES_PER_COMBO) {
     const { primary, fallback, all } = splitPrimaryFallback(leftover, "attraction");
     combos.push({
@@ -2680,7 +2728,11 @@ export function mergeVerifiedCombinationTopUp(
           lat: place.coordinates.lat,
           lng: place.coordinates.lng,
           rating: place.rating,
+          userRatingCount: place.userRatingCount,
           googlePlaceId: id,
+          regularOpeningHours: place.regularOpeningHours,
+          currentOpeningHours: place.currentOpeningHours,
+          reviewEvidence: place.reviewEvidence,
         },
         { title: combo.title, theme: themeKey },
         destination,

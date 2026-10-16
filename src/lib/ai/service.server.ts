@@ -31,6 +31,9 @@ const PlaceItemSchema = z
     googleMapsUrl: z.string().optional(),
     placeName: z.string().optional(),
     reasonSource: z.enum(["template", "ai", "evidence", "fallback"]).optional(),
+    /** Client-held Google Place ID; trust is decided downstream by normalizeTrustedGooglePlaceId. */
+    // nullable: restored older client state may carry null (dropped below, never synthesized).
+    googlePlaceId: z.string().nullable().optional(),
   })
   .transform((raw) => ({
     name: raw.name,
@@ -44,6 +47,8 @@ const PlaceItemSchema = z
     googleMapsUrl: raw.googleMapsUrl ?? "",
     placeName: raw.placeName ?? raw.name,
     reasonSource: raw.reasonSource ?? "template",
+    // Preserved verbatim when present; never synthesized when absent.
+    ...(raw.googlePlaceId?.trim() ? { googlePlaceId: raw.googlePlaceId.trim() } : {}),
   }));
 
 export const RequestSchema = z.object({

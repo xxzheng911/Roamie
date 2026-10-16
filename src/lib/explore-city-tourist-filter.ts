@@ -2,29 +2,21 @@ import { isBurialOrFuneralPlace } from "@/lib/burial-place-filter";
 import { isLodgingPlace } from "@/lib/lodging-place-filter";
 import { distanceMeters } from "@/lib/map-explore";
 import type { PlaceResult } from "@/lib/place-result";
+import { touristQualityDecision } from "@/lib/tourist-quality-gate";
 
-/** 城市探索：排除無遊玩價值的小型歷史標記、石碑、橋跡等 */
+/**
+ * 城市探索：排除墓地、住宿與非觀光名稱；歷史標記／舊址／說明牌的低體驗價值判定
+ * 改由共用 Tourist Quality Gate（依證據，不依名稱關鍵字或評分）。
+ */
 
+/** 非觀光名稱（設施附屬物、行政／商業設施、墓葬）；不含碑／跡／史跡等舊址標記關鍵字 */
 const CITY_JUNK_NAME_RE =
-  /碑(?!場|店|林)|碑文|石碑|橋跡|戒壇石|靈場|霊場|墓所|古墳|史跡碑|標柱|銘柱|地籍|界標|橋脚|廢址|遺構|遺址|紀念碑|水塔|倉庫|有限公司|公司行號|公寓|宿舍|醫院|學校|行政|停車場|石幢|燈籠(?!祭)|手水舎|塚$|之塚|墓$/i;
+  /戒壇石|墓所|古墳|地籍|界標|橋脚|水塔|倉庫|有限公司|公司行號|公寓|宿舍|醫院|學校|行政|停車場|石幢|燈籠(?!祭)|手水舎|塚$|之塚|墓$/i;
 
 const CITY_JUNK_NAME_EN_RE =
-  /\b(plaque|historic\s*marker|stone\s*marker|memorial\s*stone|bridge\s*remains?|bridge\s*ruins?|ruins?\s*of|remains\s*of|boundary\s*stone|mile\s*marker|wayside\s*shrine|kaidan|steles?|historic\s*site\s*marker)\b/i;
+  /\b(boundary\s*stone|mile\s*marker|wayside\s*shrine|kaidan)\b/i;
 
-const CITY_JUNK_NAME_JA_RE =
-  /(石碑|之碑|記念碑|橋跡|戒壇|遺跡|史跡|霊場|墓所|古墳|銘板|標識)$/;
-
-const TRAVEL_FRIENDLY_NAME_RE =
-  /咖啡|餐廳|餐館|食堂|小吃|甜點|百貨|商場|mall|market|市集|夜市|商圈|寺|神社|神宮|城|塔|park|museum|美術|gallery|attraction|shopping|department|cafe|restaurant|bar|night/i;
-
-const LOW_VALUE_LANDMARK_TYPES = new Set([
-  "monument",
-  "memorial",
-  "historical_landmark",
-  "cultural_landmark",
-  "historical_place",
-  "sculpture",
-]);
+const CITY_JUNK_NAME_JA_RE = /(墓所|古墳)$/;
 
 const CITY_PRIORITIZED_TYPES = new Set([
   "tourist_attraction",
@@ -50,14 +42,18 @@ const CITY_PRIORITIZED_TYPES = new Set([
   "meal_takeaway",
 ]);
 
-const FAMOUS_LANDMARK_MIN_REVIEWS = 80;
-const FAMOUS_LANDMARK_MIN_RATING = 4.0;
-const MONUMENT_MIN_REVIEWS = 40;
-const MONUMENT_MIN_RATING = 4.1;
-
 export type CityExplorePlace = Pick<
   PlaceResult,
-  "name" | "address" | "rating" | "userRatingCount" | "primaryType" | "types" | "photoName"
+  | "name"
+  | "address"
+  | "rating"
+  | "userRatingCount"
+  | "primaryType"
+  | "types"
+  | "photoName"
+  | "regularOpeningHours"
+  | "currentOpeningHours"
+  | "reviewEvidence"
 >;
 
 function allTypes(place: CityExplorePlace): string[] {
@@ -69,19 +65,6 @@ function allTypes(place: CityExplorePlace): string[] {
     if (n) out.add(n);
   }
   return [...out];
-}
-
-function isFamousCityLandmark(place: CityExplorePlace): boolean {
-  const rating = place.rating ?? 0;
-  const reviews = place.userRatingCount ?? 0;
-  return reviews >= FAMOUS_LANDMARK_MIN_REVIEWS && rating >= FAMOUS_LANDMARK_MIN_RATING;
-}
-
-function isAcceptableMonument(place: CityExplorePlace): boolean {
-  if (isFamousCityLandmark(place)) return true;
-  const rating = place.rating ?? 0;
-  const reviews = place.userRatingCount ?? 0;
-  return reviews >= MONUMENT_MIN_REVIEWS && rating >= MONUMENT_MIN_RATING;
 }
 
 /** true = 應排除（低旅遊價值） */
@@ -99,38 +82,18 @@ export function isLowValueCityExplorePlace(place: CityExplorePlace): boolean {
   if (CITY_JUNK_NAME_EN_RE.test(blob)) return true;
   if (CITY_JUNK_NAME_JA_RE.test(name)) return true;
 
-  if (name.length <= 14 && /(石碑|碑文|橋跡|戒壇|遺跡|史跡|霊場)/.test(name)) {
-    return true;
-  }
-
-  const types = allTypes(place);
-  const rating = place.rating ?? 0;
-  const reviews = place.userRatingCount ?? 0;
-  const hasPrioritizedType = types.some((t) => CITY_PRIORITIZED_TYPES.has(t));
-  const isMonumentLike = types.some((t) => LOW_VALUE_LANDMARK_TYPES.has(t));
-
-  if (isMonumentLike && !hasPrioritizedType && !isAcceptableMonument(place)) {
-    return true;
-  }
-
-  const onlyGenericPoi =
-    types.length > 0 &&
-    types.every((t) => t === "point_of_interest" || t === "establishment" || t === "landmark");
-
-  if (onlyGenericPoi && reviews < 25 && rating < 4.0 && !TRAVEL_FRIENDLY_NAME_RE.test(name)) {
-    return true;
-  }
-
-  if (
-    types.includes("landmark") &&
-    !hasPrioritizedType &&
-    reviews < 30 &&
-    !TRAVEL_FRIENDLY_NAME_RE.test(name)
-  ) {
-    return true;
-  }
-
-  return false;
+  // Shared Tourist Quality Gate (general sightseeing): only LOW_EXPERIENCE_VALUE is excluded.
+  return !touristQualityDecision(
+    {
+      name,
+      primaryType: place.primaryType,
+      types: place.types,
+      regularOpeningHours: place.regularOpeningHours,
+      currentOpeningHours: place.currentOpeningHours,
+      reviewEvidence: place.reviewEvidence,
+    },
+    { intent: "general_sightseeing" },
+  ).admit;
 }
 
 export function passesCityExploreTouristValue(place: CityExplorePlace): boolean {

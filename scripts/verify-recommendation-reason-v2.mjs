@@ -40,6 +40,7 @@ import {
   resetReasonProfileStore,
 } from "../src/lib/reason-personalization-store";
 import { createEmptySessionPreference } from "../src/lib/personalization/types";
+import { effectiveAppLocale } from "../src/lib/i18n/effective-app-locale";
 
 let fetchCalls = 0;
 const originalFetch = globalThis.fetch;
@@ -324,12 +325,76 @@ test("R20 Trip normalizer keeps canonical reason", () => {
   const trip = tripPlaceToItineraryItem(tripPlaceFromPlaceResult(evidenced), {
     date: "2026-10-14",
   });
+  // tripPlaceToItineraryItem derives with the ambient app locale (system LANG in Node), so pin
+  // the stored locale explicitly before asserting the round-trip contract.
+  const clone = (item) => JSON.parse(JSON.stringify(item));
+  const storedEn = normalizeItineraryItem(clone(trip), "en");
+  assert.ok(storedEn.recommendationReason.trim());
+  // Phase 1 normalization contract (restored), locale-independent: the Trip normalizer's own
+  // reason round-trips unchanged in the locale that produced it, and equals the canonical evidence
+  // text for that locale; the stored en reason is the canonical en evidence text.
+  const ambient = effectiveAppLocale();
+  assert.ok(trip.recommendationReason?.trim(), "trip has no reason");
+  assert.equal(
+    normalizeItineraryItem(clone(trip), ambient).recommendationReason,
+    trip.recommendationReason,
+  );
+  assert.equal(trip.recommendationReason, text(evidenced, null, undefined, ambient));
+  assert.equal(storedEn.recommendationReason, text(evidenced, null, undefined, "en"));
+  // Same contract with the device language pinned (zh-TW system / en-US system) in-process, so the
+  // outcome never depends on the LANG this script happens to run under. effectiveAppLocale reads
+  // navigator.language (Node derives it from LANG/ICU); restored afterwards.
+  const navDescriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  try {
+    for (const [language, expected] of [
+      ["zh-TW", "zh-TW"],
+      ["en-US", "en"],
+    ]) {
+      Object.defineProperty(globalThis, "navigator", {
+        value: { language },
+        configurable: true,
+        writable: true,
+      });
+      const locale = effectiveAppLocale();
+      assert.equal(locale, expected, `pinned ${language}`);
+      const pinnedTrip = tripPlaceToItineraryItem(tripPlaceFromPlaceResult(evidenced), {
+        date: "2026-10-14",
+      });
+      assert.ok(pinnedTrip.recommendationReason?.trim(), `${language}: trip has no reason`);
+      assert.equal(
+        normalizeItineraryItem(clone(pinnedTrip), locale).recommendationReason,
+        pinnedTrip.recommendationReason,
+        `${language}: same-locale round trip`,
+      );
+      assert.equal(
+        pinnedTrip.recommendationReason,
+        text(evidenced, null, undefined, locale),
+        `${language}: canonical text`,
+      );
+      assert.equal(
+        normalizeItineraryItem(clone(pinnedTrip), "en").recommendationReason,
+        text(evidenced, null, undefined, "en"),
+        `${language}: stored en canonical`,
+      );
+    }
+  } finally {
+    if (navDescriptor) Object.defineProperty(globalThis, "navigator", navDescriptor);
+    else delete globalThis.navigator;
+  }
   // Same locale round-trips unchanged; a locale switch re-derives from the same evidence.
-  const sameLocale = normalizeItineraryItem(JSON.parse(JSON.stringify(trip)), "en");
-  assert.equal(sameLocale.recommendationReason, trip.recommendationReason);
-  const normalized = normalizeItineraryItem(JSON.parse(JSON.stringify(trip)), "zh-TW");
+  const sameLocale = normalizeItineraryItem(clone(storedEn), "en");
+  assert.equal(sameLocale.recommendationReason, storedEn.recommendationReason);
+  const normalized = normalizeItineraryItem(clone(storedEn), "zh-TW");
   assert.equal(normalized.recommendationReason, text(evidenced));
   assert.match(normalized.recommendationReason, /插座/);
+  assert.notEqual(normalized.recommendationReason, storedEn.recommendationReason);
+  // zh-TW is also stable under a same-locale round trip, whichever locale produced the trip.
+  assert.equal(
+    normalizeItineraryItem(clone(normalized), "zh-TW").recommendationReason,
+    normalized.recommendationReason,
+  );
+  // The reviewEvidence carried through the trip is the evidence the re-derivation uses.
+  assert.deepEqual(normalized.reviewEvidence, storedEn.reviewEvidence);
 });
 
 test("R21 handoff/restore never downgrades", () => {

@@ -66,6 +66,7 @@ import {
   logConversationStateUpdate,
 } from "@/lib/ai/chat-conversation-state";
 import { isCreateItineraryIntent } from "@/lib/ai/chat-context-intent";
+import type { TouristQualityIntent, TouristQualityTier } from "@/lib/tourist-quality-gate";
 import { parseItineraryPlanModeIntent } from "@/lib/ai/itinerary-planning";
 import {
   parseTravelDateRangeFromText,
@@ -81,6 +82,16 @@ import { maybeResetForNewTripPlanning } from "@/lib/ai/trip-planning-session-res
 import { updateSessionPreferenceFromExplicitText } from "@/lib/personalization/resolve-effective-preference";
 
 /** Canonical travel context — merged on every user turn */
+/** Minimal first-pass Tourist Quality Gate verdict stored on an offered place (no evidence text). */
+export type OfferedTouristQualityVerdict = {
+  /** Google Place ID the verdict was computed for; reused only on strict equality. */
+  placeId: string;
+  tier: TouristQualityTier;
+  admit: boolean;
+  /** Canonical intent the verdict was computed under. */
+  intent: TouristQualityIntent;
+};
+
 export type CanonicalTravelContext = {
   sessionPreference?: import("@/lib/personalization/types").SessionPreferenceV1;
   destination?: string;
@@ -152,6 +163,11 @@ export type CanonicalTravelContext = {
   offeredCombinations?: Array<{
     id: number;
     title: string;
+    /**
+     * Stable theme key of the combination the user chose from (discovery `combo.theme`, never the
+     * localized title). Canonical Tourist Quality intent source for Replan. Absent on older sessions.
+     */
+    themeKey?: string;
     places: Array<{
       candidateId?: string;
       /** Stable planner identity copied from the grounded discovery candidate. */
@@ -180,6 +196,11 @@ export type CanonicalTravelContext = {
       userRatingCount?: number | null;
       businessStatus?: string | null;
       resolutionStatus: "named" | "resolved" | "unresolved" | "pending";
+      /**
+       * First-pass Tourist Quality Gate verdict, bound to a Google Place ID. Absent on older
+       * sessions or when the place had no Google Place ID (Replan then re-judges).
+       */
+      touristQuality?: OfferedTouristQualityVerdict;
     }>;
   }>;
   /**

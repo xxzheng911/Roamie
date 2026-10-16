@@ -36,6 +36,9 @@ import {
   tripPlaceFromPlaceResult,
   tripPlaceToItineraryItem,
 } from "../src/lib/trip/trip-place-input";
+import { installWorkerRequestStorage } from "../src/lib/worker-request-als.server";
+import { runWithWorkerRequest, runWithVerifiedPrincipal } from "../src/lib/worker-request-scope";
+import { createMemoryAbuseGuard } from "../src/lib/abuse-guard-memory";
 
 const base = resolveRecommendationReasonPlace({
   id: "ChIJ_ReasonAuthority",
@@ -325,8 +328,37 @@ test("four locales preserve evidence and presentation core", () => {
 });
 globalThis.fetch = originalFetch;
 // Real screen adapter: one existing Details call receives reviews; cache + intro reuse perform zero more calls.
-globalThis.fetch = async () => {
+// The provider boundary requires a trusted principal (verified user or public read); use the
+// production scope contract with a fake server key. No real key, no real network.
+installWorkerRequestStorage();
+delete process.env.ABUSE_GUARD_ENFORCEMENT;
+delete process.env.DISABLE_GOOGLE_PROXY;
+const fakeServerKey = "AIza" + "f".repeat(35);
+// Same production guard shape as verify-google-upstream-accounting: enforcement on, in-memory
+// AbuseGuard DO + burst limiter, trusted edge IP; only the provider fetch is replaced.
+const transportEnv = {
+  ABUSE_GUARD_ENFORCEMENT: "true",
+  ABUSE_GUARD: createMemoryAbuseGuard().namespace,
+  GOOGLE_API_RATE_LIMITER: { limit: async () => ({ success: true }) },
+  GOOGLE_PLACES_SERVER_API_KEY: fakeServerKey,
+  ABUSE_GUARD_ANALYTICS: { writeDataPoint: () => {} },
+};
+const edgeRequest = () =>
+  new Request("https://roamie.tw/api/google", {
+    method: "POST",
+    headers: { "cf-connecting-ip": "203.0.113.41" },
+  });
+const asVerifiedUser = (fn) =>
+  runWithWorkerRequest({ env: transportEnv, request: edgeRequest() }, () =>
+    runWithVerifiedPrincipal("reason-authority-fixture-user", fn),
+  );
+const withoutPrincipal = (fn) =>
+  runWithWorkerRequest({ env: transportEnv, request: edgeRequest() }, fn);
+const requested = [];
+assert.equal(calls, 0);
+globalThis.fetch = async (url, init) => {
   calls++;
+  requested.push({ url: String(url), apiKey: new Headers(init?.headers).get("X-Goog-Api-Key") });
   return Response.json({
     id: "ChIJ_ReviewTransport",
     displayName: { text: "Coffee" },
@@ -337,17 +369,43 @@ globalThis.fetch = async () => {
   });
 };
 try {
-  const first = await fetchPlaceDetailsForScreenWithKey("ChIJ_ReviewTransport", "fixture", "zh-TW");
-  const second = await fetchPlaceDetailsForScreenWithKey(
-    "ChIJ_ReviewTransport",
+  // Auth guard stays closed: no principal (in-scope or no scope at all) never reaches fetch.
+  const deniedInScope = await withoutPrincipal(() =>
+    fetchPlaceDetailsForScreenWithKey("ChIJ_ReviewTransportDenied", "fixture", "zh-TW"),
+  );
+  assert.equal(deniedInScope, null);
+  const deniedNoScope = await fetchPlaceDetailsForScreenWithKey(
+    "ChIJ_ReviewTransportDeniedNoScope",
     "fixture",
     "zh-TW",
   );
+  assert.equal(deniedNoScope, null);
+  assert.equal(calls, 0);
+  console.log("PASS review transport: unauthorized Details rejected before provider fetch");
+
+  const first = await asVerifiedUser(() =>
+    fetchPlaceDetailsForScreenWithKey("ChIJ_ReviewTransport", "fixture", "zh-TW"),
+  );
+  assert.equal(calls, 1);
+  assert.match(requested[0].url, /^https:\/\/places\.googleapis\.com\/v1\/places\/ChIJ_ReviewTransport\b/);
+  assert.equal(requested[0].apiKey, fakeServerKey);
+  assert.ok(first.reviewEvidence?.signals.length > 0);
+  const second = await asVerifiedUser(() =>
+    fetchPlaceDetailsForScreenWithKey("ChIJ_ReviewTransport", "fixture", "zh-TW"),
+  );
   assert.equal(calls, 1);
   assert.deepEqual(first.reviewEvidence, second.reviewEvidence);
-  const intro = await fetchPlaceDetailsForIntro("ChIJ_ReviewTransport", "zh-TW");
+  const intro = await asVerifiedUser(() =>
+    fetchPlaceDetailsForIntro("ChIJ_ReviewTransport", "zh-TW"),
+  );
   assert.equal(calls, 1);
   assert.deepEqual(intro.place.reviewEvidence, first.reviewEvidence);
+  // Still closed after a successful authorized fetch.
+  const deniedAfter = await withoutPrincipal(() =>
+    fetchPlaceDetailsForScreenWithKey("ChIJ_ReviewTransportDeniedAfter", "fixture", "zh-TW"),
+  );
+  assert.equal(deniedAfter, null);
+  assert.equal(calls, 1);
   console.log("PASS review transport: 1 Details, repeated Details/Intro 0 extra provider calls");
 } finally {
   globalThis.fetch = originalFetch;

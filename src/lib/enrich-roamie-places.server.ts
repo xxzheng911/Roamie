@@ -29,7 +29,11 @@ import {
   buildPlusPreferenceRankingContext,
 } from "@/lib/plus-preference-ranking";
 import { isRecommendablePlace, itineraryToRecommendableInput } from "@/lib/is-recommendable-place";
-import { lookupPlacesHoursBatch } from "@/lib/places.functions";
+import {
+  lookupPlacesHoursBatchWithIdentity,
+  type VerifiedPlaceHours,
+} from "@/lib/places.functions";
+import { normalizeTrustedGooglePlaceId } from "@/lib/ai/combination-candidate-quality";
 import {
   filterAlreadyRecommendedPlaces,
   mergeRecommendationsWithSelected,
@@ -82,6 +86,43 @@ function enrichOptsFromContext(ctx: RoamieRequestContext): EnrichRoamieOptions |
   return { context: "now", lat: center.lat, lng: center.lng, at };
 }
 
+/** Name-keyed hours exactly as lookupPlacesHoursBatch returned them (existing consumers). */
+function hoursOnlyMap(withIdentity: Map<string, VerifiedPlaceHours>): Map<string, PlaceHoursData> {
+  const map = new Map<string, PlaceHoursData>();
+  for (const [name, entry] of withIdentity) map.set(name, entry.hours);
+  return map;
+}
+
+/**
+ * Tourist Quality Gate evidence: the hours only when their verified Google Place ID strictly
+ * equals the item's googlePlaceId. Name matches, missing IDs and unverified results yield null.
+ */
+function verifiedGateHours(
+  entry: VerifiedPlaceHours | undefined,
+  googlePlaceId: string | undefined,
+): Pick<PlaceHoursData, "regularOpeningHours" | "currentOpeningHours"> | null {
+  const id = googlePlaceId?.trim();
+  if (!entry?.verifiedPlaceId || !id || entry.verifiedPlaceId !== id) return null;
+  return {
+    regularOpeningHours: entry.hours.regularOpeningHours,
+    currentOpeningHours: entry.hours.currentOpeningHours,
+  };
+}
+
+/** Google Place IDs the user explicitly selected (identity by Place ID only, never by name). */
+function selectedGooglePlaceIds(ctx: RoamieRequestContext): Set<string> {
+  const ids = new Set<string>();
+  for (const place of [
+    ...(ctx.itineraryRequest?.selectedPlaces ?? []),
+    ...(ctx.selectedPlaces ?? []),
+  ]) {
+    // Any Google Place ID format (ChIJ / GhIJ / EiQ …); synthetic and fallback IDs never protect.
+    const id = normalizeTrustedGooglePlaceId(place.googlePlaceId);
+    if (id) ids.add(id);
+  }
+  return ids;
+}
+
 function parseItineraryAt(tripStartDate: string | undefined, item: RoamieItineraryItem): Date {
   const dateStr = item.date?.trim() || tripStartDate || new Date().toISOString().slice(0, 10);
   const base = new Date(`${dateStr}T12:00:00`);
@@ -111,7 +152,7 @@ async function enrichRecommendations(
     };
   }
 
-  const hoursMap = await lookupPlacesHoursBatch(
+  const hoursWithIdentity = await lookupPlacesHoursBatchWithIdentity(
     recs.map((r) => ({
       name: r.name,
       placeId: r.googlePlaceId,
@@ -125,6 +166,7 @@ async function enrichRecommendations(
       screen: "ai_recommend",
     },
   );
+  const hoursMap = hoursOnlyMap(hoursWithIdentity);
 
   const normalized = recs.map((r) => normalizeRecommendationItem(r));
   const openOnly = filterOpenPlaces(
@@ -156,7 +198,28 @@ async function enrichRecommendations(
           setting: ctx.planningHints?.setting,
         })
       : null;
-  const ranked = rankRecommendations(openOnly, hoursMap, at, mood, ctx.weather ?? null, plusCtx);
+  // Tourist Quality Gate inside ranking reads hours from the rec itself. Rank gate-only copies
+  // that carry Place-ID-verified hours, then map results back to the original objects so the
+  // response shape never gains opening-hours fields.
+  const originalByGateCopy = new Map<RoamieRecommendationItem, RoamieRecommendationItem>();
+  const gateInputs = openOnly.map((rec) => {
+    const gateHours = verifiedGateHours(hoursWithIdentity.get(rec.name), rec.googlePlaceId);
+    if (!gateHours) return rec;
+    const copy: RoamieRecommendationItem = { ...rec, ...gateHours };
+    originalByGateCopy.set(copy, rec);
+    return copy;
+  });
+  const ranked = rankRecommendations(
+    gateInputs,
+    hoursMap,
+    at,
+    mood,
+    ctx.weather ?? null,
+    plusCtx,
+  ).map((entry) => {
+    const original = originalByGateCopy.get(entry.rec);
+    return original ? { ...entry, rec: original } : entry;
+  });
   const stats = summarizeAvailabilityStats(ranked);
   const lateNightMode = isLateNightMode(at) || sceneFlow;
 
@@ -195,6 +258,7 @@ async function enrichRecommendations(
 async function enrichItinerary(
   items: RoamieItineraryItem[],
   opts: EnrichRoamieOptions,
+  selectedPlaceIds: ReadonlySet<string> = new Set(),
 ): Promise<RoamieItineraryItem[]> {
   const { beginPlacesFlow, endPlacesFlow } = await import("@/lib/places-api-stats");
   const flow = beginPlacesFlow("itinerary_once");
@@ -203,7 +267,8 @@ async function enrichItinerary(
     const names = [...new Set(items.map((i) => i.placeName).filter(Boolean))];
     if (!names.length) return items;
 
-    const hoursMap = await lookupPlacesHoursBatch(
+    // Request keys unchanged (no placeId passed): only this call's own lookup can verify an ID.
+    const hoursWithIdentity = await lookupPlacesHoursBatchWithIdentity(
       names.map((name) => {
         const item = items.find((i) => i.placeName === name);
         return { name, lat: item?.lat, lng: item?.lng };
@@ -218,7 +283,8 @@ async function enrichItinerary(
     const kept: RoamieItineraryItem[] = [];
 
     for (const item of items) {
-      const hours: PlaceHoursData = hoursMap.get(item.placeName) ?? {};
+      const entry = hoursWithIdentity.get(item.placeName);
+      const hours: PlaceHoursData = entry?.hours ?? {};
       const at = parseItineraryAt(opts.tripStartDate, item);
       if (
         !isPlaceAvailableNow(
@@ -235,12 +301,22 @@ async function enrichItinerary(
         at,
         atTime: item.time,
       });
+      const itemPlaceId = normalizeTrustedGooglePlaceId(item.googlePlaceId);
       const recommendable = isRecommendablePlace(
-        itineraryToRecommendableInput(item, {
-          businessStatus: availability.businessStatus,
-          openStatus: availability.openStatus,
-        }),
+        itineraryToRecommendableInput(
+          item,
+          {
+            businessStatus: availability.businessStatus,
+            openStatus: availability.openStatus,
+          },
+          verifiedGateHours(entry, item.googlePlaceId),
+        ),
         "plan_trip",
+        {
+          // User-selected stops (matched by Google Place ID only) are never removed by the Gate.
+          touristQualityProtection:
+            itemPlaceId && selectedPlaceIds.has(itemPlaceId) ? "explicit" : null,
+        },
       );
       if (!recommendable.ok) continue;
 
@@ -294,7 +370,7 @@ export async function enrichRoamieResponse(
 
     const itinerary =
       response.itinerary?.length && opts.context === "scheduled"
-        ? await enrichItinerary(response.itinerary, opts)
+        ? await enrichItinerary(response.itinerary, opts, selectedGooglePlaceIds(ctx))
         : (response.itinerary ?? []);
 
     const sceneFlow = shouldActivateLateNightSceneFlow(

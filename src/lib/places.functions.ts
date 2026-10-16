@@ -828,17 +828,42 @@ function buildHoursLookupRequestKey(input: {
   return `name:${input.name.trim().toLowerCase()}:${input.lat.toFixed(3)}:${input.lng.toFixed(3)}`;
 }
 
+type PlacesHoursBatchItem = {
+  name: string;
+  placeId?: string | null;
+  address?: string | null;
+  lat?: number | null;
+  lng?: number | null;
+};
+
+/**
+ * Hours plus the Google Place ID the hours are proven to belong to.
+ * verifiedPlaceId is set only when (a) the hours came from the Place-ID-keyed cache for the
+ * caller-supplied placeId, or (b) this call's own lookup returned Google's `id` for them.
+ * Results shared through in-flight dedupe carry no ID and stay unverified (null).
+ */
+export type VerifiedPlaceHours = { hours: PlaceHoursData; verifiedPlaceId: string | null };
+
 export async function lookupPlacesHoursBatch(
-  items: Array<{
-    name: string;
-    placeId?: string | null;
-    address?: string | null;
-    lat?: number | null;
-    lng?: number | null;
-  }>,
+  items: PlacesHoursBatchItem[],
   center: { lat: number; lng: number },
   stats?: PlacesSearchStats,
 ): Promise<Map<string, PlaceHoursData>> {
+  const withIdentity = await lookupPlacesHoursBatchWithIdentity(items, center, stats);
+  const map = new Map<string, PlaceHoursData>();
+  for (const [name, entry] of withIdentity) map.set(name, entry.hours);
+  return map;
+}
+
+/**
+ * Same lookups, request keys, dedupe and cache use as lookupPlacesHoursBatch (which wraps it);
+ * additionally reports the verified Google Place ID per name. Never adds provider calls.
+ */
+export async function lookupPlacesHoursBatchWithIdentity(
+  items: PlacesHoursBatchItem[],
+  center: { lat: number; lng: number },
+  stats?: PlacesSearchStats,
+): Promise<Map<string, VerifiedPlaceHours>> {
   const {
     getAiHoursCacheByPlaceId,
     logAiPlaceBatchLookup,
@@ -852,13 +877,14 @@ export async function lookupPlacesHoursBatch(
     screen: "unknown",
   };
 
-  const map = new Map<string, PlaceHoursData>();
+  const map = new Map<string, VerifiedPlaceHours>();
   const unique = [...new Map(items.map((i) => [i.name, i])).values()];
   const concurrency = 4;
 
   async function resolveItemHours(item: (typeof unique)[number]): Promise<{
     name: string;
     hours: PlaceHoursData | null;
+    verifiedPlaceId: string | null;
   }> {
     const lat = item.lat ?? center.lat;
     const lng = item.lng ?? center.lng;
@@ -869,12 +895,15 @@ export async function lookupPlacesHoursBatch(
       if (cached) {
         logAiPlaceCacheHit(`hours:${placeId}`);
         logAiPlaceBatchLookup({ name: item.name, placeId, cacheHit: true });
-        return { name: item.name, hours: cached };
+        // Cache is keyed by Google's own id (set below from the provider response).
+        return { name: item.name, hours: cached, verifiedPlaceId: placeId };
       }
     }
 
     const requestKey = buildHoursLookupRequestKey({ name: item.name, placeId, lat, lng });
 
+    // Set only when this call's own runner executed (not when deduped onto another lookup).
+    let ownLookupPlaceId: string | null = null;
     const hours = await runAiHoursLookupDeduped(requestKey, async () => {
       logAiPlaceBatchLookup({ name: item.name, placeId, cacheHit: false });
       const result = await lookupPlaceHoursFromRaw(item.name, lat, lng, item.address, lookupStats);
@@ -882,17 +911,18 @@ export async function lookupPlacesHoursBatch(
       if (result.placeId) {
         setAiHoursCacheByPlaceId(result.placeId, result.hours);
       }
+      ownLookupPlaceId = result.placeId;
       return result.hours;
     });
 
-    return { name: item.name, hours };
+    return { name: item.name, hours, verifiedPlaceId: hours ? ownLookupPlaceId : null };
   }
 
   for (let i = 0; i < unique.length; i += concurrency) {
     const chunk = unique.slice(i, i + concurrency);
     const results = await Promise.all(chunk.map((item) => resolveItemHours(item)));
-    for (const { name, hours } of results) {
-      if (hours) map.set(name, hours);
+    for (const { name, hours, verifiedPlaceId } of results) {
+      if (hours) map.set(name, { hours, verifiedPlaceId });
     }
   }
 
