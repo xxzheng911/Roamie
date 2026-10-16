@@ -67,7 +67,8 @@ export const Route = createFileRoute("/api/roamie")({
         ctx = applyTierToAiContext(ctx, tier);
 
         const rateKey = auth?.userId ?? request.headers.get("cf-connecting-ip") ?? "anon";
-        const minuteLimit = checkRateLimit(
+        const minuteLimit = await checkRateLimit(
+          "AI_CHAT_RATE_LIMITER",
           `ai:${rateKey}:min`,
           AI_RATE_LIMITS.chatPerMinute,
           60_000,

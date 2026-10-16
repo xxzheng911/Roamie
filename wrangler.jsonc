@@ -8,5 +8,12 @@
   "routes": [
     { "pattern": "roamie.tw/*", "zone_name": "roamie.tw" },
     { "pattern": "www.roamie.tw/*", "zone_name": "roamie.tw" }
+  ],
+  // Workers Rate Limiting binding（period 只能是 10 或 60 秒）
+  // limit 需與 src/lib/rate-limit.server.ts 呼叫端一致
+  "ratelimits": [
+    { "name": "AI_CHAT_RATE_LIMITER", "namespace_id": "1001", "simple": { "limit": 8, "period": 60 } },
+    { "name": "PLACE_IMAGE_RATE_LIMITER", "namespace_id": "1002", "simple": { "limit": 30, "period": 60 } },
+    { "name": "DESTINATION_COVER_RATE_LIMITER", "namespace_id": "1003", "simple": { "limit": 20, "period": 60 } }
   ]
 }

@@ -24,7 +24,12 @@ export const Route = createFileRoute("/api/place-image")({
     handlers: {
       POST: async ({ request }) => {
         const ip = request.headers.get("cf-connecting-ip") ?? "local";
-        const limit = checkRateLimit(`place-image:${ip}`, 30, 60_000);
+        const limit = await checkRateLimit(
+          "PLACE_IMAGE_RATE_LIMITER",
+          `place-image:${ip}`,
+          30,
+          60_000,
+        );
         if (!limit.allowed) {
           return Response.json({ error: "rate_limited" }, { status: 429 });
         }

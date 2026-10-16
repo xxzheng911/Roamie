@@ -67,7 +67,7 @@ npm run cap:open:ios
 
 - OpenAI + Maps keys: server-only (`src/lib/env.server.ts`, API routes)
 - Supabase RLS: enabled on all user tables
-- Rate limits: `src/lib/rate-limit.server.ts` — wire to KV in Workers production
+- Rate limits: `src/lib/rate-limit.server.ts` — Workers Rate Limiting bindings (`ratelimits` in `wrangler.jsonc`); in-memory fallback in dev
 - Google Maps: restrict key by HTTP referrer (web) + iOS bundle ID (native)
 
 ## Affiliate

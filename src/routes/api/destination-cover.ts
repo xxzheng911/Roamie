@@ -23,7 +23,12 @@ export const Route = createFileRoute("/api/destination-cover")({
     handlers: {
       POST: async ({ request }) => {
         const ip = request.headers.get("cf-connecting-ip") ?? "local";
-        const limit = checkRateLimit(`destination-cover:${ip}`, 20, 60_000);
+        const limit = await checkRateLimit(
+          "DESTINATION_COVER_RATE_LIMITER",
+          `destination-cover:${ip}`,
+          20,
+          60_000,
+        );
         if (!limit.allowed) {
           return Response.json({ error: "rate_limited" }, { status: 429 });
         }
