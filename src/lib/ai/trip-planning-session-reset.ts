@@ -28,6 +28,7 @@ import {
   isExplicitPrimaryDestinationSwitch,
   parseExplicitPrimaryDestinationSwitch,
 } from "@/lib/ai/combination-selection-reply";
+import { parseNegatedDestinationSwitch } from "@/lib/ai/continue-recommendation-intent";
 import {
   captureLockedDestinationSnapshot,
   isValidCoordinate,
@@ -142,7 +143,7 @@ export function parseTravelMonthFromText(text: string, now = new Date()): string
   return `${Number.parseInt(m[1], 10)}月`;
 }
 
-function resolveActiveDestination(session: ChatPlanningSession): string | undefined {
+export function resolveActiveDestination(session: ChatPlanningSession): string | undefined {
   const candidates = [
     session.travelContext?.destination,
     session.tripPlanningContext?.destination,
@@ -224,6 +225,24 @@ function datesDiffer(
 }
 
 /**
+ * Incoming destination wording of one (trimmed) turn, exactly as isNewTripPlanning reads it.
+ * Lexical only; never a trusted destination.
+ */
+export function resolveIncomingDestinationFromText(text: string): string | undefined {
+  const explicitSwitch = parseExplicitPrimaryDestinationSwitch(text);
+  // 「不去大阪了，換金澤」: the negated place is never the incoming destination. Only the wording
+  // after the negated clause is parsed, exactly as the same turn without it (「換金澤，再推薦幾個」);
+  // a switched-to place stays unconfirmed until the Destination Authority.
+  const negatedSwitch = parseNegatedDestinationSwitch(text);
+  return (
+    explicitSwitch ??
+    (isExplicitPrimaryDestinationSwitch(text)
+      ? undefined
+      : resolveDestinationFromText(negatedSwitch ? negatedSwitch.remainderText : text))
+  );
+}
+
+/**
  * Detect whether the user turn starts a NEW trip planning session
  * rather than continuing / refining the current one.
  */
@@ -268,12 +287,7 @@ export function isNewTripPlanning(
     };
   }
 
-  const explicitSwitch = parseExplicitPrimaryDestinationSwitch(text);
-  const incomingDestination =
-    explicitSwitch ??
-    (isExplicitPrimaryDestinationSwitch(text)
-      ? undefined
-      : resolveDestinationFromText(text));
+  const incomingDestination = resolveIncomingDestinationFromText(text);
   const incomingTravelMonth = parseTravelMonthFromText(text);
   const incomingRange = parseTravelDateRangeFromText(text);
   const prevMonth = session.travelContext?.travelMonth?.trim();
@@ -630,28 +644,64 @@ function applyCommonSessionShell(
   };
 }
 
+/** Runs one Commit side-effect step. Default: throw straight through (existing reset behavior). */
+type ResetCommitStepRunner = (step: string, fn: () => void) => void;
+
+const runResetCommitStepOrThrow: ResetCommitStepRunner = (_step, fn) => fn();
+
+/** Roll-forward runner: a failing step is logged and the remaining steps still run (no rollback). */
+function createRollForwardStepRunner(
+  oldSessionId: string | undefined,
+  newSessionId: string,
+): ResetCommitStepRunner {
+  return (step, fn) => {
+    try {
+      fn();
+    } catch (error) {
+      console.warn(
+        "[TRIP_RESET_COMMIT_STEP_FAILED]",
+        `step=${step}`,
+        `oldSessionId=${oldSessionId ?? "none"}`,
+        `newSessionId=${newSessionId}`,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  };
+}
+
+/** Old-session cleanup + new-session logs for an already generated newSessionId (Commit only). */
+function commitNewPlanningSessionIds(
+  oldSessionId: string | undefined,
+  newSessionId: string,
+  reason: NewTripPlanningReason,
+  runStep: ResetCommitStepRunner = runResetCommitStepOrThrow,
+): void {
+  runStep("clear_frozen_day_plan", () => clearFrozenPlanningDayPlan(oldSessionId));
+  runStep("reset_planner_session", () => resetPlannerSession(oldSessionId));
+  runStep("session_logs", () => {
+    logAiPipeline(
+      "[NEW_TRIP_SESSION_CREATED]",
+      `oldSessionId=${oldSessionId ?? "none"}`,
+      `newSessionId=${newSessionId}`,
+      `reason=${reason}`,
+    );
+    logAiPipeline(
+      "[PLANNER_SESSION_NEW]",
+      `oldSessionId=${oldSessionId ?? "none"}`,
+      `newSessionId=${newSessionId}`,
+      `reason=${reason}`,
+    );
+    logAiSessionCreate(reason, newSessionId);
+    logAiPlanningSessionStart(newSessionId);
+  });
+}
+
 function beginNewPlanningSessionIds(
   session: ChatPlanningSession,
   reason: NewTripPlanningReason,
 ): string {
-  const oldSessionId = session.planningSessionId;
   const newSessionId = createPlanningSessionId();
-  clearFrozenPlanningDayPlan(session.planningSessionId);
-  resetPlannerSession(session.planningSessionId);
-  logAiPipeline(
-    "[NEW_TRIP_SESSION_CREATED]",
-    `oldSessionId=${oldSessionId ?? "none"}`,
-    `newSessionId=${newSessionId}`,
-    `reason=${reason}`,
-  );
-  logAiPipeline(
-    "[PLANNER_SESSION_NEW]",
-    `oldSessionId=${oldSessionId ?? "none"}`,
-    `newSessionId=${newSessionId}`,
-    `reason=${reason}`,
-  );
-  logAiSessionCreate(reason, newSessionId);
-  logAiPlanningSessionStart(newSessionId);
+  commitNewPlanningSessionIds(session.planningSessionId, newSessionId, reason);
   return newSessionId;
 }
 
@@ -755,48 +805,41 @@ export function resetForDateChange(
   });
 }
 
+type DestinationChangeTurnInputs = {
+  incoming?: string;
+  monthFromText?: string;
+  rangeFromText: { startDate?: string; endDate?: string; days?: number };
+  daysFromText?: number;
+};
+
 /**
- * Destination / country / city switch: clear destination + itinerary, rehydrate new label.
+ * Pure result of a destination-change reset (Prepare). Holds the expected new Session and the
+ * Commit payload; nothing outside this object has been touched yet.
  */
-export function resetForDestinationChange(
+export type PreparedDestinationChangeReset = {
+  readonly base: ChatPlanningSession;
+  readonly reason: NewTripPlanningReason;
+  readonly newSessionId: string;
+  readonly session: ChatPlanningSession;
+  readonly turnInputs: DestinationChangeTurnInputs;
+  /** Raw labels whose resolved scope Commit clears (old destination, old trip city). */
+  readonly scopeLabelsToClear: readonly string[];
+  /** New label equals a label Commit clears, so hydration must be recomputed after the clear. */
+  readonly hydrationDependsOnClearedScope: boolean;
+  readonly afterResetLogArgs: readonly string[];
+};
+
+const committedDestinationChangeResets = new WeakSet<PreparedDestinationChangeReset>();
+
+/** Pure hydrate + session shell for a destination change (no cleanup, no Reset logs). */
+function buildDestinationChangeSession(
   session: ChatPlanningSession,
-  opts: {
-    reason: NewTripPlanningReason;
-    incomingDestination?: string;
-    incomingTravelMonth?: string;
-    userText?: string;
-  },
-): ChatPlanningSession {
+  reason: NewTripPlanningReason,
+  newSessionId: string,
+  inputs: DestinationChangeTurnInputs,
+): { session: ChatPlanningSession; afterResetLogArgs: string[] } {
   const prefs = preserveLongTermPreferences(session.travelContext);
-  const clearedList = [...DESTINATION_CHANGE_CLEARED_FIELDS];
-  const newSessionId = beginNewPlanningSessionIds(session, opts.reason);
-
-  if (session.travelContext?.destination) {
-    clearResolvedDestinationScope(session.travelContext.destination);
-  }
-  if (session.tripDestination?.city) {
-    clearResolvedDestinationScope(session.tripDestination.city);
-  }
-
-  logAiPipeline(
-    "[TRIP_CONTEXT_RESET]",
-    `cleared=[${clearedList.join(",")}]`,
-    `reason=${opts.reason}`,
-    "mode=resetForDestinationChange",
-  );
-
-  const incoming = opts.incomingDestination?.trim()
-    ? normalizeDestinationLabel(opts.incomingDestination)
-    : undefined;
-  const monthFromText =
-    opts.incomingTravelMonth ??
-    (opts.userText ? parseTravelMonthFromText(opts.userText) : undefined);
-  const rangeFromText = opts.userText
-    ? parseTravelDateRangeFromText(opts.userText)
-    : {};
-  const daysFromText = opts.userText
-    ? parseDayCountFromText(opts.userText) ?? rangeFromText.days
-    : undefined;
+  const { incoming, monthFromText, rangeFromText, daysFromText } = inputs;
 
   const hydrated = incoming
     ? hydrateDestinationFromIncoming(incoming, prefs, null)
@@ -823,8 +866,8 @@ export function resetForDestinationChange(
     selectedCombinationIds: [],
   };
 
-  logAiPipeline(
-    "[TRIP_CONTEXT_AFTER_RESET]",
+  // Saved only; Commit prints [TRIP_CONTEXT_AFTER_RESET] once, in the original position.
+  const afterResetLogArgs = [
     `destination=${travelContext.destination ?? "null"}`,
     `destinationCity=${travelContext.destinationCity ?? "null"}`,
     `destinationCountry=${travelContext.destinationCountry ?? "null"}`,
@@ -833,20 +876,144 @@ export function resetForDestinationChange(
     `tripDays=${travelContext.days ?? "null"}`,
     `selectedCombinationIds=[]`,
     `planningStage=${planningStage}`,
-  );
+  ];
 
-  return applyCommonSessionShell(session, {
+  return {
+    session: applyCommonSessionShell(session, {
+      reason,
+      newSessionId,
+      travelContext,
+      tripDestination: hydrated.resolved
+        ? buildTripDestinationFromResolved(hydrated.resolved)
+        : undefined,
+      incoming,
+      monthFromText,
+      rangeFromText,
+      daysFromText,
+    }),
+    afterResetLogArgs,
+  };
+}
+
+/**
+ * Prepare: compute the expected new Session of a destination change. No Planner / frozen plan /
+ * scope cache cleanup, no Reset log, no persistence. createPlanningSessionId is called once here;
+ * Commit reuses this id.
+ */
+export function prepareDestinationChangeReset(
+  session: ChatPlanningSession,
+  opts: {
+    reason: NewTripPlanningReason;
+    incomingDestination?: string;
+    incomingTravelMonth?: string;
+    userText?: string;
+  },
+): PreparedDestinationChangeReset {
+  const newSessionId = createPlanningSessionId();
+  const incoming = opts.incomingDestination?.trim()
+    ? normalizeDestinationLabel(opts.incomingDestination)
+    : undefined;
+  const rangeFromText = opts.userText
+    ? parseTravelDateRangeFromText(opts.userText)
+    : {};
+  const turnInputs: DestinationChangeTurnInputs = {
+    incoming,
+    monthFromText:
+      opts.incomingTravelMonth ??
+      (opts.userText ? parseTravelMonthFromText(opts.userText) : undefined),
+    rangeFromText,
+    daysFromText: opts.userText
+      ? parseDayCountFromText(opts.userText) ?? rangeFromText.days
+      : undefined,
+  };
+  const scopeLabelsToClear = [
+    session.travelContext?.destination,
+    session.tripDestination?.city,
+  ].filter((label): label is string => Boolean(label));
+  const hydrationDependsOnClearedScope = Boolean(
+    incoming && scopeLabelsToClear.some((label) => normalizeDestinationLabel(label) === incoming),
+  );
+  const built = buildDestinationChangeSession(session, opts.reason, newSessionId, turnInputs);
+  return {
+    base: session,
     reason: opts.reason,
     newSessionId,
-    travelContext,
-    tripDestination: hydrated.resolved
-      ? buildTripDestinationFromResolved(hydrated.resolved)
-      : undefined,
-    incoming,
-    monthFromText,
-    rangeFromText,
-    daysFromText,
-  });
+    session: built.session,
+    turnInputs,
+    scopeLabelsToClear,
+    hydrationDependsOnClearedScope,
+    afterResetLogArgs: built.afterResetLogArgs,
+  };
+}
+
+/**
+ * Commit: the only place a destination-change reset touches anything outside its Session, in the
+ * original order (frozen plan → Planner guard → session logs → scope cache → RESET → AFTER_RESET).
+ * Default onStepError "throw" keeps the existing reset behavior; "continue" rolls forward (each
+ * step try/catch, warn, no rollback) and always returns the new Session.
+ * When the new label is one of the cleared labels, hydration is recomputed after the clear with the
+ * same newSessionId and the same turn inputs (no new id, no extra Reset log).
+ */
+export function commitDestinationChangeReset(
+  prepared: PreparedDestinationChangeReset,
+  opts: { onStepError?: "throw" | "continue" } = {},
+): ChatPlanningSession {
+  if (committedDestinationChangeResets.has(prepared)) {
+    throw new Error("destination change reset already committed");
+  }
+  committedDestinationChangeResets.add(prepared);
+  const oldSessionId = prepared.base.planningSessionId;
+  const runStep =
+    opts.onStepError === "continue"
+      ? createRollForwardStepRunner(oldSessionId, prepared.newSessionId)
+      : runResetCommitStepOrThrow;
+
+  commitNewPlanningSessionIds(oldSessionId, prepared.newSessionId, prepared.reason, runStep);
+  for (const label of prepared.scopeLabelsToClear) {
+    runStep("clear_resolved_destination_scope", () => clearResolvedDestinationScope(label));
+  }
+  runStep("trip_context_reset_log", () =>
+    logAiPipeline(
+      "[TRIP_CONTEXT_RESET]",
+      `cleared=[${[...DESTINATION_CHANGE_CLEARED_FIELDS].join(",")}]`,
+      `reason=${prepared.reason}`,
+      "mode=resetForDestinationChange",
+    ),
+  );
+
+  let session = prepared.session;
+  let afterResetLogArgs = prepared.afterResetLogArgs;
+  if (prepared.hydrationDependsOnClearedScope) {
+    runStep("rehydrate_after_scope_clear", () => {
+      const rebuilt = buildDestinationChangeSession(
+        prepared.base,
+        prepared.reason,
+        prepared.newSessionId,
+        prepared.turnInputs,
+      );
+      session = rebuilt.session;
+      afterResetLogArgs = rebuilt.afterResetLogArgs;
+    });
+  }
+  runStep("trip_context_after_reset_log", () =>
+    logAiPipeline("[TRIP_CONTEXT_AFTER_RESET]", ...afterResetLogArgs),
+  );
+  return session;
+}
+
+/**
+ * Destination / country / city switch: clear destination + itinerary, rehydrate new label.
+ */
+export function resetForDestinationChange(
+  session: ChatPlanningSession,
+  opts: {
+    reason: NewTripPlanningReason;
+    incomingDestination?: string;
+    incomingTravelMonth?: string;
+    userText?: string;
+  },
+): ChatPlanningSession {
+  return commitDestinationChangeReset(prepareDestinationChangeReset(session, opts));
 }
 
 /** Finished trip / new conversation requirements. */

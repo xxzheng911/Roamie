@@ -40,7 +40,24 @@ export type DestinationProviderResult = {
   /** Which response path produced lat/lng (e.g. geometry.location.lat/lng). */
   sourceShape?: string;
   query?: string;
+  /**
+   * Google place types as returned by the provider (Geocoding `types` / Places `types`).
+   * Absent (undefined) when the provider did not return them — never synthesized.
+   */
+  types?: string[];
+  /** Places API (New) `primaryType` only. Geocoding API has none → stays undefined. */
+  primaryType?: string;
 };
+
+/**
+ * Raw provider evidence carried into DestinationProviderResult.
+ * Identity evidence (types / primaryType / countryCode) and search-scope evidence (viewport)
+ * are kept on the provider result only — never copied into TripLocation.
+ */
+export type DestinationProviderEvidence = Pick<
+  DestinationProviderResult,
+  "types" | "primaryType" | "countryCode" | "viewport"
+>;
 
 export type GeocodeFnEnvelope = {
   location: TripLocation | null;
@@ -79,6 +96,135 @@ function readFinite(value: unknown): number | undefined {
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+/** Provider `types` verbatim; missing / empty / non-array → undefined (never []). */
+function readProviderTypes(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const types = value.filter((t): t is string => typeof t === "string" && Boolean(t.trim()));
+  return types.length ? types : undefined;
+}
+
+/** ISO 3166-1 alpha-2 only; anything else → undefined. */
+function readIsoCountryCode(value: unknown): string | undefined {
+  const code = readString(value)?.toUpperCase();
+  return code && /^[A-Z]{2}$/.test(code) ? code : undefined;
+}
+
+/**
+ * Viewport as {north,south,east,west}. Accepts the normalized shape or Geocoding
+ * `geometry.viewport` {northeast:{lat,lng}, southwest:{lat,lng}}. All four bounds must be
+ * finite — otherwise undefined (no guessed bounds, no radius).
+ */
+function readProviderViewport(value: unknown): DestinationProviderResult["viewport"] {
+  const v = asRecord(value);
+  if (!v) return undefined;
+  const ne = asRecord(v.northeast);
+  const sw = asRecord(v.southwest);
+  const north = ne ? readFinite(ne.lat) : readFinite(v.north);
+  const south = sw ? readFinite(sw.lat) : readFinite(v.south);
+  const east = ne ? readFinite(ne.lng) : readFinite(v.east);
+  const west = sw ? readFinite(sw.lng) : readFinite(v.west);
+  if (north === undefined || south === undefined || east === undefined || west === undefined) {
+    return undefined;
+  }
+  return { north, south, east, west };
+}
+
+function compactEvidence(evidence: DestinationProviderEvidence): DestinationProviderEvidence {
+  const out: DestinationProviderEvidence = {};
+  if (evidence.types?.length) out.types = [...evidence.types];
+  if (evidence.primaryType) out.primaryType = evidence.primaryType;
+  if (evidence.countryCode) out.countryCode = evidence.countryCode;
+  if (evidence.viewport) out.viewport = { ...evidence.viewport };
+  return out;
+}
+
+/** Evidence from a single Geocoding API result (no primaryType — Geocoding has none). */
+export function providerEvidenceFromGeocodeResult(result: unknown): DestinationProviderEvidence {
+  const r = asRecord(result);
+  if (!r) return {};
+  const components = Array.isArray(r.address_components) ? r.address_components : [];
+  const country = components
+    .map(asRecord)
+    .find((c) => Array.isArray(c?.types) && (c.types as unknown[]).includes("country"));
+  return compactEvidence({
+    types: readProviderTypes(r.types),
+    countryCode: readIsoCountryCode(country?.short_name),
+    viewport: readProviderViewport(asRecord(r.geometry)?.viewport),
+  });
+}
+
+/**
+ * Evidence for the Geocoding result that produced `location` (matched by place_id,
+ * then by exact geometry.location). No match → {} (no evidence).
+ */
+export function providerEvidenceForGeocodeLocation(
+  response: unknown,
+  location: Pick<TripLocation, "placeId" | "lat" | "lng"> | null | undefined,
+): DestinationProviderEvidence {
+  const results = asRecord(response)?.results;
+  if (!location || !Array.isArray(results)) return {};
+  const records = results.map(asRecord).filter((r): r is Record<string, unknown> => r !== null);
+  const placeId = readString(location.placeId);
+  const byPlaceId = placeId ? records.find((r) => readString(r.place_id) === placeId) : undefined;
+  const match =
+    byPlaceId ??
+    records.find((r) => {
+      const loc = asRecord(asRecord(r.geometry)?.location);
+      return loc && readFinite(loc.lat) === location.lat && readFinite(loc.lng) === location.lng;
+    });
+  return match ? providerEvidenceFromGeocodeResult(match) : {};
+}
+
+/** Evidence from Places API (New) Place Details. Viewport is not in the Field Mask → none. */
+export function providerEvidenceFromPlaceDetails(details: unknown): DestinationProviderEvidence {
+  const d = asRecord(details);
+  if (!d) return {};
+  const components = Array.isArray(d.addressComponents) ? d.addressComponents : [];
+  const country = components
+    .map(asRecord)
+    .find((c) => Array.isArray(c?.types) && (c.types as unknown[]).includes("country"));
+  return compactEvidence({
+    types: readProviderTypes(d.types),
+    primaryType: readString(d.primaryType),
+    countryCode: readIsoCountryCode(country?.shortText),
+  });
+}
+
+/**
+ * Envelope `{ location, providerResult }`: carry providerResult evidence onto the
+ * location-derived result only when providerResult is ok and describes the same place
+ * (same coordinates; same placeId when both present). Existing fields are not overridden.
+ * countryCode is only filled when missing and only when `country` is already set:
+ * providerResultToTripLocation falls back to countryCode for `country`, and a country code
+ * must not stand in for a country name.
+ */
+function withEnvelopeEvidence(
+  hit: DestinationProviderResult,
+  root: Record<string, unknown>,
+): DestinationProviderResult {
+  const pr = asRecord(root.providerResult);
+  if (!pr || pr.ok !== true) return hit;
+  const lat = readFinite(pr.latitude) ?? readFinite(pr.lat);
+  const lng = readFinite(pr.longitude) ?? readFinite(pr.lng);
+  if (lat !== hit.latitude || lng !== hit.longitude) return hit;
+  const prPlaceId = readString(pr.placeId);
+  if (prPlaceId && hit.placeId && prPlaceId !== hit.placeId) return hit;
+  const evidence = compactEvidence({
+    types: readProviderTypes(pr.types),
+    primaryType: readString(pr.primaryType),
+    countryCode: readIsoCountryCode(pr.countryCode),
+    viewport: readProviderViewport(pr.viewport),
+  });
+  const merged: DestinationProviderResult = { ...hit };
+  if (evidence.types) merged.types = evidence.types;
+  if (evidence.primaryType) merged.primaryType = evidence.primaryType;
+  if (evidence.viewport) merged.viewport = evidence.viewport;
+  if (!merged.countryCode && merged.country && evidence.countryCode) {
+    merged.countryCode = evidence.countryCode;
+  }
+  return merged;
 }
 
 function candidateToProviderResult(
@@ -155,14 +301,9 @@ export function normalizeDestinationProviderResponse(
       country: readString(root.country),
       administrativeArea: readString(root.administrativeArea),
       locality: readString(root.locality),
-      viewport: asRecord(root.viewport)
-        ? {
-            north: readFinite(asRecord(root.viewport)!.north) ?? 0,
-            south: readFinite(asRecord(root.viewport)!.south) ?? 0,
-            east: readFinite(asRecord(root.viewport)!.east) ?? 0,
-            west: readFinite(asRecord(root.viewport)!.west) ?? 0,
-          }
-        : undefined,
+      viewport: readProviderViewport(root.viewport),
+      types: readProviderTypes(root.types),
+      primaryType: readString(root.primaryType),
       provider: (readString(root.provider) as DestinationProviderKind) ?? provider,
       rawResultCount: readFinite(root.rawResultCount) ?? (ok ? 1 : 0),
       parsedResultCount: readFinite(root.parsedResultCount) ?? (ok ? 1 : 0),
@@ -245,7 +386,7 @@ export function normalizeDestinationProviderResponse(
             readString(location.region) ?? readString(location.administrativeArea),
         },
       );
-      if (fromLocNew) return fromLocNew;
+      if (fromLocNew) return withEnvelopeEvidence(fromLocNew, root);
 
       const fromLocLegacy = tryPair(location.lat, location.lng, "response.location.lat/lng", {
         formattedAddress:
@@ -257,7 +398,7 @@ export function normalizeDestinationProviderResponse(
         country: readString(location.country),
         administrativeArea: readString(location.region),
       });
-      if (fromLocLegacy) return fromLocLegacy;
+      if (fromLocLegacy) return withEnvelopeEvidence(fromLocLegacy, root);
     }
 
     // 5: geometry.location
@@ -413,10 +554,13 @@ export function tripLocationToProviderResult(
     httpStatus?: number;
     apiStatus?: string;
     sourceShape?: string;
+    /** Raw provider evidence for this location (types / primaryType / countryCode / viewport). */
+    evidence?: DestinationProviderEvidence;
   },
 ): DestinationProviderResult {
   if (location && isValidAnchorCoordinate(location.lat, location.lng)) {
     return {
+      ...compactEvidence(opts?.evidence ?? {}),
       ok: true,
       status: opts?.apiStatus ?? "OK",
       latitude: location.lat,

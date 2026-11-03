@@ -25,6 +25,7 @@ import { useAddToTrip } from "@/hooks/use-add-to-trip";
 import { tripPlaceFromRecommendation } from "@/lib/trip/trip-place-input";
 import { openRecommendationOnMap } from "@/lib/recommendation-place-handoff";
 import { useI18n } from "@/hooks/use-i18n";
+import { blockIfChatGenerationLocked } from "@/lib/ai/chat-generation-lock";
 
 type RecSearch = { id?: string };
 
@@ -116,6 +117,7 @@ function RecommendationsPage() {
   );
 
   const handleContinueInChat = async () => {
+    if (blockIfChatGenerationLocked(uiT("uiCoverage.chatGenerationLockedNotice"))) return;
     if (!requireAuthForAction("ai_recommendation")) return;
     if (!record || !data) return;
     if (!data.recommendations?.length) {

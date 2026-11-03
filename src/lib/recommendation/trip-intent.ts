@@ -6,11 +6,13 @@ import {
   isValidParsedDestinationLabel,
   normalizeCityLabel,
   parseDestinationFromText,
+  splitTrailingActivityTail,
   tripLocationFromCity,
 } from "@/lib/ai/trip-planning-context";
 import { isDestinationAdviceActive, isFlexiblePreferenceReply } from "@/lib/ai/destination-advice";
 import { isBudgetRefinementText } from "@/lib/ai/budget-refinement";
 import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
+import { parseNegatedDestinationSwitch } from "@/lib/ai/continue-recommendation-intent";
 
 /** 從對話解析出的結構化旅行意圖 */
 export type TripIntent = {
@@ -70,8 +72,24 @@ function acceptCity(candidate: string | undefined): string | undefined {
   return normalized;
 }
 
+/**
+ * 「金澤玩」→「金澤」（shared tpc activity-tail split）. No activity tail → raw unchanged;
+ * activity tail without a clean head → undefined (this pattern yields no city; never the raw).
+ */
+function cityLabelWithoutActivityTail(raw: string): string | undefined {
+  const r = splitTrailingActivityTail(raw);
+  if (r.kind === "none") return raw;
+  if (r.kind === "split") return r.head;
+  return undefined;
+}
+
 function parseCityOrArea(text: string): { city?: string; area?: string } {
   const trimmed = text.trim();
+  // 否定＋切換句（「不要去大阪，改金澤」）：只解析切換後的剩餘文字，不從被否定的舊城市抽取。
+  // extended（「不去大阪了，去京都玩」）：本回合不從文字解析目的地（由切換 Authority 決定）。
+  const negatedSwitch = parseNegatedDestinationSwitch(trimmed);
+  if (negatedSwitch?.form === "extended") return {};
+  if (negatedSwitch) return parseCityOrArea(negatedSwitch.remainderText);
   const parsed = parseDestinationFromText(trimmed);
   if (parsed) return { city: parsed };
 
@@ -90,13 +108,13 @@ function parseCityOrArea(text: string): { city?: string; area?: string } {
     /(?:去|到|在|逛|玩|旅行|旅遊|目的地|想去|想去的是)[：:\s]*([^\s，,。！!？?]{2,12}(?:市|縣|區|里|町|府|道|都|國|島)?)/,
   );
   if (cityMatch?.[1]) {
-    const city = acceptCity(cityMatch[1].trim());
+    const city = acceptCity(cityLabelWithoutActivityTail(cityMatch[1].trim()));
     if (city && (KNOWN_DESTINATION_RE.test(city) || city.length >= 2)) return { city };
   }
 
   const directGo = trimmed.match(/去([\u4e00-\u9fffA-Za-z]{2,8})(?:\s*\d|\s*天|，|。|$)/);
   if (directGo?.[1]) {
-    const city = acceptCity(directGo[1].trim());
+    const city = acceptCity(cityLabelWithoutActivityTail(directGo[1].trim()));
     if (city && (KNOWN_DESTINATION_RE.test(city) || city.length >= 2)) {
       return { city };
     }

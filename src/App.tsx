@@ -14,14 +14,14 @@ import { detectPlatform } from "@/services/platform";
 import { readBrowserPathname } from "@/lib/startup-path";
 import { logAppError } from "@/lib/log-error";
 import { isAdminAuthBoundaryRoute, isAdminRoute } from "@/lib/admin/admin-route-boundary";
-import { isPublicOnboardingBypassPath } from "@/lib/public-routes";
+import { isPublicLegalPath, isTripInvitePublicPath } from "@/lib/public-routes";
 
 type Props = { children: ReactNode };
 
 export function App({ children }: Props) {
   const currentPath =
     useRouterState({ select: (state) => state.location.pathname }).replace(/\/+$/, "") || "/";
-  useIosInteractiveRoute(isPublicOnboardingBypassPath(currentPath) ? "public-legal" : "__skip__");
+  useIosInteractiveRoute(isPublicLegalPath(currentPath) ? "public-legal" : "__skip__");
   const isAdminBoundary = isAdminAuthBoundaryRoute(currentPath);
   const isAdminPage = isAdminRoute(currentPath);
   const stagingBadge =
@@ -65,11 +65,23 @@ export function App({ children }: Props) {
     );
   }
 
-  if (isPublicOnboardingBypassPath(currentPath)) {
+  if (isPublicLegalPath(currentPath)) {
     return (
       <AppErrorBoundary>
         <I18nProvider>{children}</I18nProvider>
       </AppErrorBoundary>
+    );
+  }
+
+  // 行程邀請頁：繞過 OnboardingGate，但需完整 AppProviders（Auth、AuthActionRuntime）才能登入後加入。
+  if (isTripInvitePublicPath(currentPath)) {
+    return (
+      <AppProviders>
+        <AppErrorBoundary>
+          {stagingBadge}
+          {children}
+        </AppErrorBoundary>
+      </AppProviders>
     );
   }
 

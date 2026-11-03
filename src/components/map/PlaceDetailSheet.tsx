@@ -1,7 +1,7 @@
 import { PlaceRecommendationReason } from "@/components/PlaceRecommendationReason";
 import type { PlaceReasonContextSnapshot } from "@/lib/build-place-recommendation-reason";
 import { useI18n } from "@/hooks/use-i18n";
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import {
   Car,
   CarTaxiFront,
@@ -88,7 +88,27 @@ type Props = {
   tabelogExternalUrl?: string | null;
   googleMapsExternalUrl?: string | null;
   tabelogLinkLabel?: string;
+  /**
+   * 只有地點詳情路由（_app.place.tsx）傳 true（常數，不隨 Duo 開合改變）：資訊區塊加上固定的分組包裹層，
+   * 供 styles.css 的 Duo 雙頁規則分欄。包裹層一律 display: contents，一般模式版面與未包裹時相同；
+   * 探索頁不傳，DOM 與原本完全相同。
+   */
+  routeSplitLayout?: boolean;
 };
+
+/** routeSplitLayout 時輸出 display: contents 的分組包裹層；否則只輸出 children（DOM 不變）。 */
+function SplitGroup({
+  enabled,
+  className,
+  children,
+}: {
+  enabled: boolean;
+  className: string;
+  children: ReactNode;
+}) {
+  if (!enabled) return <>{children}</>;
+  return <div className={cn("contents", className)}>{children}</div>;
+}
 
 export function PlaceDetailSheet({
   place,
@@ -113,6 +133,7 @@ export function PlaceDetailSheet({
   tabelogExternalUrl,
   googleMapsExternalUrl,
   tabelogLinkLabel,
+  routeSplitLayout = false,
 }: Props) {
   const { t, locale } = useI18n();
   const [photoIdx, setPhotoIdx] = useState(0);
@@ -258,192 +279,200 @@ export function PlaceDetailSheet({
       </div>
 
       <div className="px-5 pb-6 pt-4">
-        <div className="flex items-start justify-between gap-3">
-          <h2 className="font-display text-xl leading-tight">{displayNameForPlaceLike(place)}</h2>
-          {place.rating != null && (
-            <span className="flex shrink-0 items-center gap-1 rounded-full bg-card px-2.5 py-1 text-sm shadow-soft">
-              <Star className="h-3.5 w-3.5 fill-clay text-clay" />
-              {place.rating.toFixed(1)}
-            </span>
-          )}
-        </div>
-
-        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          <span className="rounded-full bg-secondary px-2.5 py-0.5">{typeLabel}</span>
-          {distanceLabel && <span>{distanceLabel}</span>}
-        </div>
-
-        <p className="mt-2 text-[11px] text-muted-foreground">
-          <span className="rounded-full bg-secondary px-2.5 py-0.5 text-xs font-medium text-foreground/85">
-            {openingLine}
-          </span>
-        </p>
-
-        {place.address && (
-          <p className="mt-2 flex items-start gap-1.5 text-sm text-muted-foreground">
-            <MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            <span>{place.address}</span>
-          </p>
-        )}
-
-        {(place.phone || place.website || googleMapsExternalUrl || tabelogExternalUrl) && (
-          <div className="mt-2 flex min-w-0 flex-wrap gap-2 text-xs">
-            {place.phone ? (
-              <a
-                href={`tel:${place.phone.replace(/\s/g, "")}`}
-                className="rounded-full border border-border bg-card px-3 py-1 text-foreground"
-              >
-                {place.phone}
-              </a>
-            ) : null}
-            {place.website ? (
-              <a
-                href={place.website}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="rounded-full border border-border bg-card px-3 py-1 text-foreground"
-              >
-                {t("uiCoverage.website")}
-              </a>
-            ) : null}
-            {googleMapsExternalUrl ? (
-              <button
-                type="button"
-                onClick={() => void openExternal(googleMapsExternalUrl)}
-                className="inline-flex max-w-full items-center gap-1 rounded-full border border-border bg-card px-3 py-1 text-foreground"
-              >
-                <ExternalLink className="h-3 w-3 shrink-0" aria-hidden />
-                <span>{t("uiCoverage.maps")}</span>
-              </button>
-            ) : null}
-            {tabelogExternalUrl ? (
-              <TabelogExternalLink
-                href={tabelogExternalUrl}
-                label={tabelogLinkLabel ?? t("uiCoverage.tabelog")}
-              />
-            ) : null}
-          </div>
-        )}
-
-        <div className="mt-4 rounded-2xl border border-border/80 bg-card/60 px-4 py-3">
-          <p className="text-xs font-medium text-muted-foreground">{t("uiCoverage.reason")}</p>
-          <p className="mt-1.5 text-sm leading-relaxed text-foreground/90">
-            <PlaceRecommendationReason place={place} presentation="detail" />
-          </p>
-        </div>
-
-        <div className="mt-4">
-          <p className="text-xs font-medium text-muted-foreground">{t("uiCoverage.transport")}</p>
-          <div className="mt-2 space-y-2">
-            {transportLoading && transportModes.length === 0 ? (
-              <div className="flex justify-center py-4">
-                <Loader2
-                  aria-label={t("uiCoverage.transportLoading")}
-                  className="h-5 w-5 animate-spin text-muted-foreground"
-                />
-              </div>
-            ) : transportModes.length === 0 ? (
-              <p className="rounded-2xl border border-border/60 bg-card/40 px-3.5 py-3 text-sm text-muted-foreground">
-                {t("uiCoverage.locationUnavailable")}
-              </p>
-            ) : (
-              transportModes.map((m) => {
-                const isSelected = selectedTransportMode === m.id;
-                return (
-                  <button
-                    key={m.id}
-                    type="button"
-                    data-no-sheet-drag
-                    onClick={() => onSelectTransportMode(m.id)}
-                    disabled={m.available === false}
-                    className={cn(
-                      "w-full rounded-2xl border px-3.5 py-2.5 text-left transition active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60",
-                      isSelected
-                        ? "border-clay bg-clay/12 shadow-soft ring-1 ring-clay/30"
-                        : "border-border/60 bg-card/40 hover:border-clay/25 hover:bg-card/70",
-                    )}
-                    aria-pressed={isSelected}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="flex items-center gap-2 text-sm font-medium">
-                        <TransportModeIcon mode={m.id} />
-                        {t(`uiCoverage.${m.id}`)}
-                      </p>
-                      {m.recommended && !isSelected && (
-                        <span className="shrink-0 rounded-full bg-clay/12 px-2 py-0.5 text-[10px] font-medium text-clay">
-                          {t("uiCoverage.recommended")}
-                        </span>
-                      )}
-                      {isSelected && (
-                        <span className="shrink-0 rounded-full bg-clay/20 px-2 py-0.5 text-[10px] font-medium text-clay">
-                          {t("uiCoverage.selected")}
-                        </span>
-                      )}
-                    </div>
-                    <p className="mt-1 text-sm text-foreground">
-                      {m.available === false
-                        ? t("uiCoverage.estimateUnavailable")
-                        : t("uiCoverage.minutes", { count: m.minutes })}
-                      <span className="text-muted-foreground"> ・ {m.distanceLabel}</span>
-                      {m.costLabel && (
-                        <span className="text-muted-foreground"> ・ {m.costLabel}</span>
-                      )}
-                    </p>
-                    <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{m.hint}</p>
-                  </button>
-                );
-              })
+        <SplitGroup enabled={routeSplitLayout} className="place-split-left-top">
+          <div className="flex items-start justify-between gap-3">
+            <h2 className="font-display text-xl leading-tight">{displayNameForPlaceLike(place)}</h2>
+            {place.rating != null && (
+              <span className="flex shrink-0 items-center gap-1 rounded-full bg-card px-2.5 py-1 text-sm shadow-soft">
+                <Star className="h-3.5 w-3.5 fill-clay text-clay" />
+                {place.rating.toFixed(1)}
+              </span>
             )}
           </div>
-          {selectedTransportMode === "transit" && (
-            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-              {t("uiCoverage.transitNotice")}
+
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <span className="rounded-full bg-secondary px-2.5 py-0.5">{typeLabel}</span>
+            {distanceLabel && <span>{distanceLabel}</span>}
+          </div>
+
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            <span className="rounded-full bg-secondary px-2.5 py-0.5 text-xs font-medium text-foreground/85">
+              {openingLine}
+            </span>
+          </p>
+
+          {place.address && (
+            <p className="mt-2 flex items-start gap-1.5 text-sm text-muted-foreground">
+              <MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>{place.address}</span>
             </p>
           )}
-        </div>
 
-        {ticketOffers && ticketOffers.length > 0 ? (
-          <TripAffiliateSection
-            kind="ticket"
-            offers={ticketOffers}
-            className="mt-4"
-            surface="detail"
-            placeHash={affiliatePlaceHash(
-              place.googlePlaceId?.trim() || place.placeName || place.name,
+          {(place.phone || place.website || googleMapsExternalUrl || tabelogExternalUrl) && (
+            <div className="mt-2 flex min-w-0 flex-wrap gap-2 text-xs">
+              {place.phone ? (
+                <a
+                  href={`tel:${place.phone.replace(/\s/g, "")}`}
+                  className="rounded-full border border-border bg-card px-3 py-1 text-foreground"
+                >
+                  {place.phone}
+                </a>
+              ) : null}
+              {place.website ? (
+                <a
+                  href={place.website}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="rounded-full border border-border bg-card px-3 py-1 text-foreground"
+                >
+                  {t("uiCoverage.website")}
+                </a>
+              ) : null}
+              {googleMapsExternalUrl ? (
+                <button
+                  type="button"
+                  onClick={() => void openExternal(googleMapsExternalUrl)}
+                  className="inline-flex max-w-full items-center gap-1 rounded-full border border-border bg-card px-3 py-1 text-foreground"
+                >
+                  <ExternalLink className="h-3 w-3 shrink-0" aria-hidden />
+                  <span>{t("uiCoverage.maps")}</span>
+                </button>
+              ) : null}
+              {tabelogExternalUrl ? (
+                <TabelogExternalLink
+                  href={tabelogExternalUrl}
+                  label={tabelogLinkLabel ?? t("uiCoverage.tabelog")}
+                />
+              ) : null}
+            </div>
+          )}
+        </SplitGroup>
+
+        <SplitGroup enabled={routeSplitLayout} className="place-split-right">
+          <div className="mt-4 rounded-2xl border border-border/80 bg-card/60 px-4 py-3">
+            <p className="text-xs font-medium text-muted-foreground">{t("uiCoverage.reason")}</p>
+            <p className="mt-1.5 text-sm leading-relaxed text-foreground/90">
+              <PlaceRecommendationReason place={place} presentation="detail" />
+            </p>
+          </div>
+
+          <div className="mt-4">
+            <p className="text-xs font-medium text-muted-foreground">{t("uiCoverage.transport")}</p>
+            <div className="mt-2 space-y-2">
+              {transportLoading && transportModes.length === 0 ? (
+                <div className="flex justify-center py-4">
+                  <Loader2
+                    aria-label={t("uiCoverage.transportLoading")}
+                    className="h-5 w-5 animate-spin text-muted-foreground"
+                  />
+                </div>
+              ) : transportModes.length === 0 ? (
+                <p className="rounded-2xl border border-border/60 bg-card/40 px-3.5 py-3 text-sm text-muted-foreground">
+                  {t("uiCoverage.locationUnavailable")}
+                </p>
+              ) : (
+                transportModes.map((m) => {
+                  const isSelected = selectedTransportMode === m.id;
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      data-no-sheet-drag
+                      onClick={() => onSelectTransportMode(m.id)}
+                      disabled={m.available === false}
+                      className={cn(
+                        "w-full rounded-2xl border px-3.5 py-2.5 text-left transition active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60",
+                        isSelected
+                          ? "border-clay bg-clay/12 shadow-soft ring-1 ring-clay/30"
+                          : "border-border/60 bg-card/40 hover:border-clay/25 hover:bg-card/70",
+                      )}
+                      aria-pressed={isSelected}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="flex items-center gap-2 text-sm font-medium">
+                          <TransportModeIcon mode={m.id} />
+                          {t(`uiCoverage.${m.id}`)}
+                        </p>
+                        {m.recommended && !isSelected && (
+                          <span className="shrink-0 rounded-full bg-clay/12 px-2 py-0.5 text-[10px] font-medium text-clay">
+                            {t("uiCoverage.recommended")}
+                          </span>
+                        )}
+                        {isSelected && (
+                          <span className="shrink-0 rounded-full bg-clay/20 px-2 py-0.5 text-[10px] font-medium text-clay">
+                            {t("uiCoverage.selected")}
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-1 text-sm text-foreground">
+                        {m.available === false
+                          ? t("uiCoverage.estimateUnavailable")
+                          : t("uiCoverage.minutes", { count: m.minutes })}
+                        <span className="text-muted-foreground"> ・ {m.distanceLabel}</span>
+                        {m.costLabel && (
+                          <span className="text-muted-foreground"> ・ {m.costLabel}</span>
+                        )}
+                      </p>
+                      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{m.hint}</p>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+            {selectedTransportMode === "transit" && (
+              <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                {t("uiCoverage.transitNotice")}
+              </p>
             )}
-            eligible
-            renderedCtaMode={resolveRenderedCtaMode(ticketOffers)}
+          </div>
+
+          {ticketOffers && ticketOffers.length > 0 ? (
+            <TripAffiliateSection
+              kind="ticket"
+              offers={ticketOffers}
+              className="mt-4"
+              surface="detail"
+              placeHash={affiliatePlaceHash(
+                place.googlePlaceId?.trim() || place.placeName || place.name,
+              )}
+              eligible
+              renderedCtaMode={resolveRenderedCtaMode(ticketOffers)}
+            />
+          ) : null}
+        </SplitGroup>
+
+        <SplitGroup enabled={routeSplitLayout} className="place-split-left-bottom">
+          <PlaceActionRow
+            className="mt-4"
+            isSaved={isSaved}
+            isBusy={isBusy}
+            onToggleSave={onToggleSave}
+            onAddToTrip={onAddToTrip}
+            saveLabel={saveLabel ?? t("uiCoverage.save")}
+            addLabel={addToTripLabel ?? t("uiCoverage.addTrip")}
           />
-        ) : null}
 
-        <PlaceActionRow
-          className="mt-4"
-          isSaved={isSaved}
-          isBusy={isBusy}
-          onToggleSave={onToggleSave}
-          onAddToTrip={onAddToTrip}
-          saveLabel={saveLabel ?? t("uiCoverage.save")}
-          addLabel={addToTripLabel ?? t("uiCoverage.addTrip")}
-        />
+          <button
+            type="button"
+            data-no-sheet-drag
+            onClick={onNavigate}
+            className="mt-3 flex w-full items-center justify-center gap-2 rounded-full bg-primary py-3.5 text-sm font-medium text-primary-foreground shadow-soft transition active:scale-[0.99]"
+          >
+            <Navigation className="h-4 w-4" />
+            {navButtonLabel}
+          </button>
+        </SplitGroup>
 
-        <button
-          type="button"
-          data-no-sheet-drag
-          onClick={onNavigate}
-          className="mt-3 flex w-full items-center justify-center gap-2 rounded-full bg-primary py-3.5 text-sm font-medium text-primary-foreground shadow-soft transition active:scale-[0.99]"
-        >
-          <Navigation className="h-4 w-4" />
-          {navButtonLabel}
-        </button>
-
-        <button
-          type="button"
-          onClick={onOpenChat}
-          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-full border border-border bg-card py-3 text-sm transition active:scale-[0.99]"
-        >
-          <MessageCircle className="h-4 w-4" />
-          {t("uiCoverage.chatPlace")}
-        </button>
+        <SplitGroup enabled={routeSplitLayout} className="place-split-right-bottom">
+          <button
+            type="button"
+            onClick={onOpenChat}
+            className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-full border border-border bg-card py-3 text-sm transition active:scale-[0.99]"
+          >
+            <MessageCircle className="h-4 w-4" />
+            {t("uiCoverage.chatPlace")}
+          </button>
+        </SplitGroup>
       </div>
     </div>
   );

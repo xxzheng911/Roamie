@@ -103,6 +103,7 @@ import {
   filterRecommendationsForCategoryRender,
 } from "@/lib/ai/chat-category-place-guard";
 import { applyRecommendationPlaceTypeMetadata } from "@/lib/ai/recommendation-place-type-metadata";
+import { isValidAnchorCoordinate } from "@/lib/ai/destination-provider-result";
 import {
   patchShoppingRecommendationSession,
   isUsableSearchCentroid,
@@ -748,6 +749,40 @@ function pickAlternativePlaceMix(places: PlaceResult[], max = RECOMMENDATION_COU
   return picked;
 }
 
+/** Trusted search center: finite, lat ∈ [-90,90], lng ∈ [-180,180], and not (0,0). */
+function isValidTrustedSearchCenter(
+  center: { lat?: number | null; lng?: number | null } | null | undefined,
+): center is { lat: number; lng: number } {
+  if (!center || !isValidAnchorCoordinate(center.lat, center.lng)) return false;
+  return !(center.lat === 0 && center.lng === 0);
+}
+
+/**
+ * Caller-supplied trusted center (chat-turn-destination resolveTrustedRecommendationSearchScope)
+ * that is not a usable coordinate: stop safely — no geocode, no Places, no Weather.
+ */
+function unusableTrustedCenterResult(context: CanonicalTravelContext): {
+  summary: string;
+  recommendations: RoamieRecommendationItem[];
+  payload: RoamiePayloadV2;
+  contextPatch: Partial<CanonicalTravelContext>;
+} {
+  return {
+    summary: "",
+    recommendations: [],
+    payload: {
+      version: 2,
+      title: "Roamie 推薦",
+      summary: "",
+      moodTag: resolvePayloadMoodTag(context),
+      recommendations: [],
+      itinerary: [],
+      generatedAt: new Date().toISOString(),
+    },
+    contextPatch: {},
+  };
+}
+
 export async function buildAlternativeDestinationRecommendations(params: {
   destination: string;
   userText: string;
@@ -758,6 +793,8 @@ export async function buildAlternativeDestinationRecommendations(params: {
   fetchWeatherFn: FetchWeatherFn;
   excludePlaceIds?: string[];
   rejectedPlaceNames?: string[];
+  /** Trusted search center: used as-is (no geocode / approx / text-only fallback). */
+  trustedCenter?: { lat: number; lng: number };
 }): Promise<{
   summary: string;
   recommendations: RoamieRecommendationItem[];
@@ -773,8 +810,12 @@ export async function buildAlternativeDestinationRecommendations(params: {
     geocodeFn,
     excludePlaceIds = [],
     rejectedPlaceNames = [],
+    trustedCenter,
   } = params;
   const label = normalizeDestinationLabel(destination);
+  if (trustedCenter && !isValidTrustedSearchCenter(trustedCenter)) {
+    return unusableTrustedCenterResult(context);
+  }
 
   logChatIntentDetected("alternative_recommendations", userText);
   logChatDestinationExtracted(label, "alternative_flow");
@@ -782,16 +823,22 @@ export async function buildAlternativeDestinationRecommendations(params: {
 
   const flow = beginPlacesFlow("chat_destination_alternative");
   try {
-    const geocoded = await geocodeDestinationWithFallback({
-      destination: label,
-      locale,
-      geocodeFn,
-    });
+    const geocoded = trustedCenter
+      ? null
+      : await geocodeDestinationWithFallback({
+          destination: label,
+          locale,
+          geocodeFn,
+        });
 
     let lat: number;
     let lng: number;
     let textOnlyDestinationSearch = false;
-    if (geocoded?.lat != null && geocoded?.lng != null) {
+    if (trustedCenter) {
+      lat = trustedCenter.lat;
+      lng = trustedCenter.lng;
+      logChatDestinationResolved(label, lat, lng, "geocode");
+    } else if (geocoded?.lat != null && geocoded?.lng != null) {
       lat = geocoded.lat;
       lng = geocoded.lng;
       logChatDestinationResolved(label, lat, lng, "geocode");
@@ -910,6 +957,8 @@ async function buildDestinationMustVisitRecommendationResult(params: {
   rejectedPlaceNames?: string[];
   planningSessionId?: string;
   session?: ChatPlanningSession;
+  /** Trusted search center: used as-is (no geocode / approx / text-only fallback). */
+  trustedCenter?: { lat: number; lng: number };
 }): Promise<{
   summary: string;
   recommendations: RoamieRecommendationItem[];
@@ -930,8 +979,12 @@ async function buildDestinationMustVisitRecommendationResult(params: {
     rejectedPlaceNames = [],
     planningSessionId,
     session,
+    trustedCenter,
   } = params;
   const label = normalizeDestinationLabel(destination);
+  if (trustedCenter && !isValidTrustedSearchCenter(trustedCenter)) {
+    return unusableTrustedCenterResult(context);
+  }
   const scopeGate = evaluateDestinationScopeGate({
     destination: label,
     destinationType: context.destinationType,
@@ -1013,11 +1066,13 @@ async function buildDestinationMustVisitRecommendationResult(params: {
     });
 
   try {
-    const geocoded = await geocodeDestinationWithFallback({
-      destination: label,
-      locale,
-      geocodeFn,
-    });
+    const geocoded = trustedCenter
+      ? null
+      : await geocodeDestinationWithFallback({
+          destination: label,
+          locale,
+          geocodeFn,
+        });
     const searchProfile = classifyDestinationForPlaceSearch(label, geocoded);
 
     let lat: number;
@@ -1025,7 +1080,12 @@ async function buildDestinationMustVisitRecommendationResult(params: {
     let geocodeSucceeded = false;
     let textOnlyDestinationSearch = false;
 
-    if (geocoded?.lat != null && geocoded?.lng != null) {
+    if (trustedCenter) {
+      lat = trustedCenter.lat;
+      lng = trustedCenter.lng;
+      geocodeSucceeded = true;
+      logChatDestinationResolved(label, lat, lng, "geocode");
+    } else if (geocoded?.lat != null && geocoded?.lng != null) {
       lat = geocoded.lat;
       lng = geocoded.lng;
       geocodeSucceeded = true;
@@ -1548,6 +1608,11 @@ export async function buildMoreDestinationRecommendations(params: {
   session?: ChatPlanningSession;
   usedPlaces?: TripUsedPlaces;
   recommendationSession?: ConversationRecommendationSession | null;
+  /**
+   * Trusted search center: used as-is instead of the recommendation snapshot centroid (no
+   * geocode / approx / text-only fallback); shopping scope never adopts snapshot coordinates.
+   */
+  trustedCenter?: { lat: number; lng: number };
 }): Promise<{
   summary: string;
   recommendations: RoamieRecommendationItem[];
@@ -1572,8 +1637,12 @@ export async function buildMoreDestinationRecommendations(params: {
     session,
     usedPlaces,
     recommendationSession: incomingRecSession,
+    trustedCenter,
   } = params;
   const label = normalizeDestinationLabel(destination);
+  if (trustedCenter && !isValidTrustedSearchCenter(trustedCenter)) {
+    return { ...unusableTrustedCenterResult(context), newCount: 0, fetchCount: 0 };
+  }
   const activeRecSession = incomingRecSession ?? session?.recommendationSession ?? null;
   const category = resolveMorePlacesCategoryPreference(
     context,
@@ -1600,13 +1669,15 @@ export async function buildMoreDestinationRecommendations(params: {
   const flow = beginPlacesFlow("chat_more_place_recommendations");
   try {
     const storedCentroid = activeRecSession?.searchCentroid;
-    const geocoded = isUsableSearchCentroid(storedCentroid)
-      ? { lat: storedCentroid.lat, lng: storedCentroid.lng }
-      : await geocodeDestinationWithFallback({
-          destination: label,
-          locale,
-          geocodeFn,
-        });
+    const geocoded = trustedCenter
+      ? { lat: trustedCenter.lat, lng: trustedCenter.lng }
+      : isUsableSearchCentroid(storedCentroid)
+        ? { lat: storedCentroid.lat, lng: storedCentroid.lng }
+        : await geocodeDestinationWithFallback({
+            destination: label,
+            locale,
+            geocodeFn,
+          });
     const searchProfile = classifyDestinationForPlaceSearch(label, geocoded);
 
     let lat: number;
@@ -1784,7 +1855,8 @@ export async function buildMoreDestinationRecommendations(params: {
       let scope: ShoppingSearchScope = resolveShoppingSearchScope({
         destination: label,
         countryHint: entity.country,
-        shownPlaces: shownFromSession,
+        // Trusted center: snapshot pool coordinates / addresses never pick the search city.
+        shownPlaces: trustedCenter ? undefined : shownFromSession,
         existingScope:
           activeRecSession?.topic === "shopping"
             ? {
@@ -1802,6 +1874,9 @@ export async function buildMoreDestinationRecommendations(params: {
 
       const clusterPick = preferUnderrepresentedShoppingCluster(scope, shownFromSession);
       scope = clusterPick.scope;
+      if (trustedCenter && !isValidTrustedSearchCenter(scope.searchCentroid)) {
+        scope = { ...scope, searchCentroid: { lat: trustedCenter.lat, lng: trustedCenter.lng } };
+      }
 
       const subtype = detectShoppingSubtype(userText);
       let coverage = buildShoppingCoverageState({

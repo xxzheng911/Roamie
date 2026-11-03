@@ -28,6 +28,10 @@ export type ChatComposerProps = {
   actionChips?: string[];
   /** Render only mode-scoped actions, without the general Chat shortcuts. */
   actionChipsOnly?: boolean;
+  /** 行程生成全域鎖住時的 placeholder（未鎖時不傳，沿用一般文案）。 */
+  lockedPlaceholder?: string;
+  /** 行程生成超過 90 秒的提示（未鎖或未逾時不傳）。 */
+  lockedHint?: string;
 };
 
 function ShortcutChips({
@@ -110,6 +114,7 @@ function InputRow({
   streaming,
   generating,
   inputRef,
+  lockedPlaceholder,
 }: Pick<
   ChatComposerProps,
   | "text"
@@ -121,6 +126,7 @@ function InputRow({
   | "streaming"
   | "generating"
   | "inputRef"
+  | "lockedPlaceholder"
 >) {
   const { t } = useI18n();
   return (
@@ -132,7 +138,7 @@ function InputRow({
         onKeyDown={onKeyDown}
         onFocus={onFocus}
         rows={1}
-        placeholder={t("uiCoverage.chatPlaceholder")}
+        placeholder={lockedPlaceholder ?? t("uiCoverage.chatPlaceholder")}
         className="flex-1 resize-none bg-transparent px-3 py-2 text-[15px] placeholder:text-muted-foreground focus:outline-none"
         disabled={disabled}
       />
@@ -176,6 +182,9 @@ export function ChatComposer(props: ChatComposerProps) {
     >
       {showShortcutChips ? <ShortcutChips {...props} /> : null}
       <InputRow {...props} />
+      {props.lockedHint ? (
+        <p className="px-3 pb-1 pt-1 text-[11px] text-muted-foreground">{props.lockedHint}</p>
+      ) : null}
     </div>
   );
 }

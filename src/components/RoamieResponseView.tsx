@@ -130,6 +130,8 @@ type Props = {
   onRecommendationEngage?: () => void;
   /** Planning Selection Mode only renders a reversible selection action. */
   selectionMode?: boolean;
+  /** Duo 雙頁右頁：只顯示推薦卡，隱藏心情標籤、summary 與 loading 點點（預設 false，行為不變） */
+  hideSummary?: boolean;
 };
 
 /** AI 聊天推薦地點卡 — 獨立於行程／探索／首頁附近卡片 */
@@ -156,6 +158,7 @@ export function RoamieResponseView({
   recommendationsPreFiltered = false,
   onRecommendationEngage,
   selectionMode = false,
+  hideSummary = false,
 }: Props) {
   const { t: uiT, locale } = useI18n();
 
@@ -170,12 +173,12 @@ export function RoamieResponseView({
 
   return (
     <div className="space-y-3">
-      {moodBadge ? (
+      {!hideSummary && moodBadge ? (
         <span className="inline-block rounded-full bg-sage/15 px-2.5 py-0.5 text-[11px] text-foreground/80">
           {moodBadge}
         </span>
       ) : null}
-      {summary && (
+      {!hideSummary && summary && (
         <p
           className={`whitespace-pre-wrap text-left leading-relaxed ${
             compact ? "text-[15px]" : "text-sm"
@@ -184,7 +187,7 @@ export function RoamieResponseView({
           {summary}
         </p>
       )}
-      {!summary && (
+      {!hideSummary && !summary && (
         <span className="inline-flex gap-1">
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground/60" />
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground/60 [animation-delay:120ms]" />

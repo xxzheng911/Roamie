@@ -159,10 +159,13 @@ import { isNetworkFailureError, resolveExploreSearchUserMessage } from "@/lib/us
 import { isBrowserOnline, subscribeBrowserConnectivity } from "@/lib/network-connectivity";
 import { resolveUserMarkerAvatarSrc } from "@/lib/map-user-location-marker";
 import { useI18n } from "@/hooks/use-i18n";
+import { blockIfChatGenerationLocked } from "@/lib/ai/chat-generation-lock";
 import type { Locale } from "@/lib/i18n/types";
 import { translate } from "@/lib/i18n/translate";
 import { type MapExploreHandoff, consumeMapExploreHandoff } from "@/lib/map-explore-handoff";
 import { captureMapLayoutHeight, resetMapSearchKeyboardMode } from "@/lib/map-search-keyboard";
+import { useDuoFlatPortrait, useDuoLaptop } from "@/hooks/use-duo-laptop";
+import { useDuoLayout } from "@/hooks/use-duo-layout";
 import { isPlaceOperationalForRecommendation } from "@/lib/place-operational-eligibility";
 import {
   getMapPlacesCachedOrRun,
@@ -1716,6 +1719,50 @@ function MapView() {
     });
   }, [sheetMode, applyEffectiveLocationToMap]);
 
+  // iPhone Duo 筆電／直向攤平（雙欄除外，與 _app 相同優先序）：地點詳情改為一頁式（面板佔滿整頁、整頁捲動）。
+  // 只切換 <html> 的 duo-map-detail-page（styles.css 筆電區塊），React 樹不變；其他裝置不加 class。
+  // 進入與離開時把面板捲回頂端，返回清單時恢復 ① 的版型。導航預覽維持下半部面板（上半部地圖）。
+  const duoLayoutForMap = useDuoLayout();
+  const duoLaptopForMap = useDuoLaptop();
+  const duoFlatPortraitForMap = useDuoFlatPortrait();
+  const duoStackedExplore =
+    !(duoLayoutForMap.navPlacement === "right-rail" && duoLayoutForMap.tripLayout === "two-pane") &&
+    (duoLaptopForMap.laptop || duoFlatPortraitForMap.flat);
+  const duoMapDetailPage = duoStackedExplore && sheetMode === "detail" && selectedPlace != null;
+
+  useLayoutEffect(() => {
+    if (!duoMapDetailPage) return;
+    const root = document.documentElement;
+    const resetSheetScroll = () => {
+      const sheet = document.querySelector<HTMLElement>(".map-page [data-map-explore-sheet]");
+      if (sheet) sheet.scrollTop = 0;
+    };
+    // 進出詳情不得有動畫：同一個 layout 階段移除鍵盤開合動畫 class（搜尋建議 dismiss 時剛加上），
+    // 並取消搜尋列／面板層上已開始的 transition（終點值不變的屬性不會因 class 移除而自動取消）。
+    // map-search-keyboard.ts 的計時器只做移除、且下次加上前會先清掉，殘留不影響後續開合動畫。
+    const stopKeyboardAnim = () => {
+      root.classList.remove("duo-map-kb-anim");
+      if (typeof document.getAnimations !== "function" || typeof CSSTransition === "undefined") return;
+      for (const anim of document.getAnimations()) {
+        const target = anim.effect instanceof KeyframeEffect ? anim.effect.target : null;
+        if (
+          anim instanceof CSSTransition &&
+          target?.matches(".map-page > .map-sheet-layer, .map-page > .map-stage > .z-10")
+        ) {
+          anim.cancel();
+        }
+      }
+    };
+    stopKeyboardAnim();
+    root.classList.add("duo-map-detail-page");
+    resetSheetScroll();
+    return () => {
+      stopKeyboardAnim();
+      root.classList.remove("duo-map-detail-page");
+      resetSheetScroll();
+    };
+  }, [duoMapDetailPage]);
+
   const finishExploreSearchSelection = useCallback((place: MapPlaceCard, index = 0) => {
     exploreSearchRequestRef.current += 1;
     exploreSessionRef.current = beginExploreRequestSession("browse", "");
@@ -1869,6 +1916,7 @@ function MapView() {
   }, []);
 
   const openInChat = (p: MapPlaceCard) => {
+    if (blockIfChatGenerationLocked(tt("uiCoverage.chatGenerationLockedNotice"))) return;
     if (!requireAuthForAction("ai_chat", { placeId: p.id })) return;
     const distM =
       reliableUserLocation && p.lat != null && p.lng != null

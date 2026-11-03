@@ -15,6 +15,7 @@ import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import { personalizationSnapshotInvalidationReason } from "@/lib/personalization/resolve-effective-preference";
 import type { PersonalizationContextV1 } from "@/lib/personalization/types";
 import type { NearbyGeographicScopeAuthority } from "@/lib/ai/nearby-geographic-scope";
+import { MAX_REQUESTED_DISPLAY_BATCH_SIZE } from "@/lib/ai/requested-recommendation-count";
 
 /** Generic / shopping fallback. Not the destination-category UI contract. */
 export const RECOMMENDATION_BATCH_SIZE = 4;
@@ -28,6 +29,20 @@ export function defaultRecommendationDisplayBatchSize(
   return topic === "shopping"
     ? RECOMMENDATION_BATCH_SIZE
     : DESTINATION_CATEGORY_DISPLAY_BATCH_SIZE;
+}
+
+/**
+ * 首輪顯示張數：未指定 → 既有預設（destination 3、shopping 4）；
+ * 1–10 → 該數；> 10 → 10（剩餘由續推）。只決定張數，不放寬任何過濾。
+ */
+export function resolveRequestedDisplayBatchSize(
+  requested: number | null | undefined,
+  topic: ChatPlaceCategoryIntent,
+): number {
+  if (requested == null || !Number.isFinite(requested) || requested < 1) {
+    return defaultRecommendationDisplayBatchSize(topic);
+  }
+  return Math.min(Math.floor(requested), MAX_REQUESTED_DISPLAY_BATCH_SIZE);
 }
 
 export function resolveRecommendationDisplayBatchSize(

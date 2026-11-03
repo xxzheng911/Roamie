@@ -29,6 +29,39 @@ export const chatRuntimeMessages: Record<Locale, Record<string, string>> = {
     "noResults": "目前在{destination}暫時找不到符合的地點，可以換個描述或稍後再試。",
     "placeFetchFailed": "目前暫時無法取得{destination}的景點資料。\n\n你可以點「重新整理推薦」再試一次。",
     "whichRegion": "你指的是哪個地區的{destination}？",
+    parentScopeConfirm: "要以{destination}為範圍幫你推薦地點嗎？（請回覆「好」或「不用」）",
+    destinationSwitchConfirm:
+      "目前無法確認「{destination}」這個目的地。要改到{destination}找，還是繼續在{previous}推薦？（請回覆「好」或「繼續{previous}」）",
+    destinationSwitchStopped:
+      "還是無法確認「{destination}」，這次先停在這裡，不會搜尋也不會扣點。你可以換個寫法重新告訴我目的地，或說「繼續{previous}」。",
+    destinationSwitchCapped:
+      "「{destination}」目前仍無法確認，已達確認次數上限，我不會再搜尋或扣點。想換地方請直接告訴我新的目的地，或說「繼續{previous}」。",
+    destinationSwitchKept: "好的，繼續以{previous}為主。想看更多可以說「再推薦幾個」。",
+    destinationSwitchCancelled: "好的，先不更換目的地。",
+    planningSelectionDestinationUnconfirmed:
+      "目前無法確認目的地「{destination}」，這次沒有搜尋也沒有扣點。請回到規劃頁重新選擇目的地，或直接告訴我想去的城市。",
+    planningSelectionTurnDestinationUnconfirmed:
+      "目前無法確認這次要推薦的目的地，這次沒有搜尋也沒有扣點。請告訴我想在哪個城市找地點。",
+    planningSelectionTurnPlaceNotFound:
+      "找不到「{name}」這個地點。如果想換到其他城市，直接告訴我城市名稱就可以。",
+    planningSelectionSwitchConfirm:
+      "目前正在規劃{previous}。要改成規劃{destination}嗎？確認後會離開這次{previous}的選點，改以{destination}推薦；這次還沒有搜尋也沒有扣點。（請回覆「好」或「取消」）",
+    planningSelectionSwitchConfirmChip: "改成{destination}",
+    planningSelectionSwitchCancelChip: "繼續{previous}",
+    planningSelectionSwitchKept:
+      "好的，繼續規劃{previous}。喜歡的地點可以按「＋ 加入這地點」，或說「再推薦一些」。",
+    planningSelectionSwitchResendBlocked:
+      "剛才那句「{text}」還沒有處理（上一個請求仍在進行），這次沒有搜尋也沒有扣點。請再送出一次。",
+    planningSelectionLeftNotice: "已離開{previous}的選點",
+    planningSelectionPlaceOutOfScope:
+      "這個地點不屬於這次的規劃選點，無法加入行程。請從這次推薦的地點中選擇。",
+    destinationSwitchExpired: "這次的目的地更換已無法確認，請重新告訴我想去的地方。",
+    destinationSwitchAppliedSyncPending:
+      "目的地已更新為{destination}，但行程還沒同步完成，這次沒有搜尋也沒有扣點。請再說一次你的需求，或重新整理推薦再試。",
+    destinationSwitchCommitNotSynced:
+      "這次的目的地更換沒有完成同步，沒有搜尋也沒有扣點。請重新告訴我想去的地方。",
+    destinationSwitchCommitUnconfirmed:
+      "目前無法確認目的地更換是否已儲存，這次沒有搜尋也沒有扣點。請重新告訴我想去的地方。",
     "loading_recommendations": "收到！我整理一下推薦",
     "loading_planning": "正在幫你規劃行程",
     "loading_itinerary_route_recommendation": "正在依照你的行程找順路地點…",
@@ -111,6 +144,41 @@ export const chatRuntimeMessages: Record<Locale, Record<string, string>> = {
     "noResults": "No matching places were found in {destination}. Try a different description or try again later.",
     "placeFetchFailed": "Place information for {destination} is temporarily unavailable.\n\nSelect “Refresh recommendations” to try again.",
     "whichRegion": "Which region is the {destination} you mean in?",
+    parentScopeConfirm: "Should I recommend places across {destination}? (Reply “yes” or “no”)",
+    destinationSwitchConfirm:
+      "I couldn’t confirm “{destination}” as a destination right now. Should I switch to {destination}, or keep recommending places in {previous}? (Reply “yes” or “keep {previous}”)",
+    destinationSwitchStopped:
+      "I still couldn’t confirm “{destination}”, so I’ve stopped here without searching or using any credits. You can name the destination another way, or say “keep {previous}”.",
+    destinationSwitchCapped:
+      "“{destination}” still can’t be confirmed and the confirmation limit has been reached, so I won’t search or use any credits. Tell me a new destination, or say “keep {previous}”.",
+    destinationSwitchKept:
+      "Okay, I’ll keep focusing on {previous}. Say “more recommendations” to see more.",
+    destinationSwitchCancelled: "Okay, I won’t change the destination.",
+    planningSelectionDestinationUnconfirmed:
+      "I couldn’t confirm “{destination}” as a destination, so I haven’t searched or used any credits. Go back to the planner to choose the destination again, or tell me which city you’d like to visit.",
+    planningSelectionTurnDestinationUnconfirmed:
+      "I couldn’t confirm the destination for these recommendations, so I haven’t searched or used any credits. Tell me which city you’d like places in.",
+    planningSelectionTurnPlaceNotFound:
+      "I couldn’t find a place called “{name}”. If you’d like to switch to another city, just tell me the city name.",
+    planningSelectionSwitchConfirm:
+      "You’re currently planning {previous}. Switch to planning {destination}? If you confirm, I’ll leave this {previous} place selection and recommend places in {destination}. Nothing has been searched or charged yet. (Reply “yes” or “cancel”)",
+    planningSelectionSwitchConfirmChip: "Switch to {destination}",
+    planningSelectionSwitchCancelChip: "Keep {previous}",
+    planningSelectionSwitchKept:
+      "Okay, I’ll keep planning {previous}. Tap “+ Add this place” for places you like, or ask for more recommendations.",
+    planningSelectionSwitchResendBlocked:
+      "Your message “{text}” hasn’t been handled yet because the previous request is still running. Nothing was searched or charged. Please send it again.",
+    planningSelectionLeftNotice: "Left the {previous} place selection",
+    planningSelectionPlaceOutOfScope:
+      "This place isn’t part of the current planning selection, so it can’t be added. Choose from the places recommended for this trip.",
+    destinationSwitchExpired:
+      "This destination change can no longer be confirmed. Please tell me where you’d like to go again.",
+    destinationSwitchAppliedSyncPending:
+      "Your destination has been updated to {destination}, but syncing your trip didn’t finish, so I didn’t search or use any credits this time. Please tell me what you’re looking for again, or refresh the recommendations and try again.",
+    destinationSwitchCommitNotSynced:
+      "This destination change didn’t finish syncing, so I didn’t search or use any credits. Please tell me where you’d like to go again.",
+    destinationSwitchCommitUnconfirmed:
+      "I couldn’t confirm whether the destination change was saved, so I didn’t search or use any credits. Please tell me where you’d like to go again.",
     "loading_recommendations": "Got it! Finding recommendations",
     "loading_planning": "Planning your itinerary",
     "loading_itinerary_route_recommendation": "Finding places that fit naturally into your itinerary...",
@@ -193,6 +261,42 @@ export const chatRuntimeMessages: Record<Locale, Record<string, string>> = {
     "noResults": "{destination}で条件に合う場所が見つかりませんでした。条件を変えるか、しばらくしてからお試しください。",
     "placeFetchFailed": "現在、{destination}のスポット情報を取得できません。\n\n「おすすめを更新」を選んで再試行してください。",
     "whichRegion": "どの地域の{destination}をお探しですか？",
+    parentScopeConfirm:
+      "{destination}全体を範囲としておすすめを探しますか？（「はい」または「いいえ」でお答えください）",
+    destinationSwitchConfirm:
+      "現在、「{destination}」を目的地として確認できません。{destination}に切り替えますか？それとも{previous}のおすすめを続けますか？（「はい」または「{previous}のまま」でお答えください）",
+    destinationSwitchStopped:
+      "「{destination}」をまだ確認できないため、ここでいったん止めます。検索もクレジットの消費も行いません。別の書き方で目的地を伝えるか、「{previous}のまま」とお伝えください。",
+    destinationSwitchCapped:
+      "「{destination}」はまだ確認できず、確認の上限に達したため、検索もクレジットの消費も行いません。新しい目的地を伝えるか、「{previous}のまま」とお伝えください。",
+    destinationSwitchKept:
+      "わかりました。{previous}を中心に続けます。もっと見たいときは「もっとおすすめ」とお伝えください。",
+    destinationSwitchCancelled: "わかりました。目的地は変更しません。",
+    planningSelectionDestinationUnconfirmed:
+      "目的地「{destination}」を確認できないため、今回は検索もクレジットの消費も行っていません。プランページで目的地を選び直すか、行きたい都市を教えてください。",
+    planningSelectionTurnDestinationUnconfirmed:
+      "今回おすすめする目的地を確認できないため、検索もクレジットの消費も行っていません。どの都市でスポットを探したいか教えてください。",
+    planningSelectionTurnPlaceNotFound:
+      "「{name}」という場所が見つかりませんでした。別の都市に変更したい場合は、都市名をそのまま教えてください。",
+    planningSelectionSwitchConfirm:
+      "現在は{previous}の旅程を計画中です。{destination}の計画に切り替えますか？確定すると今回の{previous}のスポット選びを終了し、{destination}のおすすめに切り替えます。まだ検索もクレジットの消費も行っていません。（「はい」または「キャンセル」でお答えください）",
+    planningSelectionSwitchConfirmChip: "{destination}に切り替える",
+    planningSelectionSwitchCancelChip: "{previous}のまま",
+    planningSelectionSwitchKept:
+      "わかりました。{previous}の計画を続けます。気に入ったスポットは「＋ このスポットを追加」を押すか、「もっとおすすめ」とお伝えください。",
+    planningSelectionSwitchResendBlocked:
+      "前のリクエストを処理中のため、「{text}」はまだ処理されていません。検索やクレジットの消費は行っていません。もう一度送信してください。",
+    planningSelectionLeftNotice: "{previous}のスポット選択を終了しました",
+    planningSelectionPlaceOutOfScope:
+      "このスポットは今回の計画のスポット選びに含まれていないため、追加できません。今回おすすめしたスポットから選んでください。",
+    destinationSwitchExpired:
+      "この目的地の変更はもう確認できません。行きたい場所をもう一度教えてください。",
+    destinationSwitchAppliedSyncPending:
+      "目的地を{destination}に更新しましたが、旅程の同期が完了していないため、今回は検索もクレジットの消費も行っていません。ご希望をもう一度お伝えいただくか、おすすめを更新してお試しください。",
+    destinationSwitchCommitNotSynced:
+      "今回の目的地の変更は同期が完了しなかったため、検索もクレジットの消費も行っていません。行きたい場所をもう一度教えてください。",
+    destinationSwitchCommitUnconfirmed:
+      "目的地の変更が保存されたか確認できなかったため、検索もクレジットの消費も行っていません。行きたい場所をもう一度教えてください。",
     "loading_recommendations": "おすすめを探しています",
     "loading_planning": "旅程を作成しています",
     "loading_itinerary_route_recommendation": "今の旅程に合いそうな場所を探しています…",
@@ -275,6 +379,42 @@ export const chatRuntimeMessages: Record<Locale, Record<string, string>> = {
     "noResults": "{destination}에서 조건에 맞는 장소를 찾지 못했어요. 다른 설명으로 검색하거나 잠시 후 다시 시도해 주세요.",
     "placeFetchFailed": "현재 {destination}의 명소 정보를 가져올 수 없어요.\n\n“추천 새로고침”을 선택해 다시 시도해 주세요.",
     "whichRegion": "어느 지역에 있는 {destination}을 말씀하시나요?",
+    parentScopeConfirm:
+      "{destination} 전체를 범위로 장소를 추천해 드릴까요? (“네” 또는 “아니요”로 답해 주세요)",
+    destinationSwitchConfirm:
+      "지금은 ‘{destination}’을 목적지로 확인할 수 없어요. {destination}로 바꿀까요, 아니면 {previous}에서 계속 추천할까요? (“네” 또는 “{previous} 계속”으로 답해 주세요)",
+    destinationSwitchStopped:
+      "아직 ‘{destination}’을 확인할 수 없어서 여기서 멈출게요. 검색도 크레딧 차감도 하지 않아요. 다른 표현으로 목적지를 알려 주시거나 “{previous} 계속”이라고 말씀해 주세요.",
+    destinationSwitchCapped:
+      "‘{destination}’은 아직 확인할 수 없고 확인 횟수 한도에 도달해서 검색이나 크레딧 차감은 하지 않아요. 새 목적지를 알려 주시거나 “{previous} 계속”이라고 말씀해 주세요.",
+    destinationSwitchKept:
+      "알겠어요. {previous}을 중심으로 계속할게요. 더 보고 싶으면 “더 추천해 줘”라고 말씀해 주세요.",
+    destinationSwitchCancelled: "알겠어요. 목적지는 바꾸지 않을게요.",
+    planningSelectionDestinationUnconfirmed:
+      '목적지 "{destination}"을(를) 확인할 수 없어 이번에는 검색하지 않았고 크레딧도 사용하지 않았어요. 플래너로 돌아가 목적지를 다시 선택하거나 가고 싶은 도시를 알려 주세요.',
+    planningSelectionTurnDestinationUnconfirmed:
+      "이번에 추천할 목적지를 확인할 수 없어 검색하지 않았고 크레딧도 사용하지 않았어요. 어느 도시에서 장소를 찾을지 알려 주세요.",
+    planningSelectionTurnPlaceNotFound:
+      '"{name}"(이)라는 장소를 찾을 수 없어요. 다른 도시로 바꾸고 싶다면 도시 이름을 바로 알려 주세요.',
+    planningSelectionSwitchConfirm:
+      '지금은 {previous} 여행을 계획 중이에요. {destination}(으)로 바꿔서 계획할까요? 확인하면 이번 {previous} 장소 선택을 종료하고 {destination} 추천으로 바꿔요. 아직 검색하거나 크레딧을 사용하지 않았어요. ("네" 또는 "취소"로 답해 주세요)',
+    planningSelectionSwitchConfirmChip: "{destination}(으)로 변경",
+    planningSelectionSwitchCancelChip: "{previous} 계속",
+    planningSelectionSwitchKept:
+      '알겠어요. {previous} 계획을 계속할게요. 마음에 드는 장소는 "＋ 이 장소 추가"를 누르거나 "더 추천해 줘"라고 말해 주세요.',
+    planningSelectionSwitchResendBlocked:
+      '이전 요청을 처리 중이라 "{text}"는 아직 처리되지 않았어요. 검색이나 크레딧 사용은 없었어요. 다시 보내 주세요.',
+    planningSelectionLeftNotice: "{previous} 장소 선택을 종료했어요",
+    planningSelectionPlaceOutOfScope:
+      "이 장소는 이번 계획의 장소 선택에 포함되지 않아 추가할 수 없어요. 이번에 추천한 장소 중에서 골라 주세요.",
+    destinationSwitchExpired:
+      "이 목적지 변경은 더 이상 확인할 수 없어요. 가고 싶은 곳을 다시 알려 주세요.",
+    destinationSwitchAppliedSyncPending:
+      "목적지를 {destination}로 업데이트했지만 일정 동기화가 끝나지 않아 이번에는 검색도 크레딧 차감도 하지 않았어요. 원하시는 내용을 다시 말씀해 주시거나 추천을 새로고침해서 다시 시도해 주세요.",
+    destinationSwitchCommitNotSynced:
+      "이번 목적지 변경은 동기화가 완료되지 않아 검색도 크레딧 차감도 하지 않았어요. 가고 싶은 곳을 다시 알려 주세요.",
+    destinationSwitchCommitUnconfirmed:
+      "목적지 변경이 저장되었는지 확인할 수 없어서 검색도 크레딧 차감도 하지 않았어요. 가고 싶은 곳을 다시 알려 주세요.",
     "loading_recommendations": "추천을 찾고 있어요",
     "loading_planning": "여행 일정을 계획하고 있어요",
     "loading_itinerary_route_recommendation": "지금 일정에 자연스럽게 어울리는 장소를 찾고 있어요...",

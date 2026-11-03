@@ -78,12 +78,22 @@ export function SharedImageCropEditor({
         const vpRect = viewport.getBoundingClientRect();
         const maskRect = mask.getBoundingClientRect();
         if (maskRect.width < 8 || maskRect.height < 8) return;
-        setCropFrame({
+        const next = {
           cropW: maskRect.width,
           cropH: maskRect.height,
           cropLeft: maskRect.left - vpRect.left,
           cropTop: maskRect.top - vpRect.top,
-        });
+        };
+        // Same geometry (≤0.5px) → keep prev reference to avoid ResizeObserver re-render loops.
+        setCropFrame((prev) =>
+          prev &&
+          Math.abs(prev.cropW - next.cropW) <= 0.5 &&
+          Math.abs(prev.cropH - next.cropH) <= 0.5 &&
+          Math.abs(prev.cropLeft - next.cropLeft) <= 0.5 &&
+          Math.abs(prev.cropTop - next.cropTop) <= 0.5
+            ? prev
+            : next,
+        );
       };
 
       sync();

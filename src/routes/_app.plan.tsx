@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useFormKeyboardOpen } from "@/hooks/use-form-keyboard-open";
 import { usePendingAuthActionResume } from "@/hooks/use-pending-auth-action";
 import { useI18n } from "@/hooks/use-i18n";
+import { blockIfChatGenerationLocked } from "@/lib/ai/chat-generation-lock";
 import { requireAuthForAction } from "@/lib/auth-action";
 import {
   getPlanBudgetOptions,
@@ -371,6 +372,7 @@ function PlanPage() {
   };
 
   const startPlanChat = async (planAiMode: boolean, actionDiagnostic?: TripActionDiagnostic, creationAuthority?: TripCreationAuthority) => {
+    if (blockIfChatGenerationLocked(uiT("uiCoverage.chatGenerationLockedNotice"))) return;
     if (!requireAuthForAction(planAiMode ? "trip_generation" : "ai_chat")) return;
     // Selection click feedback must be the first synchronous state transition.
     if (planAiMode) setLoading(true);

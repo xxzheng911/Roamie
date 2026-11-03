@@ -21,6 +21,8 @@ import {
 import {
   isValidAnchorCoordinate,
   normalizeDestinationProviderResponse,
+  providerEvidenceForGeocodeLocation,
+  providerEvidenceFromPlaceDetails,
   tripLocationToProviderResult,
   type DestinationProviderResult,
   type GeocodeFnEnvelope,
@@ -195,6 +197,7 @@ async function geocodeOnceClient(params: {
         apiStatus: apiStatus ?? "OK",
         sourceShape: normalized.sourceShape,
         rawResultCount: extracted.rawResultCount,
+        evidence: providerEvidenceForGeocodeLocation(json, location),
       }),
     };
   }
@@ -284,6 +287,8 @@ async function placesAutocompleteDetailsClient(params: {
   } catch {
     autoJson = {};
   }
+  // Google / proxy may return a JSON `null` body — treat as empty (no suggestions).
+  if (!autoJson || typeof autoJson !== "object") autoJson = {};
 
   const suggestions = autoJson.suggestions ?? [];
   const placeId = suggestions
@@ -447,6 +452,7 @@ async function placesAutocompleteDetailsClient(params: {
         httpStatus: detailRes.status,
         apiStatus: "OK",
         sourceShape: normalized.sourceShape ?? "places_details",
+        evidence: providerEvidenceFromPlaceDetails(detailJson),
       }),
     };
   }

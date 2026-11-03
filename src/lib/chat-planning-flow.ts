@@ -14,6 +14,35 @@ import {
 } from "@/lib/chat-session";
 import { applyExclusionToSession } from "@/lib/ai/recommendation-exclusion";
 import { isBudgetRefinementText } from "@/lib/ai/budget-refinement";
+import {
+  matchLeadingNegatedClause,
+  parseNegatedDestinationSwitch,
+} from "@/lib/ai/continue-recommendation-intent";
+import {
+  isNonGeographicActivityTail,
+  splitTrailingActivityTail,
+} from "@/lib/ai/trip-planning-context";
+
+/** preferredArea 擷取終止詞群（cpf:83 既有字面，抽出供前綴守門重用）。 */
+const CPF_AREA_END = "(?:走走|逛逛|安排|推薦|有|嗎|吧|呢|，|。|$)";
+const CPF_AREA_RE = new RegExp("(?:在|到|去|這附近|附近|那一帶|區域)(.{2,24}?)" + CPF_AREA_END);
+const CPF_AREA_END_PREFIX_RE = new RegExp("^" + CPF_AREA_END);
+
+/**
+ * preferredArea label from the area match: never an activity / day tail, never empty.
+ * undefined → do not write (same as no match). Pure; no provider, no Session read.
+ */
+function preferredAreaFromMatch(c: string): string | undefined {
+  // 「去玩推薦咖啡廳」「去玩，…」：動詞後直接是活動尾，沒有地名。
+  for (let k = Math.min(c.length, 8); k >= 1; k -= 1) {
+    if (!isNonGeographicActivityTail(c.slice(0, k))) continue;
+    if (k === c.length || CPF_AREA_END_PREFIX_RE.test(c.slice(k))) return undefined;
+  }
+  const split = splitTrailingActivityTail(c);
+  if (split.kind === "activity_only" || split.kind === "invalid_head") return undefined;
+  if (split.kind === "split") return split.head;
+  return c;
+}
 
 /** 使用者想繼續探索、調整推薦方向 */
 export function userWantsMoreRecommendations(text: string): boolean {
@@ -77,11 +106,19 @@ export function extractChatPlanningContextFromText(
   }
   if (/(熱鬧|嗨|續攤)/.test(t)) avoidTypes.add("過度安靜無氣氛");
 
-  const areaMatch = t.match(
-    /(?:在|到|去|這附近|附近|那一帶|區域)(.{2,24}?)(?:走走|逛逛|安排|推薦|有|嗎|吧|呢|，|。|$)/,
-  );
+  // 否定子句永不作 preferredArea 來源：extended（切換回合）不寫；negated_only 只看子句後文字；
+  // legacy／未命中沿用切換後語句（避免舊城市或「了，換…」片段寫入 preferredArea）。
+  const clause = matchLeadingNegatedClause(t);
+  const areaSource =
+    clause?.form === "extended"
+      ? undefined
+      : clause?.form === "negated_only"
+        ? t.slice(clause.length)
+        : (parseNegatedDestinationSwitch(t)?.remainderText ?? t);
+  const areaMatch = areaSource?.match(CPF_AREA_RE);
   if (areaMatch?.[1] && areaMatch[1].length >= 2) {
-    next.preferredArea = areaMatch[1].trim().slice(0, 40);
+    const label = preferredAreaFromMatch(areaMatch[1].trim());
+    if (label && label.length >= 2) next.preferredArea = label.slice(0, 40);
   }
   if (/這附近|這一帶|這邊/.test(t) && !next.preferredArea) {
     next.preferredArea = "目前位置附近";

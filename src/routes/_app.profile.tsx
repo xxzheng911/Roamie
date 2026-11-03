@@ -8,7 +8,7 @@ import {
   UserRound,
   Sparkles,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import defaultCover from "@/assets/roamie-default-cover.png";
 import { useAuth } from "@/hooks/use-auth";
@@ -49,6 +49,8 @@ import { buildCompanionSummary } from "@/lib/personality";
 import { gatePlusPersonaFields, shouldExposePlusPersona } from "@/lib/profile-persona";
 import { PREFS_UPDATED_EVENT } from "@/lib/preference-events";
 import { useAppMainScroll } from "@/hooks/use-app-main-scroll";
+import { useDuoLayout } from "@/hooks/use-duo-layout";
+import { useDuoLaptop } from "@/hooks/use-duo-laptop";
 import { useAccess } from "@/hooks/use-access";
 import { isDeveloperBuildEnabled } from "@/lib/access/developer";
 import {
@@ -239,6 +241,26 @@ function Profile() {
   }, []);
 
   useAppMainScroll();
+
+  // iPhone Duo 展開雙欄（與收藏頁 duoTwoPane 條件相同）：左頁個人卡＋Plus 區塊，右頁其餘區塊。
+  // 只切換 className（profile-duo-*），React 樹與子元素位置不變，開合時已開啟的 Sheet 不會 remount。
+  const duoLayout = useDuoLayout();
+  const duoTwoPane =
+    duoLayout.navPlacement === "right-rail" &&
+    duoLayout.tripLayout === "two-pane" &&
+    duoLayout.pane != null;
+  // iPhone Duo 筆電半開（與 _app 設定 html.duo-laptop 的條件相同：雙欄優先）：版面與手機相同、一頁式捲動。
+  // 只切換 <html> 的 profile-laptop-active（styles.css 只以此限定本頁浮層不跨摺痕），React 樹不變，已開啟的 Sheet 不會 remount。
+  const duoLaptop = useDuoLaptop();
+  const profileLaptop = duoLaptop.laptop && !duoTwoPane;
+  useLayoutEffect(() => {
+    if (!profileLaptop) return;
+    const root = document.documentElement;
+    root.classList.add("profile-laptop-active");
+    return () => {
+      root.classList.remove("profile-laptop-active");
+    };
+  }, [profileLaptop]);
 
   const travelPrefStatus = useTravelPrefStatus();
   const quizCompleted = travelPrefStatus?.preferenceQuizCompleted ?? onboarded;
@@ -798,8 +820,12 @@ function Profile() {
   };
 
   return (
-    <div className="profile-page flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-y-contain px-5 pb-[max(2.5rem,env(safe-area-inset-bottom,0px))] pt-3 no-scrollbar">
-      <div className="overflow-visible rounded-[2rem] border border-border bg-card shadow-soft">
+    <div
+      className={`profile-page flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-y-contain px-5 pb-[max(2.5rem,env(safe-area-inset-bottom,0px))] pt-3 no-scrollbar${duoTwoPane ? " profile-duo-root" : ""}`}
+    >
+      <div
+        className={`overflow-visible rounded-[2rem] border border-border bg-card shadow-soft${duoTwoPane ? " profile-duo-left" : ""}`}
+      >
         <ProfileCover
           displaySrc={guest ? defaultCover : (coverPreviewUrl ?? coverDisplaySrc)}
           pending={guest ? false : coverPending && !coverPreviewUrl}
@@ -1011,7 +1037,9 @@ function Profile() {
         </div>
       </div>
 
-      <section className="mt-5 rounded-3xl border border-border bg-card p-5 shadow-soft">
+      <section
+        className={`mt-5 rounded-3xl border border-border bg-card p-5 shadow-soft${duoTwoPane ? " profile-duo-left" : ""}`}
+      >
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <Sparkles className="h-3.5 w-3.5 text-clay" />
           {t("plusPurchase.profileLabel")}
@@ -1048,7 +1076,9 @@ function Profile() {
       </section>
 
       {showPlusPersona ? (
-        <section className="mt-4 rounded-3xl bg-secondary p-5">
+        <section
+          className={`mt-4 rounded-3xl bg-secondary p-5${duoTwoPane ? " profile-duo-right-first" : ""}`}
+        >
           <p className="font-display text-[18px]">
             {travelStyleLabel || personalityType || uiT("productionUi.p22e99830ea")}
           </p>
@@ -1070,7 +1100,9 @@ function Profile() {
         </section>
       ) : null}
 
-      <section className="relative z-10 mt-6">
+      <section
+        className={`relative z-10 mt-6${duoTwoPane && !showPlusPersona ? " profile-duo-right-first" : ""}`}
+      >
         <ul className="overflow-hidden rounded-3xl border border-border bg-card shadow-soft">
           {items.map((it, i) => {
             const Icon = it.icon;
@@ -1146,7 +1178,7 @@ function Profile() {
         </button>
       ) : null}
       <ProfileFeedbackLinks />
-      <div aria-hidden className="h-6 shrink-0" />
+      <div aria-hidden className={`h-6 shrink-0${duoTwoPane ? " profile-duo-clear" : ""}`} />
     </div>
   );
 }

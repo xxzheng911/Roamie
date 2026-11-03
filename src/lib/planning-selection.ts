@@ -11,6 +11,16 @@ import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import { isExplicitCampingPlace } from "@/lib/camping-place-classification";
 import { classifyFamilyPlace } from "@/lib/family-place-classification";
 import { matchDestinationAdministrativeScope } from "@/lib/destination-administrative-scope";
+import {
+  cachedTrustedParentAdministrativeNames,
+  isSameAdministrativeLabel,
+  type TrustedRecommendationSearchScope,
+} from "@/lib/ai/chat-turn-destination";
+import { resolveDestination } from "@/lib/ai/destination-resolution";
+import { isKnownCountryLabel, isKnownTouristCityLabel } from "@/lib/ai/trip-planning-context";
+
+/** Fixed lane search radius; never read from the Client-saved destinationScope. */
+const PLANNING_SELECTION_SEARCH_RADIUS = 50_000;
 
 export type RecommendationFamily =
   | "food"
@@ -52,6 +62,11 @@ export type PlanningSelectionSession = {
     radius: number;
     administrativeNames?: string[];
   };
+  /**
+   * Destination the A2 gate trusted for this selection's last paid search. Comparison only
+   * (same-destination check); never a search center, radius or name on its own.
+   */
+  trustedDestination?: string;
   createdAt: string;
 };
 
@@ -147,6 +162,431 @@ export function isPlanningSelectionMode(session: ChatPlanningSession): boolean {
   return session.planningSelection?.mode === "planning_selection";
 }
 
+/**
+ * The selection's Plan form destination label: only a candidate for the A2 gate
+ * (resolveTrustedRecommendationSearchScope), never trusted on its own.
+ */
+export function planningSelectionDestinationLabel(
+  session: ChatPlanningSession,
+  level: "destination" | "parent" | "qualified" = "destination",
+): string | undefined {
+  // Plan form display labels are「國家・城市」: the gate only receives the place name itself
+  // (the country prefix is display-only and would be parsed as the destination).
+  const bare = (value: string | undefined) =>
+    value
+      ?.split("・")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .at(-1) || undefined;
+  const destination =
+    bare(session.planningSelection?.destinationScope?.name) ||
+    bare(session.tripDestination?.city) ||
+    bare(session.tripDestination?.displayLabel) ||
+    undefined;
+  if (level === "destination") return destination;
+  const compact = (value: string | undefined) => (value ?? "").replace(/\s+/g, "");
+  if (level === "qualified") {
+    // First gate candidate: one level up + the place name (基隆市信義區), so a same-name district
+    // of another city (台北市信義區) is never what the gate resolves. Upper level: the district
+    // when it differs from the name (九份 → 瑞芳區), else the region. City-level names (市／縣／府…)
+    // are not qualified (their district would be below them, and they have no same-name issue).
+    if (!destination || CITY_LEVEL_NAME_RE.test(destination)) return undefined;
+    const upper = [
+      bare(session.tripDestination?.district),
+      bare(session.tripDestination?.region),
+    ].find(
+      (value) =>
+        value &&
+        compact(value) !== compact(destination) &&
+        !compact(destination).startsWith(compact(value)) &&
+        // 台南市 / 東京都 / 大阪府 are the name itself (never「台南市台南」).
+        !isSameAdministrativeLabel(value, destination),
+    );
+    return upper ? `${upper}${destination}` : undefined;
+  }
+  // One level up (e.g. 區 → 市): only the last gate candidate when the place name is not trusted.
+  const parent = bare(session.tripDestination?.region);
+  return parent && compact(parent) !== compact(destination) ? parent : undefined;
+}
+
+const CITY_LEVEL_NAME_RE = /(?:市|縣|县|府|都|道|州|省|邦|國|国)$/;
+
+/**
+ * Leaves Planner selection mode (destination switch confirmed): the old selection, its
+ * destinationScope and its selected-place mirrors never carry over to another destination.
+ * With the switch's trusted gate result, the trip destination becomes that destination (never a
+ * client value) and the Plan form planning mode ends; the generation path resolves its identity.
+ */
+export function leavePlanningSelection(
+  session: ChatPlanningSession,
+  trusted?: { destination: string; center: { lat: number; lng: number } },
+): ChatPlanningSession {
+  // An explicit (trusted) leave is never a stale drop: no earlier unconsumed record survives it.
+  if (trusted) lastStaleSelectionDrop = undefined;
+  const selection = session.planningSelection;
+  if (!selection) return session;
+  const fromSelection = new Set(resolvePlanningSelectionPlaces(session).map(placeId));
+  const keep = (places: ChatPlaceItem[] | undefined) =>
+    (places ?? []).filter((place) => !fromSelection.has(placeId(place)));
+  const selectedPlaces = keep(session.selectedPlaces);
+  const destination = trusted?.destination?.trim();
+  // The Plan form wrote session.location from its destination (preparePlanTripSession).
+  const scope = selection.destinationScope;
+  const location = session.location;
+  const locationFromPlanForm = Boolean(
+    location &&
+    (session.fromPlanForm === true ||
+      (scope &&
+        Math.abs(location.lat - scope.lat) < 1e-6 &&
+        Math.abs(location.lng - scope.lng) < 1e-6)),
+  );
+  return {
+    ...session,
+    planningSelection: undefined,
+    selectedPlaces,
+    selectedPlaceIds: selectedPlaces.map(placeId),
+    plannedStops: keep(session.plannedStops),
+    planAiMode: false,
+    fromPlanForm: false,
+    ...(destination && trusted
+      ? {
+          // Unresolved on purpose (no Place ID / country): handleGenerateItinerary's
+          // resolveDestinationAuthority resolves this trusted label instead of the old city.
+          tripDestination: {
+            placeId: "",
+            country: "",
+            city: destination,
+            lat: trusted.center.lat,
+            lng: trusted.center.lng,
+            formattedName: destination,
+            displayLabel: destination,
+          },
+          // Same rule as tripDestination: the gate's label + center, no forged Place ID.
+          location: {
+            lat: trusted.center.lat,
+            lng: trusted.center.lng,
+            city: destination,
+            displayLabel: destination,
+          },
+        }
+      : { location: locationFromPlanForm ? undefined : location }),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Same destination as the selection (any of its own labels), or provably inside it: the label's
+ * administrative parents (Authority area parent / this app's validated provider answers) name the
+ * selection itself. Exact administrative-label equality only, never substring containment.
+ * The selection's upper region (administrativeNames) counts as the same destination, as in the
+ * continuation gate.
+ */
+function labelBelongsToSelection(
+  selection: PlanningSelectionSession,
+  label: string | undefined,
+): boolean {
+  const value = label
+    ?.split("・")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .at(-1);
+  if (!value) return true;
+  const identities = [
+    selection.trustedDestination,
+    ...(selection.destinationScope?.name ?? "").split("・"),
+    ...(selection.destinationScope?.administrativeNames ?? []),
+  ].filter((name): name is string => Boolean(name?.trim()));
+  if (identities.some((identity) => isSameAdministrativeLabel(identity, value))) return true;
+  // Containment: only the selection's own level (never its upper region) may be a parent.
+  const own = [
+    selection.trustedDestination,
+    (selection.destinationScope?.name ?? "").split("・").at(-1),
+  ].filter((name): name is string => Boolean(name?.trim()));
+  const resolution = resolveDestination({ text: value });
+  const parents = [
+    resolution.areaCandidate?.parentCity,
+    resolution.geographicScope?.searchScope === "area"
+      ? resolution.geographicScope.parentCity
+      : undefined,
+    ...cachedTrustedParentAdministrativeNames(value),
+    ...(resolution.destination
+      ? cachedTrustedParentAdministrativeNames(resolution.destination)
+      : []),
+  ];
+  return parents.some((parent) =>
+    own.some((identity) => isSameAdministrativeLabel(identity, parent)),
+  );
+}
+
+/**
+ * Provably another city (pure, no provider): the label is not the selection nor inside it, and the
+ * local Authority knows it as a city / country, or as a known city's tail whose parent city is not
+ * the selection. Scenic spots, districts and unknown fragments (淡水、九份、北投泡湯…) are never
+ * provable here: they may be inside the selection (the async gate decides those turns).
+ */
+function labelProvablyOutsideSelection(
+  selection: PlanningSelectionSession,
+  label: string | undefined,
+): boolean {
+  const value = label
+    ?.split("・")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .at(-1);
+  if (!value || labelBelongsToSelection(selection, value)) return false;
+  if (isKnownTouristCityLabel(value) || isKnownCountryLabel(value)) return true;
+  const parent = resolveDestination({ text: value }).areaCandidate?.parentCity;
+  return Boolean(
+    parent && isKnownTouristCityLabel(parent) && !labelBelongsToSelection(selection, parent),
+  );
+}
+
+/**
+ * The kept selection's places stay in the top-level mirrors: a destination reset of this turn
+ * (sub-area write) never empties them while the selection itself still holds them.
+ * Unchanged session object when nothing is missing.
+ */
+function withPlanningSelectionMirrors(session: ChatPlanningSession): ChatPlanningSession {
+  const selection = session.planningSelection;
+  const owned = selection?.selectedPlaces ?? [];
+  if (!owned.length) return session;
+  const mirrored = new Set((session.selectedPlaces ?? []).map(placeId));
+  const missing = owned.filter((place) => !mirrored.has(placeId(place)));
+  if (!missing.length) return session;
+  const selectedPlaces = [...(session.selectedPlaces ?? []), ...missing];
+  const stops = session.plannedStops ?? [];
+  const stopIds = new Set(stops.map(placeId));
+  return {
+    ...session,
+    selectedPlaces,
+    selectedPlaceIds: selectedPlaces.map(placeId),
+    plannedStops: [...stops, ...missing.filter((place) => !stopIds.has(placeId(place)))],
+  };
+}
+
+// #PL-FIX-T8: a selection destination switch the user confirmed on the general path (the trip
+// destination was already written as the switch target): its re-sent sentence is the switch itself.
+let confirmedSelectionSwitch: { destination: string; originalUserText: string } | undefined;
+
+/** #PL-FIX-T8: set when the user confirms a general-path selection switch (before the re-send). */
+export function rememberConfirmedPlanningSelectionSwitch(record: {
+  destination: string;
+  originalUserText: string;
+}): void {
+  confirmedSelectionSwitch = { ...record };
+}
+
+/** #PL-FIX-T8: a turn with another sentence drops the record (the same sentence keeps it). */
+export function clearConfirmedPlanningSelectionSwitch(exceptUserText?: string): void {
+  if (confirmedSelectionSwitch?.originalUserText !== exceptUserText?.trim()) {
+    confirmedSelectionSwitch = undefined;
+  }
+}
+
+/** #PL-FIX-T8: consumed once by the re-sent sentence's switch; only for that same sentence. */
+export function takeConfirmedPlanningSelectionSwitch(
+  userText: string,
+): { destination: string; originalUserText: string } | undefined {
+  const record = confirmedSelectionSwitch;
+  confirmedSelectionSwitch = undefined;
+  return record && record.originalUserText === userText.trim() ? record : undefined;
+}
+
+let lastStaleSelectionDrop: { selectionId: string; previous: string } | undefined;
+
+/**
+ * The last selection dropStalePlanningSelection ended (consumed once): the caller shows「已離開…的選點」
+ * only for the selection that was live. Never set by an explicit leavePlanningSelection.
+ */
+export function consumeStalePlanningSelectionDrop():
+  | { selectionId: string; previous: string }
+  | undefined {
+  const drop = lastStaleSelectionDrop;
+  lastStaleSelectionDrop = undefined;
+  return drop;
+}
+
+/**
+ * A destination write (travelContext / tripPlanningContext / tripDestination) that the local
+ * Authority can prove is another city ends Planner selection mode: the old selection, its
+ * destinationScope and its selected places never stay with another city (leavePlanningSelection
+ * without a trusted destination: nothing is trusted from this sentence here). A write that cannot
+ * be proven to be elsewhere (sub-area, scenic spot, unknown fragment) keeps the selection.
+ */
+export function dropStalePlanningSelection(session: ChatPlanningSession): ChatPlanningSession {
+  const selection = session.planningSelection;
+  if (!selection) return session;
+  const trip = session.tripDestination;
+  const scope = selection.destinationScope;
+  const tripIsSelection =
+    !trip ||
+    (scope &&
+      Number.isFinite(trip.lat) &&
+      Number.isFinite(trip.lng) &&
+      Math.abs(trip.lat - scope.lat) < 1e-6 &&
+      Math.abs(trip.lng - scope.lng) < 1e-6) ||
+    [trip.city, trip.displayLabel, trip.formattedName].some(
+      (label) => label?.trim() && labelBelongsToSelection(selection, label),
+    );
+  const tripOutside =
+    !tripIsSelection &&
+    [trip?.city, trip?.displayLabel, trip?.formattedName].some((label) =>
+      labelProvablyOutsideSelection(selection, label),
+    );
+  const stale = [session.travelContext?.destination, session.tripPlanningContext?.destination].some(
+    (label) => labelProvablyOutsideSelection(selection, label),
+  );
+  if (!tripOutside && !stale) return withPlanningSelectionMirrors(session);
+  devVerboseInfo("[PLANNING_SELECTION_STALE_DROPPED]", {
+    sessionId: selection.id,
+    reason: stale ? "context_destination_differs" : "trip_destination_differs",
+  });
+  lastStaleSelectionDrop = {
+    selectionId: selection.id,
+    previous:
+      selection.trustedDestination?.trim() ||
+      (selection.destinationScope?.name ?? "").split("・").at(-1)?.trim() ||
+      "",
+  };
+  return leavePlanningSelection(session);
+}
+
+/**
+ * The destination name a general / place-detail turn would write: `after` is the same session after
+ * this turn's trip intent and travel context merge (dry run, no provider). The first written label
+ * that differs from the session before the turn; undefined when this turn writes no new name.
+ */
+export function planningSelectionTurnWrittenDestination(
+  before: ChatPlanningSession,
+  after: ChatPlanningSession,
+): string | undefined {
+  const writes: Array<[string | undefined, string | undefined]> = [
+    [after.travelContext?.destination, before.travelContext?.destination],
+    [
+      after.travelContext?.destinationCandidate?.raw,
+      before.travelContext?.destinationCandidate?.raw,
+    ],
+    [after.location?.city, before.location?.city],
+    [after.preferredArea, before.preferredArea],
+  ];
+  for (const [next, previous] of writes) {
+    const label = next?.trim();
+    if (label && label !== previous?.trim()) return label;
+  }
+  return undefined;
+}
+
+/**
+ * A general / place-detail turn whose named place the A2 gate trusted inside the selection: the
+ * selection keeps its own trip destination, and travel / planning context labels that are not the
+ * selection only carry the gate's trusted place (this turn's query focus), never another label
+ * parsed from the sentence.
+ */
+export function keepPlanningSelectionDestination(
+  session: ChatPlanningSession,
+  before: ChatPlanningSession,
+  focus: string,
+  // #PL-FIX-T7: focusInsideSelection — the A2 gate (or this turn's own lookup answer) placed this
+  // turn's place in the selection itself or inside it (sub-area): its preferred area stays this
+  // turn's recommendation focus. unverifiedName — the name the gate could not confirm: any label
+  // carrying it counts as outside the selection (e.g. a known parent + that unverified tail).
+  options?: { focusInsideSelection?: boolean; unverifiedName?: string },
+): ChatPlanningSession {
+  const selection = session.planningSelection;
+  if (!selection || !isPlanningSelectionMode(session)) return session;
+  const unverifiedName = options?.unverifiedName?.trim();
+  const outside = (label: string | undefined) =>
+    Boolean(label?.trim()) &&
+    (!labelBelongsToSelection(selection, label) ||
+      Boolean(unverifiedName && label?.includes(unverifiedName)));
+  const travel = session.travelContext;
+  const planning = session.tripPlanningContext;
+  const tripChanged =
+    session.tripDestination !== before.tripDestination || session.location !== before.location;
+  const travelOutside = travel && outside(travel.destination);
+  const planningOutside = planning && outside(planning.destination);
+  // This turn's unverified candidate / input names / preferred area never outlive the turn: they
+  // return to their values before the turn (no later turn geocodes or reads them again).
+  const beforeTravel = before.travelContext;
+  const same = (a: unknown, b: unknown) => a === b || JSON.stringify(a) === JSON.stringify(b);
+  const candidateChanged =
+    travel &&
+    (!same(travel.destinationCandidate, beforeTravel?.destinationCandidate) ||
+      !same(travel.destinationInputNames, beforeTravel?.destinationInputNames));
+  // #PL-FIX-T7: only another city / an unverified name is cleared. A gate-trusted sub-area keeps
+  // its preferred area; a city / region label outside the selection returns to its value before
+  // the turn (the gate-trusted focus itself is never "outside").
+  const keepArea = options?.focusInsideSelection === true;
+  const areaChanged = !keepArea && !same(session.preferredArea, before.preferredArea);
+  const adminOutside = (label: string | undefined, previous: string | undefined) =>
+    label !== previous &&
+    outside(label) &&
+    !(keepArea && isSameAdministrativeLabel(label, focus));
+  const cityOutside = Boolean(
+    travel && adminOutside(travel.destinationCity, beforeTravel?.destinationCity),
+  );
+  const regionOutside = Boolean(
+    travel && adminOutside(travel.destinationRegion, beforeTravel?.destinationRegion),
+  );
+  if (
+    !tripChanged &&
+    !travelOutside &&
+    !planningOutside &&
+    !candidateChanged &&
+    !areaChanged &&
+    !cityOutside &&
+    !regionOutside
+  ) {
+    return session;
+  }
+  return {
+    ...session,
+    tripDestination: before.tripDestination,
+    location: before.location,
+    preferredArea: keepArea ? session.preferredArea : before.preferredArea,
+    ...(travel && (travelOutside || candidateChanged || cityOutside || regionOutside)
+      ? {
+          travelContext: {
+            ...travel,
+            destination: travelOutside ? focus : travel.destination,
+            destinationCandidate: beforeTravel?.destinationCandidate,
+            destinationInputNames: beforeTravel?.destinationInputNames,
+            destinationCity: cityOutside ? beforeTravel?.destinationCity : travel.destinationCity,
+            destinationRegion: regionOutside
+              ? beforeTravel?.destinationRegion
+              : travel.destinationRegion,
+          },
+        }
+      : {}),
+    ...(planning && planningOutside
+      ? { tripPlanningContext: { ...planning, destination: focus } }
+      : {}),
+  };
+}
+
+// #PL-FIX-T7: one non-blocking notice per Planner selection turn (e.g. the written place had no
+// geocoding result at all). Set by the turn's gate, shown after that turn's reply, cleared at the
+// start of every user turn. Client-only UI state; never persisted on the session.
+export type PlanningSelectionTurnNotice = {
+  message: string;
+  /** Conversation length before this turn's user message (the reply comes after it). */
+  conversationLength: number;
+  userText: string;
+};
+let planningSelectionTurnNotice: PlanningSelectionTurnNotice | undefined;
+
+export function setPlanningSelectionTurnNotice(notice: PlanningSelectionTurnNotice): void {
+  planningSelectionTurnNotice = notice;
+}
+
+export function peekPlanningSelectionTurnNotice(): PlanningSelectionTurnNotice | undefined {
+  return planningSelectionTurnNotice;
+}
+
+export function clearPlanningSelectionTurnNotice(): void {
+  planningSelectionTurnNotice = undefined;
+}
+
 function placeId(place: {
   id?: string;
   canonicalPlaceId?: string;
@@ -163,6 +603,24 @@ function placeId(place: {
   );
 }
 
+/**
+ * A card may join this selection only when this selection session itself recommended it
+ * (shownPlaceIds) or it is already selected (removal). Cards of another session / city never
+ * become required anchors of the generated itinerary.
+ */
+export function isPlanningSelectionPlaceInScope(
+  session: ChatPlanningSession,
+  place: ChatPlaceItem,
+): boolean {
+  const selection = session.planningSelection;
+  if (!selection) return false;
+  const ids = [place.googlePlaceId, place.placeId, placeId(place)]
+    .map((value) => value?.trim())
+    .filter((value): value is string => Boolean(value));
+  if (ids.some((id) => selection.selectedPlaceIds.includes(id))) return true;
+  return ids.some((id) => selection.shownPlaceIds.includes(id));
+}
+
 export function togglePlanningSelectionPlace(
   session: ChatPlanningSession,
   place: ChatPlaceItem,
@@ -171,6 +629,14 @@ export function togglePlanningSelectionPlace(
   if (!selection) return session;
   const id = placeId(place);
   const selected = selection.selectedPlaceIds.includes(id);
+  if (!selected && !isPlanningSelectionPlaceInScope(session, place)) {
+    devVerboseInfo("[PLANNING_SELECTION_TOGGLE]", {
+      placeId: id,
+      selected: false,
+      rejected: "not_in_selection_scope",
+    });
+    return session;
+  }
   const authoritativePlaces = resolvePlanningSelectionPlaces(session);
   const selectedPlaces = selected
     ? authoritativePlaces.filter((candidate) => placeId(candidate) !== id)
@@ -280,15 +746,30 @@ export function isPlaceEligibleForSelectionFamily(
   return true;
 }
 
+/**
+ * Paid selection lane search. Center, radius and destination name come only from the A2
+ * trustedScope of this call; selection.destinationScope is used for administrative filtering
+ * only. Missing / untrusted scope → empty result without any searchPlaces call.
+ */
 export async function fetchPlanningSelectionRecommendations(params: {
   session: ChatPlanningSession;
   searchPlaces: SearchPlacesFn;
   locale: Locale;
+  trustedScope: TrustedRecommendationSearchScope;
   limit?: number;
   userProfile?: UserProfileForReason | null;
 }): Promise<{ session: ChatPlanningSession; places: ChatPlaceItem[] }> {
   const selection = params.session.planningSelection;
   if (!selection) return { session: params.session, places: [] };
+  const trustedScope = params.trustedScope;
+  if (trustedScope?.status !== "trusted" || !trustedScope.destination?.trim()) {
+    devVerboseInfo("[PLANNING_SELECTION_SCOPE_BLOCKED]", {
+      reason: trustedScope?.status === "unavailable" ? trustedScope.reason : "no_trusted_scope",
+    });
+    return { session: params.session, places: [] };
+  }
+  const searchDestination = trustedScope.destination;
+  const searchCenter = trustedScope.center;
   const excluded = new Set([...selection.shownPlaceIds, ...selection.selectedPlaceIds]);
   devVerboseInfo("[PLANNING_SELECTION_START]", {
     styles: selection.styles,
@@ -323,21 +804,21 @@ export async function fetchPlanningSelectionRecommendations(params: {
         try {
           const result = await params.searchPlaces({
             data: {
-              query: `${selection.destinationScope.name} ${query}`,
-              lat: selection.destinationScope.lat,
-              lng: selection.destinationScope.lng,
-              radius: selection.destinationScope.radius,
+              query: `${searchDestination} ${query}`,
+              lat: searchCenter.lat,
+              lng: searchCenter.lng,
+              radius: PLANNING_SELECTION_SEARCH_RADIUS,
               mode: "text",
               includedTypes: contract.types,
               locale: params.locale,
               categoryId: contract.family,
               placesCaller: "planning_selection_lane",
               placesScreen: "chat",
-              destinationName: selection.destinationScope.name,
+              destinationName: searchDestination,
               searchMode: "destination",
               intentCategory: contract.family,
               planningSelectionStyle: lane.style,
-              cacheDestination: selection.destinationScope.name,
+              cacheDestination: searchDestination,
             },
           });
           rawCount += result.places.length;
@@ -508,6 +989,7 @@ export async function fetchPlanningSelectionRecommendations(params: {
   });
   const nextSelection: PlanningSelectionSession = {
     ...selection,
+    trustedDestination: searchDestination,
     shownPlaceIds: [...new Set([...selection.shownPlaceIds, ...picked.map((p) => p.id)])],
     shownFamilyCounts: picked.reduce<Partial<Record<RecommendationFamily, number>>>(
       (counts, place) => {

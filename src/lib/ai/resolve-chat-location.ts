@@ -132,15 +132,17 @@ export async function resolveChatLocation(
       devVerboseInfo(
         `[CHAT_LOCATION] lat=${device.lat} lng=${device.lng} source=device fallback=${device.usedFallback}`,
       );
+      // City only from the device source: session.location.city may be this turn's
+      // unconfirmed destination text (applyTripIntentToSession), never the real position.
       return {
         ...session,
         location: {
           lat: device.lat,
           lng: device.lng,
-          city: device.city ?? session.location?.city ?? "",
+          city: device.city ?? "",
         },
         nearbyLocationAuthority: {
-          displayLabel: device.city ?? session.location?.city ?? "",
+          displayLabel: device.city ?? "",
           lat: device.lat,
           lng: device.lng,
           source: "device",

@@ -78,7 +78,21 @@ import {
   logDestinationCitySelected,
   logDestinationSearchScopeUpdated,
 } from "@/lib/ai/destination-scope";
-import { maybeResetForNewTripPlanning } from "@/lib/ai/trip-planning-session-reset";
+import {
+  isCountryToCityRefinement,
+  isNewTripPlanning,
+  maybeResetForNewTripPlanning,
+  parseTravelMonthFromText,
+  resolveActiveDestination,
+  resolveIncomingDestinationFromText,
+  prepareDestinationChangeReset,
+  commitDestinationChangeReset,
+} from "@/lib/ai/trip-planning-session-reset";
+import type {
+  NewTripPlanningReason,
+  PreparedDestinationChangeReset,
+} from "@/lib/ai/trip-planning-session-reset";
+import { parseNegatedDestinationSwitch } from "@/lib/ai/continue-recommendation-intent";
 import { updateSessionPreferenceFromExplicitText } from "@/lib/personalization/resolve-effective-preference";
 
 /** Canonical travel context — merged on every user turn */
@@ -526,16 +540,62 @@ function parseTravelConstraints(text: string): Partial<CanonicalTravelContext> {
 
 function parseDestinationFromTurn(text: string, skipDestParse: boolean): string | undefined {
   if (skipDestParse) return undefined;
+  // 「大阪不去了，換金澤」: the negated place is never parsed. Only the wording after the negated
+  // clause is read, exactly as the same turn without it (same as trip-planning-session-reset).
+  // Extended form (「我不想去大阪了，換金澤」): no destination is read from this turn (dates still
+  // come from the full turn); the switch target is applied only via applyConfirmedDestinationSwitch.
+  const negatedSwitch = parseNegatedDestinationSwitch(text);
+  if (negatedSwitch?.form === "extended") return undefined;
+  const source = negatedSwitch?.remainderText ?? text;
   // Dates are parsed from the full turn separately; the destination must not include them.
-  const body = stripTravelDateRangeFromText(text);
-  if (body !== text.trim()) {
+  const body = stripTravelDateRangeFromText(source);
+  if (body !== source.trim()) {
     // 「11/25-11/30に東京へ行きます」: resolve the single extracted candidate, not the sentence.
-    const candidates = travelDestinationCandidates(text);
+    const candidates = travelDestinationCandidates(source);
     const fromCandidate =
       candidates.length === 1 ? resolveDestinationFromText(candidates[0]!) : undefined;
     if (fromCandidate) return fromCandidate;
   }
   return resolveDestinationAreaScope(body)?.displayLabel ?? resolveDestinationFromText(body);
+}
+
+type DeferredStaleScopeClear = { oldDestination: string; newLabel: string };
+
+/**
+ * While non-null (only inside applyConfirmedDestinationSwitch's Prepare merge), stale-destination
+ * scope clears are collected here instead of being scheduled; null keeps the original behavior.
+ */
+let deferredStaleScopeClearSink: DeferredStaleScopeClear[] | null = null;
+
+function withDeferredStaleScopeClears<T>(sink: DeferredStaleScopeClear[], run: () => T): T {
+  const previous = deferredStaleScopeClearSink;
+  deferredStaleScopeClearSink = sink;
+  try {
+    return run();
+  } finally {
+    deferredStaleScopeClearSink = previous;
+  }
+}
+
+function scheduleStaleDestinationScopeClear(oldDestination: string, newLabel: string): void {
+  void import("@/lib/ai/resolved-destination-scope").then((m) => {
+    m.clearResolvedDestinationScope(oldDestination);
+    void import("@/lib/ai/ai-pipeline-log").then(({ logAiPipeline }) => {
+      logAiPipeline(
+        "[STALE_DESTINATION_COORDINATES_BLOCKED]",
+        `oldDestination=${normalizeDestinationLabel(oldDestination)}`,
+        `newDestination=${newLabel}`,
+      );
+    });
+  });
+}
+
+function requestStaleDestinationScopeClear(oldDestination: string, newLabel: string): void {
+  if (deferredStaleScopeClearSink) {
+    deferredStaleScopeClearSink.push({ oldDestination, newLabel });
+    return;
+  }
+  scheduleStaleDestinationScopeClear(oldDestination, newLabel);
 }
 
 function mergeDestinationFields(
@@ -598,16 +658,7 @@ function mergeDestinationFields(
     }
     // City change invalidates prior destination coordinates (never reuse Taiwan etc.).
     if (prev.destination && normalizeDestinationLabel(prev.destination) !== label) {
-      void import("@/lib/ai/resolved-destination-scope").then((m) => {
-        m.clearResolvedDestinationScope(prev.destination!);
-        void import("@/lib/ai/ai-pipeline-log").then(({ logAiPipeline }) => {
-          logAiPipeline(
-            "[STALE_DESTINATION_COORDINATES_BLOCKED]",
-            `oldDestination=${normalizeDestinationLabel(prev.destination!)}`,
-            `newDestination=${label}`,
-          );
-        });
-      });
+      requestStaleDestinationScopeClear(prev.destination, label);
     }
     return {
       destination: scope.destinationName,
@@ -620,16 +671,7 @@ function mergeDestinationFields(
 
   const scope = resolveDestinationScopeFields(label, prev.destinationCountry);
   if (prev.destination && normalizeDestinationLabel(prev.destination) !== label) {
-    void import("@/lib/ai/resolved-destination-scope").then((m) => {
-      m.clearResolvedDestinationScope(prev.destination!);
-      void import("@/lib/ai/ai-pipeline-log").then(({ logAiPipeline }) => {
-        logAiPipeline(
-          "[STALE_DESTINATION_COORDINATES_BLOCKED]",
-          `oldDestination=${normalizeDestinationLabel(prev.destination!)}`,
-          `newDestination=${label}`,
-        );
-      });
-    });
+    requestStaleDestinationScopeClear(prev.destination, label);
   }
   return {
     destination: scope.destinationName,
@@ -806,10 +848,42 @@ export function parseTravelContextFromText(
   return base;
 }
 
+/**
+ * Internal reset control for applyConfirmedDestinationSwitch only (never set by other callers).
+ * "prepared": the turn's reset is the already prepared one (must come from this same base), the
+ * merge must not reset itself; resetSession overrides the prepared Session after a Commit recompute.
+ * "no_reset": merge without its own reset.
+ */
+type LegacyMergeResetControl =
+  | {
+      kind: "prepared";
+      prepared: PreparedDestinationChangeReset;
+      resetSession?: ChatPlanningSession;
+    }
+  | { kind: "no_reset" };
+
+function resolveLegacyMergeTripReset(
+  session: ChatPlanningSession,
+  userText: string,
+  control: LegacyMergeResetControl | undefined,
+): { session: ChatPlanningSession; didReset: boolean; reason?: NewTripPlanningReason } {
+  if (!control) return maybeResetForNewTripPlanning(session, userText);
+  if (control.kind === "no_reset") return { session, didReset: false };
+  if (control.prepared.base !== session) {
+    throw new Error("prepared destination reset does not belong to this base session");
+  }
+  return {
+    session: control.resetSession ?? control.prepared.session,
+    didReset: true,
+    reason: control.prepared.reason,
+  };
+}
+
 function mergeTravelContextLegacy(
   session: ChatPlanningSession,
   userText: string,
   lastAssistantReply?: string,
+  resetControl?: LegacyMergeResetControl,
 ): { context: CanonicalTravelContext; session: ChatPlanningSession } {
   try {
     if (session.fromTripAddPlace && session.tripAddPlaceContext) {
@@ -864,7 +938,7 @@ function mergeTravelContextLegacy(
 
     // New trip (destination/month/date change) must reset BEFORE parse/merge,
     // otherwise stale Tokyo dates are injected into a Taitung context.
-    const tripReset = maybeResetForNewTripPlanning(session, userText);
+    const tripReset = resolveLegacyMergeTripReset(session, userText, resetControl);
     const sessionForTurn = tripReset.session;
 
     const prepared = prepareSessionForUserTurn(sessionForTurn, lastAssistantReply);
@@ -1407,6 +1481,202 @@ export function formatTravelContextForAi(ctx: CanonicalTravelContext): string {
     );
   }
   return lines.join("\n");
+}
+
+export type ConfirmedDestinationSwitchStopReason =
+  /** base is not the turn's reset base (planningSessionId / planVersion differ). */
+  | "stale_turn_base"
+  /** Trip → add-place sessions never switch destination here. */
+  | "trip_add_place"
+  /** Applying the label would need a second Planner reset this turn. */
+  | "second_reset_required"
+  /** After the single merge the active destination is not the label. */
+  | "destination_not_applied";
+
+export type ConfirmedDestinationSwitchResult =
+  | { applied: false }
+  | { applied: true; session: ChatPlanningSession }
+  | { stop: ConfirmedDestinationSwitchStopReason };
+
+function isDestinationSwitchResetReason(reason: string | undefined): boolean {
+  return reason === "destination_changed" || reason === "country_changed" || reason === "city_changed";
+}
+
+/**
+ * Applies a destination switch whose label the Destination Authority already trusted this turn
+ * (the caller passes only that label; a lexical classify target is never enough). Prepare →
+ * Validate → Commit: the reset is prepared purely, every stop check runs on the prepared result,
+ * and only then is the single Planner reset committed; no global planning, no provider call.
+ * `{applied:false}`: nothing to apply (already reset this turn, unsafe wording, same trip);
+ * `{stop}`: fail closed, the caller must not persist / search / reserve.
+ */
+export function applyConfirmedDestinationSwitch(
+  base: ChatPlanningSession,
+  opts: {
+    label: string;
+    requestText: string;
+    turnResetBase?: Pick<ChatPlanningSession, "planningSessionId" | "planVersion">;
+    resetAlreadyThisTurn: boolean;
+  },
+): ConfirmedDestinationSwitchResult {
+  if (opts.resetAlreadyThisTurn) return { applied: false };
+  const label = opts.label?.trim() ?? "";
+  const requestText = opts.requestText?.trim() ?? "";
+  if (!label || !requestText) return { applied: false };
+  if (
+    opts.turnResetBase &&
+    (base.planningSessionId !== opts.turnResetBase.planningSessionId ||
+      base.planVersion !== opts.turnResetBase.planVersion)
+  ) {
+    return { stop: "stale_turn_base" };
+  }
+  if (base.fromTripAddPlace) return { stop: "trip_add_place" };
+
+  const target = normalizeDestinationLabel(label);
+  const noOtherDestination = (value: string | undefined) =>
+    !value || normalizeDestinationLabel(value) === target;
+  if (
+    !target ||
+    !noOtherDestination(resolveIncomingDestinationFromText(label)) ||
+    !noOtherDestination(resolveIncomingDestinationFromText(requestText))
+  ) {
+    return { applied: false };
+  }
+  const labelDates = parseTravelDateRangeFromText(label);
+  if (parseTravelMonthFromText(label) || labelDates.startDate || labelDates.endDate) {
+    return { applied: false };
+  }
+  const requestDates = parseTravelDateRangeFromText(requestText);
+  if (requestDates.endDate && !requestDates.startDate) return { applied: false };
+
+  const prev = resolveActiveDestination(base);
+  if (
+    prev &&
+    (prev === target ||
+      isCountryToCityRefinement(prev, base.travelContext?.destinationCountry?.trim() || undefined, label))
+  ) {
+    return { applied: false };
+  }
+
+  const pre = isNewTripPlanning(base, requestText);
+  // Path A: the reset the merge would have done itself (same detection, same options).
+  // Path B (date / month / finished-trip reason or a label the turn wording does not resolve
+  // locally): one compensating destination reset, then the merge must not reset again.
+  const useMergeReset = Boolean(
+    pre.isNew &&
+      isDestinationSwitchResetReason(pre.reason) &&
+      pre.incomingDestination &&
+      normalizeDestinationLabel(pre.incomingDestination) === target,
+  );
+
+  // Prepare: expected new Session only (no Planner / scope cleanup, no Reset log).
+  const prepared = useMergeReset
+    ? prepareDestinationChangeReset(base, {
+        reason: pre.reason!,
+        incomingDestination: pre.incomingDestination,
+        incomingTravelMonth: pre.incomingTravelMonth,
+        userText: requestText,
+      })
+    : prepareDestinationChangeReset(base, {
+        reason: "destination_changed",
+        incomingDestination: label,
+        userText: requestText,
+      });
+
+  // Validate (all on the prepared result; every stop discards prepared + sink).
+  if (!useMergeReset && isNewTripPlanning(prepared.session, requestText).isNew) {
+    return { stop: "second_reset_required" };
+  }
+  // The merge never resets here; stale-scope clears it requests are collected, not scheduled.
+  const mergeOnReset = (resetSession: ChatPlanningSession, sink: DeferredStaleScopeClear[]) =>
+    withDeferredStaleScopeClears(sink, () =>
+      useMergeReset
+        ? mergeTravelContextLegacy(base, requestText, undefined, {
+            kind: "prepared",
+            prepared,
+            resetSession,
+          })
+        : mergeTravelContextLegacy(resetSession, requestText, undefined, { kind: "no_reset" }),
+    );
+  const withSwitchedLocation = (merged: ChatPlanningSession): ChatPlanningSession => {
+    const city = merged.location?.city?.trim();
+    if (prev && city && merged.location && normalizeDestinationLabel(city) === prev) {
+      return { ...merged, location: { ...merged.location, city: label } };
+    }
+    return merged;
+  };
+
+  const preparedSink: DeferredStaleScopeClear[] = [];
+  const merged = mergeOnReset(prepared.session, preparedSink);
+  if (isNewTripPlanning(merged.session, requestText).isNew) {
+    return { stop: "second_reset_required" };
+  }
+  let session = withSwitchedLocation(merged.session);
+  if (resolveActiveDestination(session) !== target) return { stop: "destination_not_applied" };
+
+  // Commit: the single formal reset. From here on nothing is thrown out of this function;
+  // a failing step is logged and the switch rolls forward (no rollback).
+  const warnCommitStep = (step: string, error?: unknown) =>
+    console.warn(
+      "[TRIP_RESET_COMMIT_STEP_FAILED]",
+      `step=${step}`,
+      `oldSessionId=${base.planningSessionId ?? "none"}`,
+      `newSessionId=${prepared.newSessionId}`,
+      ...(error === undefined ? [] : [error instanceof Error ? error.message : String(error)]),
+    );
+  try {
+    const committed = commitDestinationChangeReset(prepared, { onStepError: "continue" });
+    let sinkToSchedule = preparedSink;
+    if (prepared.hydrationDependsOnClearedScope) {
+      // Hydration was recomputed after the scope clear: re-merge on the committed Session (no
+      // reset) and re-check the three stop conditions as assertions only.
+      const committedSink: DeferredStaleScopeClear[] = [];
+      if (!useMergeReset && isNewTripPlanning(committed, requestText).isNew) {
+        warnCommitStep("post_commit_assert_reset_session_is_new");
+      }
+      const remerged = mergeOnReset(committed, committedSink);
+      if (remerged.session === base) {
+        // Re-merge failed (its catch returned the old base): keep the validated new Session.
+        warnCommitStep("post_commit_remerge");
+      } else {
+        if (isNewTripPlanning(remerged.session, requestText).isNew) {
+          warnCommitStep("post_commit_assert_merged_session_is_new");
+        }
+        session = withSwitchedLocation(remerged.session);
+        if (resolveActiveDestination(session) !== target) {
+          warnCommitStep("post_commit_assert_destination_applied");
+        }
+        sinkToSchedule = committedSink;
+      }
+    }
+    for (const clear of sinkToSchedule) {
+      scheduleStaleDestinationScopeClear(clear.oldDestination, clear.newLabel);
+    }
+  } catch (error) {
+    warnCommitStep("commit", error);
+  }
+  return { applied: true, session };
+}
+
+/**
+ * Pure prediction (A2 second-reset guard): would mergeTravelContext(session, userText) run its own
+ * trip reset? Mirrors exactly the reset route of mergeTravelContext → mergeTravelContextLegacy
+ * (no reset control) → maybeResetForNewTripPlanning, reusing the same isNewTripPlanning detection.
+ * Performs no reset, no Session / Planner / scope-cache / storage write.
+ */
+export function wouldMergeTravelContextResetTrip(
+  session: ChatPlanningSession,
+  userText: string,
+): boolean {
+  if (session.fromTripAddPlace) {
+    // mergeTravelContextLegacy: the trip add-place branch returns before any reset.
+    if (session.tripAddPlaceContext) return false;
+  } else if (globalPlanningTurn(session, userText)) {
+    // applyGlobalPlanningContext route: no reset.
+    return false;
+  }
+  const detected = isNewTripPlanning(session, userText);
+  return Boolean(detected.isNew && detected.reason);
 }
 
 /** General language input is merged before legacy geographic heuristics can discard it. */

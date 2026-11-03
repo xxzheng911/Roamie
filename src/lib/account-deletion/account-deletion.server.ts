@@ -472,6 +472,12 @@ export async function deleteAuthenticatedAccount(params: {
     }
 
     if (status === "storage_complete") {
+      // Shared expenses are intentionally NOT cleaned up here. trip_expenses /
+      // trip_expense_payers / trip_expense_shares store user ids without an FK to
+      // auth.users, so this user's payer/share rows in other people's trips survive
+      // deleteUser (shown as "deleted user" in settlement) and other members' ledgers
+      // stay balanced. Expenses of trips this user owns are removed by the
+      // saved_trips -> trip_expenses ON DELETE CASCADE.
       const { error: inviteUserError } = await admin
         .from("trip_invites")
         .delete()

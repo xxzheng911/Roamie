@@ -7,7 +7,7 @@ import { prepareTripDateConfirmation, isRepeatedTripDateConfirmation, isCurrentT
 import { workspaceTitleDisplay } from "@/lib/trip/title-display";
 import { sessionForAnsweredDurationDiscovery } from "@/lib/ai/pending-duration-discovery";
 import { hasDeliverableCombinationCount } from "@/lib/ai/combination-deliverability";
-import { resolveGlobalPlanningCandidate, isGlobalResolutionCurrent } from "@/lib/ai/global-planning-context";
+import { resolveGlobalPlanningCandidate, isGlobalResolutionCurrent, globalPlanningTurn } from "@/lib/ai/global-planning-context";
 import { createExplicitCreateLoading } from "@/lib/ai/explicit-create-loading";
 import { isPlacesRateLimited as discoveryCooldownActive } from "@/lib/places-api-guard";
 import { createCombinationDiscoveryTrace } from "@/lib/ai/combination-discovery-trace";
@@ -244,13 +244,24 @@ import {
 } from "@/lib/plan-trip-handoff";
 import { clearPlanFormDraft } from "@/lib/plan-form-draft-storage";
 import {
+  consumeStalePlanningSelectionDrop,
+  dropStalePlanningSelection,
   fetchPlanningSelectionRecommendations,
   isPlanningSelectionContinuation,
   isPlanningSelectionMode,
+  isPlanningSelectionPlaceInScope,
+  keepPlanningSelectionDestination,
+  leavePlanningSelection,
+  planningSelectionDestinationLabel,
+  planningSelectionTurnWrittenDestination,
   preparePlanningSelectionForGenerate,
   resolvePlanningSelectionPlaces,
   togglePlanningSelectionPlace,
+  clearPlanningSelectionTurnNotice,
+  peekPlanningSelectionTurnNotice,
+  setPlanningSelectionTurnNotice,
 } from "@/lib/planning-selection";
+import { rememberConfirmedPlanningSelectionSwitch, clearConfirmedPlanningSelectionSwitch, takeConfirmedPlanningSelectionSwitch } from "@/lib/planning-selection"; // #PL-FIX-T8
 import {
   applyPlanningSelectionDateAuthority,
   logPlanningSelectionDateAuthority,
@@ -264,6 +275,17 @@ import {
 } from "@/lib/planning-selection-handoff-log";
 import { formatTripLocationLabel } from "@/lib/location/format";
 import { useI18n } from "@/hooks/use-i18n";
+import {
+  beginChatGenerationLock,
+  blockIfChatGenerationLocked,
+  endChatGenerationLock,
+  isChatGenerationLocked,
+  isChatPageMounted,
+  markChatPageMounted,
+  notifyChatGenerationDone,
+  notifyChatGenerationFailed,
+  useChatGenerationLock,
+} from "@/lib/ai/chat-generation-lock";
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import { resolveChatConnectionFallbackMessage } from "@/lib/user-facing-error";
 import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
@@ -322,6 +344,8 @@ import {
   formatTripPlanningContextForAi,
   normalizeDestinationLabel,
   splitKnownParentAreaLabel,
+  classifyDestinationSwitchTurn,
+  parseDestinationFromText,
 } from "@/lib/ai/trip-planning-context";
 import {
   buildTravelContext,
@@ -331,6 +355,8 @@ import {
 import {
   mergeTravelContext,
   formatTravelContextForAi,
+  applyConfirmedDestinationSwitch,
+  wouldMergeTravelContextResetTrip,
   type CanonicalTravelContext,
 } from "@/lib/ai/travel-context";
 import {
@@ -386,15 +412,51 @@ import {
 } from "@/lib/ai/destination-place-recommendation";
 import { buildDestinationCategoryRecommendations } from "@/lib/ai/chat-destination-category-recommendation";
 import {
-  extractProvisionalDestinationAreaCandidate,
-  resolveDestinationAreaScope,
-  resolveValidatedDestinationAreaScope,
-} from "@/lib/ai/destination-travel-profile";
+  confirmedContextDestination,
+  confirmedDestinationLabelOrUndefined,
+  isUnconfirmedSearchDestination,
+  planCategoryTurnClarification,
+  planningSelectionTurnNamesPlace,
+  planningSelectionTurnRequestsSwitch,
+  isGeocodeZeroResultsEnvelope,
+  planningSelectionTurnMentionsPlaceIncidentally,
+  planningSelectionTurnSwitchTarget,
+  planningSelectionWrittenLeadingCity,
+  recommendationSessionMatchesTrustedScope,
+  resolveCategoryTurnDestination,
+  resolveConfirmedParentScopeTurnDestination,
+  resolveMorePlacesTurnDestination,
+  resolveParentScopeSearchUserText,
+  resolvePlanningSelectionTurnDestination,
+  resolveTrustedContextTurnDestination,
+  resolveTrustedRecommendationSearchScope,
+  stripClientSearchScope,
+  validateCategoryTurnDestination,
+  withoutUnconfirmedSessionDestinations,
+} from "@/lib/ai/chat-turn-destination";
+import type { TrustedRecommendationSearchScope } from "@/lib/ai/chat-turn-destination";
+import { planningSelectionTurnNearbyAnchor } from "@/lib/ai/chat-turn-destination"; // #PL-FIX-T8
+import type { DestinationResolution } from "@/lib/ai/destination-resolution";
 import {
+  advanceDestinationSwitchPending,
   buildPendingGeographicClarification,
+  buildPendingParentScopeClarification,
+  canAskDestinationSwitchAgain,
+  classifyDestinationSwitchAnswer,
+  classifyDestinationUpdateAnswer,
+  destinationSwitchTrustedPrevious,
+  isDestinationSwitchCapped,
+  isDestinationSwitchPending,
+  isParentScopeCityEchoAnswer,
   isPlaceClarificationTripPlanningOverride,
+  parseParentScopeConfirmationAnswer,
+  planDestinationSwitchPending,
+  planDestinationUpdatePending,
   restorePlaceIntentAfterGeographicClarification,
+  sanitizeDestinationSwitchPending,
+  sanitizeDestinationUpdatePending,
 } from "@/lib/ai/destination-geographic-clarification";
+import type { PendingGeographicClarification } from "@/lib/ai/destination-geographic-clarification";
 import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
 import { coerceTravelDestination } from "@/lib/ai/trip-planning-context";
 import {
@@ -452,7 +514,10 @@ import {
   createClarificationGeographicScope,
   type NearbyGeographicScopeAuthority,
 } from "@/lib/ai/nearby-geographic-scope";
-import { parsePlaceRecommendationIntent } from "@/lib/ai/place-recommendation-intent";
+import {
+  hasExplicitPlaceRecommendationIntent,
+  parsePlaceRecommendationIntent,
+} from "@/lib/ai/place-recommendation-intent";
 import {
   assertDestinationRequestNotUsingGps,
   isExplicitDeviceNearbyRequest,
@@ -477,7 +542,9 @@ import {
 import {
   attachWorkspaceIdsToSession,
   loadConversationWorkspace,
+  loadEphemeralWorkspace,
   setActiveWorkspaceId,
+  shouldUpsertDraftWorkspace,
   upsertDraftWorkspaceFromSession,
 } from "@/lib/conversation-workspace";
 import {
@@ -501,7 +568,10 @@ import {
   shouldAcceptAlternativeRecommendations,
   shouldRefetchPlaces,
 } from "@/lib/ai/chat-recommendation-refresh";
-import { matchesContinueRecommendationGrammar } from "@/lib/ai/continue-recommendation-intent";
+import {
+  analyzeContinueRecommendationStructure,
+  matchesContinueRecommendationGrammar,
+} from "@/lib/ai/continue-recommendation-intent";
 import {
   isFallbackPlanningPlaceId,
   logPlaceDetailsHttp400Ignored,
@@ -603,6 +673,7 @@ import {
   filterPlacesByDestinationGuard,
   placesSearchContextPayload,
   resolveChatPlaceSearchContext,
+  resolveDestinationNameForSearch,
 } from "@/lib/ai/chat-place-search-context";
 import { markAskedClarifyKey, resolveChatRoute } from "@/lib/ai/chat-router";
 import {
@@ -650,7 +721,10 @@ import {
   clearDestinationGeocodeCache,
   geocodeDestinationWithFallback,
   resolveDestinationApproxCenter,
+  type GeocodeDestinationFn,
 } from "@/lib/ai/destination-geocode";
+import { normalizeCountryReference } from "@/lib/ai/destination-country-normalize";
+import { isResolvedDestination } from "@/lib/location/destination-authority";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { resolveSelectedCombinationAuthority } from "@/lib/ai/selected-combination-authority";
 import {
@@ -703,6 +777,7 @@ import {
   resolvePlanningRequiredAnchorHandoff,
 } from "@/lib/ai/planning-required-anchor-handoff";
 import {
+  isAffirmativeReply,
   isDestinationPlanningSession,
   isGenericFallbackReply,
   prepareSessionForUserTurn,
@@ -762,6 +837,422 @@ export const Route = createFileRoute("/_app/chat")({
   },
   component: Chat,
 });
+
+/**
+ * Geographic-only check (no provider call): may the stored Refinement Context be kept for this
+ * turn's trusted scope? Same rule and normalisation as the Recommendation Session pool check
+ * (destination, parent city, area / district, search scope).
+ */
+function activeRecommendationContextMatchesTrustedScope(
+  context: ChatPlanningSession["activeRecommendationContext"],
+  trustedScope: TrustedRecommendationSearchScope,
+): boolean {
+  if (!context?.destinationName?.trim()) return false;
+  return recommendationSessionMatchesTrustedScope(
+    {
+      destination: context.destinationName,
+      parentCity: context.parentCity,
+      area: context.area,
+      searchScope: context.searchScope,
+    } as NonNullable<ChatPlanningSession["recommendationSession"]>,
+    trustedScope,
+  );
+}
+
+/**
+ * Before any trusted scope exists: a stored Refinement Context whose destination differs from the
+ * stored Recommendation Session (or, without one, from the travel context destination) is stale
+ * and must not pick the next search destination. Current-location contexts are left as they are.
+ */
+function isStaleActiveRecommendationContext(session: ChatPlanningSession): boolean {
+  const context = session.activeRecommendationContext;
+  const contextLabel = context?.destinationName?.trim();
+  if (!context || !contextLabel || context.searchScope === "current_location") return false;
+  const rec = session.recommendationSession;
+  if (rec?.searchScope === "current_location") return false;
+  const otherLabel = rec ? rec.destination?.trim() : session.travelContext?.destination?.trim();
+  if (!otherLabel) return false;
+  return normalizeDestinationLabel(contextLabel) !== normalizeDestinationLabel(otherLabel);
+}
+
+// ── A2 Destination Authority Gate (spec 6.1–6.3, 7.1–7.4): pure helpers, no provider / Places /
+// Credits call. The provider request itself stays the single Authority call made in send().
+type DestinationSwitchGeocodeRequest = Parameters<GeocodeDestinationFn>[0]["data"];
+type DestinationSwitchGeocodeEnvelope = Awaited<ReturnType<GeocodeDestinationFn>>;
+
+/** 7.4.1 turn-local Authority record: built only after P1 + D5; never persisted, never reused. */
+type DestinationSwitchAuthorityRecord = {
+  epoch?: number;
+  targetLabel: string;
+  request: DestinationSwitchGeocodeRequest;
+  location: DestinationSwitchGeocodeEnvelope["location"];
+  rawResultCount?: number;
+  providerOk?: boolean;
+  error: string | null;
+  locale: DestinationSwitchGeocodeRequest["locale"];
+  countryCode?: string;
+  country?: string;
+  source: "provider_this_turn";
+};
+
+/** Planner selection destination-switch question (asked before any Credits / Places call). */
+type PlanningSelectionSwitchPending = {
+  selectionId: string;
+  planningSessionId?: string;
+  /** Trusted destination of the turn that asked (A2 gate result). */
+  destination: string;
+  /** Search center of that same A2 gate result (in memory only; never from the Client snapshot). */
+  center: { lat: number; lng: number };
+  /** The selection's own destination label. */
+  previous: string;
+  originalUserText: string;
+  /** Asked by the general / place-detail path (confirm re-runs that sentence on the general path). */
+  entry?: "general";
+};
+
+function sameNormalizedSwitchDestination(a: string | undefined, b: string | undefined): boolean {
+  const left = a?.trim();
+  const right = b?.trim();
+  return Boolean(left && right && normalizeDestinationLabel(left) === normalizeDestinationLabel(right));
+}
+
+/**
+ * 7.1 P1 equivalence evidence (in order, any one is enough): (a) normalized label equal;
+ * (b) both sides carry a placeId and they are equal (different placeIds → not equivalent);
+ * (c) the Authority (no provider) resolves the label as confirmed / curated, not from the
+ * session, to the same normalized destination at the same scope level. String similarity alone,
+ * pending / ambiguous resolutions or missing identity are never equivalence.
+ */
+function isEquivalentSwitchDestination(params: {
+  label: string | undefined;
+  trusted: string | undefined;
+  ctx: CanonicalTravelContext;
+  session: ChatPlanningSession;
+  locale: DestinationSwitchGeocodeRequest["locale"];
+  labelPlaceId?: string;
+  trustedPlaceId?: string;
+}): boolean {
+  const label = params.label?.trim();
+  const trusted = params.trusted?.trim();
+  if (!label || !trusted) return false;
+  if (sameNormalizedSwitchDestination(label, trusted)) return true;
+  const labelPlaceId = params.labelPlaceId?.trim();
+  const trustedPlaceId = params.trustedPlaceId?.trim();
+  if (labelPlaceId && trustedPlaceId) return labelPlaceId === trustedPlaceId;
+  const resolve = (text: string) =>
+    resolveCategoryTurnDestination({
+      ctx: params.ctx,
+      session: params.session,
+      userText: text,
+      locale: params.locale,
+    });
+  const own = resolve(label);
+  if (own.source === "session") return false;
+  if (own.confidence !== "confirmed" && own.confidence !== "curated") return false;
+  if (!sameNormalizedSwitchDestination(own.destination, trusted)) return false;
+  const reference = resolve(trusted);
+  return (
+    reference.source !== "session" &&
+    (reference.confidence === "confirmed" || reference.confidence === "curated") &&
+    reference.destinationType === own.destinationType
+  );
+}
+
+/**
+ * 7.1 checkPersisted (G1, G2, G3', G4, G5, G6) of a persistSession() result against the session
+ * that was sent. Returns the first failing gate, or null. The persistSession owner branch
+ * (another pending plan owner returned) fails G4 / G6.
+ * G3' Free: the ephemeral workspace matches and no Plus durable workspace was written by this
+ * persist (durable snapshot taken before persistSession). G6 also checks workspace.destination
+ * (sync.ts resolveDestination field order), the stored chat session identity, and — for a
+ * destination switch — that no field of the previous destination D0 (label or scope id) revived.
+ */
+type DestinationSwitchPersistCheckOptions = {
+  hasPlusAccess: boolean;
+  /** Free only: JSON of the Plus durable workspace for expected.workspaceId before persisting. */
+  plusDurableBefore?: string | null;
+  /** Switch only: the previous destination D0 of this turn. */
+  previousDestination?: { labels: (string | undefined)[]; scopeId?: string };
+};
+
+function plusDurableWorkspaceSnapshot(
+  session: ChatPlanningSession,
+  hasPlusAccess: boolean,
+): string | null | undefined {
+  if (hasPlusAccess) return undefined;
+  const workspaceId = session.workspaceId?.trim();
+  if (!workspaceId) return null;
+  const durable = loadConversationWorkspace(workspaceId, readCachedAuthenticatedUserIdSync());
+  return durable ? JSON.stringify(durable) : null;
+}
+
+/** Same field order as conversation-workspace/sync.ts resolveDestination (not exported). */
+function workspaceDestinationOfSession(session: ChatPlanningSession): string {
+  return (
+    session.travelContext?.destination?.trim() ||
+    session.tripPlanningContext?.destination?.trim() ||
+    session.tripDestination?.displayLabel?.trim() ||
+    session.tripDestination?.city?.trim() ||
+    session.recommendationSession?.destination?.trim() ||
+    ""
+  );
+}
+
+function destinationSwitchPersistFailure(
+  expected: ChatPlanningSession,
+  saved: ChatPlanningSession,
+  opts: DestinationSwitchPersistCheckOptions,
+): "G1" | "G2" | "G3" | "G4" | "G5" | "G6" | null {
+  const expectedGeneration =
+    expected.phase === "done" ? undefined : expected.tripCreationAuthority?.generationId;
+  if (saved.tripCreationAuthority?.generationId !== expectedGeneration) return "G1";
+  if (saved.pendingQuestion?.type === "date_confirmation") return "G2";
+  const workspaceId = saved.workspaceId?.trim();
+  const conversationId = saved.conversationId?.trim();
+  let boundWorkspaceDestination: string | undefined;
+  if (workspaceId || conversationId) {
+    if (!workspaceId || !conversationId) return "G3";
+    const userId = readCachedAuthenticatedUserIdSync();
+    const workspace = opts.hasPlusAccess
+      ? loadConversationWorkspace(workspaceId, userId)
+      : loadEphemeralWorkspace();
+    if (
+      !workspace ||
+      workspace.workspaceId !== workspaceId ||
+      workspace.conversationId !== conversationId
+    ) {
+      return "G3";
+    }
+    if (!opts.hasPlusAccess) {
+      // G3' Free: this persist wrote no Plus durable workspace (new ids: none may exist; same
+      // id: the durable copy is unchanged).
+      const expectedWorkspaceId = expected.workspaceId?.trim();
+      if (workspaceId !== expectedWorkspaceId) {
+        if (loadConversationWorkspace(workspaceId, userId)) return "G3";
+      } else if (
+        opts.plusDurableBefore !== undefined &&
+        plusDurableWorkspaceSnapshot(saved, false) !== opts.plusDurableBefore
+      ) {
+        return "G3";
+      }
+    }
+    // Only a workspace this persist actually upserted is checked against S'. When the upsert did
+    // not run (sync.ts:135 returns null; attachWorkspaceIdsToSession keeps the ids), the bound
+    // workspace is untouched — legal like "no workspace" under G3'. Its stale destination is never
+    // destination authority (search / Planner / Credits read the Session) and is resynced by the
+    // next upsert (different destination → new workspace, sync.ts:155-164); S-243 OPEN.
+    boundWorkspaceDestination = shouldUpsertDraftWorkspace(saved)
+      ? workspace.destination ?? ""
+      : undefined;
+  } else if (expected.workspaceId?.trim() || expected.conversationId?.trim()) {
+    return "G3";
+  }
+  if (
+    saved.planningSessionId !== expected.planningSessionId ||
+    saved.planVersion !== expected.planVersion
+  ) {
+    return "G4";
+  }
+  if (
+    !isCurrentTripDateSnapshot(
+      { ...expected, workspaceId: undefined, conversationId: undefined },
+      saved,
+    )
+  ) {
+    return "G5";
+  }
+  const label = (value: string | undefined) =>
+    value?.trim() ? normalizeDestinationLabel(value.trim()) : "";
+  const text = (value: string | undefined) => value?.trim() ?? "";
+  const a = expected.travelContext;
+  const b = saved.travelContext;
+  const sameFields =
+    label(a?.destination) === label(b?.destination) &&
+    label(a?.destinationCity) === label(b?.destinationCity) &&
+    label(a?.destinationRegion) === label(b?.destinationRegion) &&
+    text(a?.destinationType) === text(b?.destinationType) &&
+    a?.destinationCoordinates?.lat === b?.destinationCoordinates?.lat &&
+    a?.destinationCoordinates?.lng === b?.destinationCoordinates?.lng &&
+    text(a?.destinationCountryCode) === text(b?.destinationCountryCode) &&
+    text(a?.destinationCountry) === text(b?.destinationCountry) &&
+    text(a?.destinationScopeId) === text(b?.destinationScopeId) &&
+    expected.tripDestination?.lat === saved.tripDestination?.lat &&
+    expected.tripDestination?.lng === saved.tripDestination?.lng &&
+    text(expected.tripDestination?.placeId) === text(saved.tripDestination?.placeId) &&
+    text(expected.tripDestination?.country) === text(saved.tripDestination?.country) &&
+    label(expected.tripPlanningContext?.destination) ===
+      label(saved.tripPlanningContext?.destination) &&
+    label(expected.preferredArea) === label(saved.preferredArea);
+  if (!sameFields) return "G6";
+  // workspace.destination = resolveDestination(S') (sync.ts:24-33).
+  if (
+    boundWorkspaceDestination !== undefined &&
+    label(boundWorkspaceDestination) !== label(workspaceDestinationOfSession(saved))
+  ) {
+    return "G6";
+  }
+  // The stored chat session is the saved one (identity fields only; labels may be localized).
+  const stored = loadChatSession();
+  if (
+    stored.planningSessionId !== saved.planningSessionId ||
+    stored.planVersion !== saved.planVersion ||
+    stored.workspaceId !== saved.workspaceId ||
+    stored.conversationId !== saved.conversationId
+  ) {
+    return "G6";
+  }
+  // No D0 revival (labels and scope id), unless D0 is the expected destination itself.
+  const previous = opts.previousDestination;
+  if (previous) {
+    const expectedLabel = label(
+      expected.travelContext?.destination ?? expected.tripPlanningContext?.destination,
+    );
+    const revived = previous.labels
+      .map(label)
+      .filter((value) => value && value !== expectedLabel);
+    // Only city-level fields with the destination's own identity (the same meaning as the D0
+    // labels) are revival evidence. Region fields are never city-level. For a district /
+    // administrative_area D*, destinationCity / tripDestination.city hold its parent city
+    // (destination-scope.ts:131-139): they count only when D*'s own label proves another parent.
+    const savedType = text(b?.destinationType);
+    const parentScoped = savedType === "district" || savedType === "administrative_area";
+    const ownParent = label(
+      splitKnownParentAreaLabel(b?.destination ?? saved.tripPlanningContext?.destination ?? "")
+        ?.parentCity,
+    );
+    const parentFields = [b?.destinationCity, saved.tripDestination?.city]
+      .map(label)
+      .filter((value) => !parentScoped || (ownParent && value !== ownParent));
+    const savedLabels = [
+      b?.destination,
+      saved.tripPlanningContext?.destination,
+      saved.preferredArea,
+      saved.tripDestination?.displayLabel,
+      saved.location?.city,
+      boundWorkspaceDestination,
+    ]
+      .map(label)
+      .concat(parentFields);
+    if (savedLabels.some((value) => value && revived.includes(value))) return "G6";
+    const previousScopeId = previous.scopeId?.trim();
+    if (
+      previousScopeId &&
+      revived.length > 0 &&
+      text(b?.destinationScopeId) === previousScopeId
+    ) {
+      return "G6";
+    }
+  }
+  return null;
+}
+
+/**
+ * A2: message-history boundary of the last committed destination switch. Cards rendered before
+ * it were shown for the previous destination's planning Session and are never re-adopted as shown
+ * candidates of another Session. Chat history itself is never changed.
+ */
+type DestinationSwitchCardBoundary = {
+  previousPlanningSessionId?: string;
+  switchedPlanningSessionId?: string;
+  messageCount: number;
+  anchor: ChatMsg;
+};
+
+/**
+ * Messages whose rendered cards may back `owner`'s shown candidates: the part after the switch
+ * boundary when `owner` is not the previous Session and the history is the one the boundary was
+ * taken on (same anchor message, or the switched Session itself). Otherwise unchanged.
+ */
+function candidateMessagesForSession(
+  messages: ChatMsg[],
+  owner: Pick<ChatPlanningSession, "planningSessionId">,
+  boundary: DestinationSwitchCardBoundary | null,
+): ChatMsg[] {
+  if (!boundary || messages.length < boundary.messageCount) return messages;
+  if (owner.planningSessionId === boundary.previousPlanningSessionId) return messages;
+  const sameHistory = messages[boundary.messageCount - 1] === boundary.anchor;
+  const switchedSession =
+    Boolean(boundary.switchedPlanningSessionId) &&
+    owner.planningSessionId === boundary.switchedPlanningSessionId;
+  return sameHistory || switchedSession ? messages.slice(boundary.messageCount) : messages;
+}
+
+/**
+ * A2 F2: the card boundary outlives a Chat remount (restored msgs are new objects and the ref
+ * starts null). Stored client-side only: Session ids, the message count and a content hash of
+ * the anchor (no message text). Bound to the switched / previous planningSessionId.
+ */
+const DESTINATION_SWITCH_CARD_BOUNDARY_KEY = "roamie:chat-destination-switch-card-boundary";
+type StoredDestinationSwitchCardBoundary = {
+  previousPlanningSessionId?: string;
+  switchedPlanningSessionId?: string;
+  messageCount: number;
+  anchorFingerprint: string;
+};
+
+function chatMsgFingerprint(msg: ChatMsg | undefined): string {
+  if (!msg) return "";
+  const source = `${msg.role}\u0000${msg.content ?? ""}`;
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < source.length; i++) {
+    hash ^= source.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `${source.length}:${hash.toString(36)}`;
+}
+
+function storeDestinationSwitchCardBoundary(boundary: DestinationSwitchCardBoundary | null): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    if (!boundary) {
+      localStorage.removeItem(DESTINATION_SWITCH_CARD_BOUNDARY_KEY);
+      return;
+    }
+    const stored: StoredDestinationSwitchCardBoundary = {
+      previousPlanningSessionId: boundary.previousPlanningSessionId,
+      switchedPlanningSessionId: boundary.switchedPlanningSessionId,
+      messageCount: boundary.messageCount,
+      anchorFingerprint: chatMsgFingerprint(boundary.anchor),
+    };
+    localStorage.setItem(DESTINATION_SWITCH_CARD_BOUNDARY_KEY, JSON.stringify(stored));
+  } catch {
+    /* boundary stays in memory only */
+  }
+}
+
+/**
+ * Rebuilds the in-memory boundary for restored `messages` owned by `owner`. Same history (the
+ * anchor fingerprint matches at the stored position) → the original boundary on the restored
+ * objects. Otherwise, when `owner` is the switched Session, fail closed: no restored card backs
+ * its shown candidates (its persisted activeShownCandidates still do). Any other case → none.
+ */
+function restoreDestinationSwitchCardBoundary(
+  messages: ChatMsg[],
+  owner: Pick<ChatPlanningSession, "planningSessionId">,
+): DestinationSwitchCardBoundary | null {
+  if (!messages.length) return null;
+  let stored: StoredDestinationSwitchCardBoundary | null = null;
+  try {
+    if (typeof localStorage === "undefined") return null;
+    const raw = localStorage.getItem(DESTINATION_SWITCH_CARD_BOUNDARY_KEY);
+    stored = raw ? (JSON.parse(raw) as StoredDestinationSwitchCardBoundary) : null;
+  } catch {
+    stored = null;
+  }
+  if (!stored || !Number.isInteger(stored.messageCount) || stored.messageCount < 1) return null;
+  const base = {
+    previousPlanningSessionId: stored.previousPlanningSessionId,
+    switchedPlanningSessionId: stored.switchedPlanningSessionId,
+  };
+  const anchorAt = messages[stored.messageCount - 1];
+  if (anchorAt && chatMsgFingerprint(anchorAt) === stored.anchorFingerprint) {
+    return { ...base, messageCount: stored.messageCount, anchor: anchorAt };
+  }
+  if (stored.switchedPlanningSessionId && owner.planningSessionId === stored.switchedPlanningSessionId) {
+    return { ...base, messageCount: messages.length, anchor: messages[messages.length - 1] };
+  }
+  return null;
+}
 
 async function getAiPreferences() {
   return mergePreferencesWithTravelPrefStatus(
@@ -828,6 +1319,7 @@ function Chat() {
   const [text, setText] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const generationLock = useChatGenerationLock();
   const [selectionGenerationStatus, setSelectionGenerationStatus] = useState<string | null>(null);
   const selectionLoadingPaintRef = useRef<{
     startedAt: number;
@@ -838,7 +1330,65 @@ function Chat() {
   const selectionRecommendationInFlightRef = useRef(false);
   const selectionGenerateInFlightRef = useRef(false);
   const globalResolutionEpochRef = useRef(0);
-  useEffect(() => () => { globalResolutionEpochRef.current++; }, []);
+  /**
+   * A2 destination-switch stop after the wrapper Commit: "B" committed but the switched Session is
+   * not (fully) synchronised; "C" persist outcome unknown. Needs a later sync; cleared by the next
+   * verified switch (D5). Never holds destination labels or ids.
+   */
+  const destinationSwitchSyncPendingRef = useRef<{
+    stopState: "B_committed_sync_pending" | "C_commit_unconfirmed";
+    reason: string;
+  } | null>(null);
+  const destinationSwitchCardBoundaryRef = useRef<DestinationSwitchCardBoundary | null>(null);
+  /** A2 F2: true once this Chat instance unmounted (its sessionRef no longer tracks the store). */
+  const chatUnmountedRef = useRef(false);
+  useEffect(() => {
+    chatUnmountedRef.current = false;
+    const releaseChatPageMount = markChatPageMounted();
+    return () => {
+      chatUnmountedRef.current = true;
+      releaseChatPageMount();
+      globalResolutionEpochRef.current++;
+    };
+  }, []);
+  /**
+   * A2 F2: Session authority an async request was issued under. A late result is applied only
+   * while the live Session (this instance's sessionRef; the stored Session after unmount) still
+   * has the same planningSessionId / planVersion — a destination switch (wrapper Commit) or any
+   * other Session change in between makes the result stale.
+   */
+  const captureSessionAuthority = useCallback(
+    (): Pick<ChatPlanningSession, "planningSessionId" | "planVersion"> => ({
+      planningSessionId: sessionRef.current.planningSessionId,
+      planVersion: sessionRef.current.planVersion,
+    }),
+    [],
+  );
+  const isSessionAuthorityCurrent = useCallback(
+    (owner: Pick<ChatPlanningSession, "planningSessionId" | "planVersion">, stage: string) => {
+      const live = chatUnmountedRef.current ? loadChatSession() : sessionRef.current;
+      const current =
+        live.planningSessionId === owner.planningSessionId && live.planVersion === owner.planVersion;
+      if (!current) {
+        console.info("[STALE_SESSION_RESULT_DISCARDED]", {
+          stage,
+          unmounted: chatUnmountedRef.current,
+          sessionChanged: live.planningSessionId !== owner.planningSessionId,
+          versionChanged: live.planVersion !== owner.planVersion,
+        });
+      }
+      return current;
+    },
+    [],
+  );
+  /**
+   * L1: 生成完成時是否仍在「原對話」。本實例仍掛載＝原對話（現行行為）；已卸載時，
+   * 只有聊聊頁仍掛載且目前 Session 的 planningSessionId 相同（例如 Plus 從草稿回到同一對話）才算。
+   */
+  const isOriginalConversation = useCallback((planningSessionId: string | undefined) => {
+    if (!chatUnmountedRef.current) return true;
+    return isChatPageMounted() && loadChatSession().planningSessionId === planningSessionId;
+  }, []);
   const activeGenerationRequestIdRef = useRef<string | null>(null);
   const generatedPlanHandoffRef = useRef(createGeneratedPlanHandoff());
   const consumedPlanCreationRef = useRef<string | undefined>(undefined);
@@ -1009,11 +1559,34 @@ function Chat() {
   });
   const keyboardVisible = messengerLayout.keyboardOpen;
   const selectionMode = isPlanningSelectionMode(session);
+  // Planner selection: a continuation turn whose trusted destination differs from the selection
+  // asks first (no Credits, no search). In-memory only and bound to that selection session.
+  const [selectionSwitchPending, setSelectionSwitchPendingState] =
+    useState<PlanningSelectionSwitchPending | null>(null);
+  const selectionSwitchPendingRef = useRef<PlanningSelectionSwitchPending | null>(null);
+  const setSelectionSwitchPending = useCallback((next: PlanningSelectionSwitchPending | null) => {
+    selectionSwitchPendingRef.current = next;
+    setSelectionSwitchPendingState(next);
+  }, []);
   const showShortcutChips = true;
   const actionChips = useMemo(() => {
     const options = session.pendingQuestion?.options ?? [];
     const chips: string[] = [];
     if (selectionMode) {
+      if (
+        selectionSwitchPending &&
+        selectionSwitchPending.selectionId === session.planningSelection?.id
+      ) {
+        chips.push(
+          chatRuntimeCopy("planningSelectionSwitchConfirmChip", locale, {
+            destination: selectionSwitchPending.destination,
+          }),
+          chatRuntimeCopy("planningSelectionSwitchCancelChip", locale, {
+            previous: selectionSwitchPending.previous,
+          }),
+        );
+        return chips;
+      }
       chips.push("生成行程", "再推薦一些");
       return chips;
     }
@@ -1028,6 +1601,9 @@ function Chat() {
     return chips;
   }, [
     selectionMode,
+    selectionSwitchPending,
+    session.planningSelection?.id,
+    locale,
     session.pendingQuestion?.options,
     session.aiItineraryState,
     session.chatPlanningState,
@@ -1186,6 +1762,39 @@ function Chat() {
   useEffect(() => {
     msgsRef.current = msgs;
   }, [msgs]);
+
+  // Planner selection switch confirmed from the general path: re-send that sentence once, from the
+  // render that already shows the confirm turn (send reads this render's conversation).
+  const selectionSwitchResendRef = useRef<string | null>(null);
+  const [selectionSwitchResendTick, setSelectionSwitchResendTick] = useState(0);
+  useEffect(() => {
+    const resendText = selectionSwitchResendRef.current;
+    if (!resendText) return;
+    selectionSwitchResendRef.current = null;
+    void send(resendText, { source: "user", selectionSwitchResend: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectionSwitchResendTick]);
+  // A re-send that was blocked by streaming / generating waits here: once both end, it runs once.
+  const selectionSwitchResendDeferredRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (streaming || generating || !selectionSwitchResendRef.current) return;
+    setSelectionSwitchResendTick((tick) => tick + 1);
+  }, [streaming, generating]);
+  // #PL-FIX-T7: Planner selection turn notice (the written place had no geocoding result): one line
+  // after that turn's reply, never before it and never blocking it. Only for the turn that set it
+  // (its user message is still at the same position) once its reply has arrived.
+  useEffect(() => {
+    if (streaming || generating) return;
+    const notice = peekPlanningSelectionTurnNotice();
+    if (!notice) return;
+    const turnUserMsg = msgs[notice.conversationLength];
+    if (turnUserMsg?.role !== "user" || turnUserMsg.content !== notice.userText) return;
+    if (msgs.length < notice.conversationLength + 2 || msgs[msgs.length - 1]?.role !== "assistant") {
+      return;
+    }
+    clearPlanningSelectionTurnNotice();
+    setMsgs((prev) => [...prev, { role: "assistant", content: notice.message }]);
+  }, [msgs, streaming, generating]);
 
   useEffect(() => {
     if (hydrating) return;
@@ -1535,10 +2144,37 @@ function Chat() {
 
   const persistSession = useCallback(
     (
-      next: ChatPlanningSession,
+      nextInput: ChatPlanningSession,
       messagesForWorkspace?: ChatMsg[],
       planningSuggestionEntryPoint?: import("@/lib/ai/destination-advice").PlanningSuggestionEntryPoint,
+      persistOptions?: { ignoreRenderedCandidates?: boolean },
     ) => {
+      // Every persisted destination write: a Planner selection never stays with another city.
+      const next = dropStalePlanningSelection(nextInput);
+      // A stale drop (another city proven locally) is never silent: one notice for the live selection.
+      const staleDrop = consumeStalePlanningSelectionDrop();
+      if (
+        staleDrop &&
+        !isPlanningSelectionMode(next) &&
+        sessionRef.current.planningSelection?.id === staleDrop.selectionId
+      ) {
+        toast.message(
+          chatRuntimeCopy("planningSelectionLeftNotice", locale, { previous: staleDrop.previous }),
+        );
+      }
+      // L1: 已卸載的實例（例如舊生成完成）不得把自己的 Session 寫進另一個對話。
+      if (
+        chatUnmountedRef.current &&
+        loadChatSession().planningSessionId !== next.planningSessionId
+      ) {
+        console.info("[STALE_SESSION_RESULT_DISCARDED]", {
+          stage: "persist_after_unmount",
+          unmounted: true,
+          sessionChanged: true,
+          versionChanged: false,
+        });
+        return next;
+      }
       const pendingOwner = restorePendingPlanAiOwner(next, loadChatSession());
       try {
         if (pendingOwner !== next) {
@@ -1548,7 +2184,17 @@ function Chat() {
           return pendingOwner;
         }
         const persistenceMessages = messagesForWorkspace ?? msgsRef.current;
-        const renderedCandidates = extractLatestShownCandidatesFromMsgs(persistenceMessages);
+        // A verified destination switch (D5) never adopts the previous destination's rendered
+        // cards as this Session's shown candidates.
+        const renderedCandidates = persistOptions?.ignoreRenderedCandidates
+          ? []
+          : extractLatestShownCandidatesFromMsgs(
+              candidateMessagesForSession(
+                persistenceMessages,
+                next,
+                destinationSwitchCardBoundaryRef.current,
+              ),
+            );
         const candidateAuthority = renderedCandidates.length
           ? renderedCandidates
           : next.recommendedPlaces.length
@@ -1607,7 +2253,7 @@ function Chat() {
         throw error;
       }
     },
-    [hasPlusAccess],
+    [hasPlusAccess, locale],
   );
 
   const persistPlanningAdviceTurn = useCallback(
@@ -2005,6 +2651,10 @@ function Chat() {
           }
           setSession(session);
           defaultGreetingTouchedRef.current = true;
+          destinationSwitchCardBoundaryRef.current = restoreDestinationSwitchCardBoundary(
+            uiCache.msgs,
+            session,
+          );
           setMsgs(uiCache.msgs);
           pendingScrollTopRef.current = uiCache.scrollTop;
           chatLifecycleEstablishedRef.current = true;
@@ -2047,6 +2697,10 @@ function Chat() {
             if (!cancelled) setSavedNames(new Set(places.map((p) => p.name)));
             if (workspace.messages?.length) {
               defaultGreetingTouchedRef.current = true;
+              destinationSwitchCardBoundaryRef.current = restoreDestinationSwitchCardBoundary(
+                workspace.messages,
+                sessionToSave,
+              );
               setMsgs(workspace.messages);
             } else {
               setMsgs([greetingMsg]);
@@ -2069,6 +2723,9 @@ function Chat() {
             hasPlusAccess,
           });
           await clearChatHistory();
+          // A new chat never inherits a previous chat's destination-switch card boundary.
+          destinationSwitchCardBoundaryRef.current = null;
+          storeDestinationSwitchCardBoundary(null);
           persistSession(fresh);
           if (!cancelled) setSession(restorePendingPlanAiOwner(fresh, loadChatSession()));
           defaultGreetingTouchedRef.current = false;
@@ -2214,8 +2871,10 @@ function Chat() {
           current.pendingHandoff &&
           !current.moodHandoffDone &&
           handoffStartedRef.current !== handoffKey;
+        // L1: 生成鎖住時不自動執行任何帶入（不送出 AI／Places／Credits 請求）。
+        const generationLocked = isChatGenerationLocked();
 
-        if (shouldRunHandoff && handoffKey) {
+        if (shouldRunHandoff && handoffKey && !generationLocked) {
           handoffStartedRef.current = handoffKey;
           setMsgs([greetingMsg]);
           await runRecommendationHandoff(current);
@@ -2226,7 +2885,7 @@ function Chat() {
             current.pendingHandoff &&
             !current.tripAddPlaceHandoffDone;
 
-          if (shouldRunTripAddPlaceHandoff) {
+          if (shouldRunTripAddPlaceHandoff && !generationLocked) {
             tripAddPlaceHandoffStartedRef.current = true;
             setMsgs([buildTripAddPlaceLoadingMessage(locale)]);
             setSession(reinforceTripAddPlaceSession(current));
@@ -2254,7 +2913,8 @@ function Chat() {
             current.fromPlanForm &&
             current.pendingHandoff &&
             !current.planHandoffDone &&
-            !planHandoffStartedRef.current
+            !planHandoffStartedRef.current &&
+            !generationLocked
           ) {
             planHandoffStartedRef.current = true;
             const selectionTrace = current.planningSelectionHandoffTrace;
@@ -2287,6 +2947,10 @@ function Chat() {
           } else if (current.fromMoodFlow && current.moodHandoffDone) {
             const history = await loadChatHistory();
             if (history.length) {
+              destinationSwitchCardBoundaryRef.current = restoreDestinationSwitchCardBoundary(
+                history,
+                current,
+              );
               setMsgs(history);
             } else {
               const summary = buildContextualMoodHandoffOpening(current);
@@ -2341,6 +3005,10 @@ function Chat() {
           } else if (search.from === "plan" || search.from === "plan-ai" || search.from === "map") {
             // Handoff-seeded session: prefer live session over durable chat_messages history.
             const history = await loadChatHistory();
+            destinationSwitchCardBoundaryRef.current = restoreDestinationSwitchCardBoundary(
+              history,
+              current,
+            );
             if (history.length) setMsgs(history);
             else setMsgs([greetingMsg]);
           } else {
@@ -2393,6 +3061,7 @@ function Chat() {
     if (hydrating) return;
     const prompt = search.prompt?.trim();
     if (!prompt || autoPromptHandledRef.current) return;
+    if (isChatGenerationLocked()) return;
     const action = search.from === "mood" ? "mood_shortcut" : "ai_chat";
     if (
       !requireAuthForAction(action, {
@@ -2420,12 +3089,14 @@ function Chat() {
   usePendingAuthActionResume("ai_chat", (pending) => {
     if (pending.sourcePath.startsWith("/chat") && search.prompt?.trim()) return;
     if (!pending.sourcePath.startsWith("/chat")) return;
+    if (isChatGenerationLocked()) return;
     const draft = pending.metadata.draft;
     if (typeof draft !== "string" || !draft.trim()) return;
     void send(draft, { source: "user" });
   });
   usePendingAuthActionResume("ai_shortcut", (pending) => {
     if (!pending.sourcePath.startsWith("/chat") || search.prompt?.trim()) return;
+    if (isChatGenerationLocked()) return;
     const draft = pending.metadata.draft;
     if (typeof draft !== "string" || !draft.trim()) return;
     void send(draft, { source: "chat_shortcut" });
@@ -2867,9 +3538,61 @@ function Chat() {
 
         if (isPlanningSelectionMode(syncedHandoff)) {
           if (!ensureSubscriptionHydratedForCredits()) return;
+          // A2 gate before Credits / Places: the Plan form destination (localStorage snapshot) is
+          // only a label for the gate; its coordinates / radius are never the search scope.
+          // The place name without its「國家・」display prefix, first qualified by its upper level
+          // (基隆市信義區: never a same-name district of another city), then alone; when neither
+          // is trusted, its parent administrative name (e.g. 區 → 市). At most 3 gate attempts.
+          const selectionLabel = planningSelectionDestinationLabel(syncedHandoff);
+          const selectionGateLabels = [
+            planningSelectionDestinationLabel(syncedHandoff, "qualified"),
+            selectionLabel,
+            planningSelectionDestinationLabel(syncedHandoff, "parent"),
+          ].filter(
+            (label, index, all): label is string => Boolean(label) && all.indexOf(label) === index,
+          );
+          let selectionScope: TrustedRecommendationSearchScope = {
+            status: "unavailable",
+            reason: "no_destination",
+          };
+          try {
+            for (const label of selectionGateLabels) {
+              selectionScope = await resolveTrustedRecommendationSearchScope({
+                label,
+                ctx: syncedHandoff.travelContext ?? { interests: [] },
+                session: stripClientSearchScope(syncedHandoff),
+                locale,
+                geocodeFn: geocodeLocationFn,
+              });
+              if (selectionScope.status === "trusted") break;
+            }
+          } catch {
+            selectionScope = { status: "unavailable", reason: "authority_error" };
+          }
+          if (selectionScope.status !== "trusted") {
+            console.info("[PLANNING_SELECTION_SCOPE_GATE]", {
+              entry: "initial",
+              reason: selectionScope.reason,
+            });
+            const unconfirmedMsgs: ChatMsg[] = [
+              {
+                role: "assistant",
+                content: chatRuntimeCopy("planningSelectionDestinationUnconfirmed", locale, {
+                  destination: selectionLabel ?? "",
+                }),
+              },
+            ];
+            setMsgs(unconfirmedMsgs);
+            // Same as the existing failure path: the handoff is not re-run on every reload.
+            persistSession(markPlanHandoffComplete(syncedHandoff), unconfirmedMsgs);
+            return;
+          }
           const creditsGate = await beginPlaceRecommendationCredits({
             hasPlusAccess,
-            metadata: { path: "planning_selection_initial" },
+            metadata: {
+              path: "planning_selection_initial",
+              destination: selectionScope.destination,
+            },
           });
           if (creditsGate.blocked) {
             setMsgs([{ role: "assistant", content: chatRuntimeCopy("quotaPlaces", locale) }]);
@@ -2882,6 +3605,7 @@ function Chat() {
               session: syncedHandoff,
               searchPlaces: searchNearbyPlaces,
               locale,
+              trustedScope: selectionScope,
               userProfile: userProfileForReasonFrom(prefs, {
                 mood: syncedHandoff.mood,
                 hasPlusAccess,
@@ -3047,6 +3771,7 @@ function Chat() {
       searchNearbyPlaces,
       hasPlusAccess,
       ensureSubscriptionHydratedForCredits,
+      geocodeLocationFn,
     ],
   );
 
@@ -3148,8 +3873,8 @@ function Chat() {
             recommendationSession ?? sessionWithRecs.tripAddPlaceRecommendationSession,
           lastAssistantReply: assistantMessage.content,
         });
-        persistSession(nextSession);
-        setSession(reinforceTripAddPlaceSession(nextSession));
+        const persistedSession = persistSession(nextSession);
+        setSession(reinforceTripAddPlaceSession(persistedSession));
         devVerboseInfo(
           "[Roamie] trip add place handoff ok",
           ctx.tripId,
@@ -3207,8 +3932,8 @@ function Chat() {
         recommendedPlaces: finalRecs as ChatPlaceItem[],
         lastAssistantReply: displaySummary,
       };
-      persistSession(nextSession);
-      setSession(reinforceTripAddPlaceSession(nextSession));
+      const persistedSession = persistSession(nextSession);
+      setSession(reinforceTripAddPlaceSession(persistedSession));
       const assistantMessage = buildTripAddPlaceChatMessage({
         summary: displaySummary,
         recommendations: finalRecs,
@@ -4567,6 +5292,7 @@ function Chat() {
       },
     ): Promise<boolean> => {
       activeSession = restorePendingPlanAiOwner(activeSession, loadChatSession());
+      const requestSessionAuthority = captureSessionAuthority();
       if (activeSession.tripCreationAuthority?.explicitCreate &&
           activeSession.lastResolvedPendingQuestion?.type === "combination_choice" &&
           Boolean(activeSession.adviceSelectionThisTurn) &&
@@ -4586,13 +5312,30 @@ function Chat() {
 
       const canFetch =
         forceRegenerate || stylePlanTurn || shouldFetchDestinationPlaces(userText, placeCtx);
-      const destination = canFetch
+      const requestedDestination = canFetch
         ? (resolveMustVisitDestination(placeCtx, userText) ??
           resolveConversationDestination(placeCtx, activeSession) ??
           placeCtx.destination?.trim() ??
           activeSession.tripPlanningContext?.destination?.trim())
         : undefined;
-      if (!destination) return false;
+      if (!requestedDestination) return false;
+      // Trusted destination + search center before any Session write, Credits, Places or
+      // Weather; unconfirmed → no search, no charge, no polluted Session (caller fallback).
+      const trustedScope = await resolveTrustedRecommendationSearchScope({
+        label: requestedDestination,
+        ctx: placeCtx,
+        session: activeSession,
+        locale,
+        geocodeFn: geocodeLocationFn,
+      });
+      if (trustedScope.status !== "trusted") {
+        devVerboseInfo("[AI_PLANNING_SKIP]", `reason=untrusted_destination_${trustedScope.reason}`);
+        return false;
+      }
+      // A2 F2: the Session changed while the scope resolved (e.g. destination switch) — no
+      // Session write, Credits or Places for the stale request; handled (no caller fallback).
+      if (!isSessionAuthorityCurrent(requestSessionAuthority, "destination_places_scope")) return true;
+      const destination = trustedScope.destination;
 
       let sessionForPlan: ChatPlanningSession;
       if (styleReselect) {
@@ -4672,6 +5415,11 @@ function Chat() {
         await settleCreditsOperation(placeCreditsHandle, ok);
         placeCreditsHandle = null;
       };
+      if (!isSessionAuthorityCurrent(requestSessionAuthority, "destination_places_credits")) {
+        await settlePlaceCredits(false);
+        setPlanningRenderInProgress(false, flowSessionId);
+        return true;
+      }
 
       if (styleReselect) {
         const days = placeCtx.days ?? activeSession.tripDays ?? 1;
@@ -4694,6 +5442,9 @@ function Chat() {
       }
 
       persistSession({ ...sessionForPlan, planningSessionId: flowSessionId });
+      // A2 F2: the Session this request now owns (after its own persist); results are applied
+      // only while it is still the live Session.
+      const flowSessionAuthority = captureSessionAuthority();
 
       const excludePlaceIds = styleReselect
         ? collectHardDuplicatePlaceIds(activeSession, conversation)
@@ -4711,6 +5462,13 @@ function Chat() {
         resultAuthority: TripCreationAuthority | undefined = creationAuthority,
         resultOwnerId: string = resultGenerationId,
       ) => {
+        // A2 F2: a late result of a replaced Session (e.g. Osaka after the switch to Kanazawa)
+        // never reads that Session's frozen plan, writes messages / Session / Planner state or
+        // charges Credits; the reservation is released and the turn ends without fallback.
+        if (!isSessionAuthorityCurrent(flowSessionAuthority, "destination_places_result")) {
+          await settlePlaceCredits(false);
+          return true;
+        }
         if (creationAuthority?.explicitCreate && !isCurrentTripDateSnapshot(sessionForPlan, sessionRef.current)) return false;
         logGeneratedPlanHandoff("received", {
           ...handoffCorrelation, sourceStage: "chat_callback", dayPlanCount: dayPlan?.items.length ?? 0,
@@ -4975,7 +5733,7 @@ function Chat() {
             excludePlaceIds,
             rejectedPlaceNames,
             planningSessionId: flowSessionId,
-            session: sessionForPlan,
+            session: sessionForPlan, trustedCenter: trustedScope.center,
           });
 
         return await renderDestinationReply(summary, recommendations, payload, contextPatch, dayPlan, returnedAuthority, returnedGenerationId);
@@ -5074,6 +5832,8 @@ function Chat() {
       hasPlusAccess,
       ensureSubscriptionHydratedForCredits,
       explicitCreateLoading,
+      captureSessionAuthority,
+      isSessionAuthorityCurrent,
     ],
   );
   pushDestinationPlaceRecommendationRef.current = pushDestinationPlaceRecommendation;
@@ -5083,15 +5843,121 @@ function Chat() {
       activeSession: ChatPlanningSession,
       userText: string,
       conversation: ChatMsg[],
-      opts?: { excludePlaceIds?: string[]; rejectedPlaceNames?: string[] },
+      opts?: {
+        excludePlaceIds?: string[];
+        rejectedPlaceNames?: string[];
+        /** Confirmation turn of a saved destination switch (userText = its original sentence). */
+        destinationSwitch?: PendingGeographicClarification;
+      },
     ): Promise<boolean> => {
+      const requestSessionAuthority = captureSessionAuthority();
       const merged = mergeTravelContext(activeSession, userText);
       const placeCtx = mergeContextForPlaceFetch(merged.context, activeSession);
-      const destination =
+      const legacyLabel =
         placeCtx.destination?.trim() ||
         activeSession.tripPlanningContext?.destination?.trim() ||
         activeSession.tripDestination?.city?.trim();
-      if (!destination) return false;
+      // Search destination: a destination named this turn wins; pure continuation reuses the
+      // conversation's confirmed scope (a recommendation snapshot area only after the existing
+      // provider validation). Unconfirmed wording never reaches Places search or Credits
+      // metadata; the caller's existing no-more / safe-end branch handles the turn.
+      const requestedDestination = await resolveMorePlacesTurnDestination({
+        ctx: placeCtx,
+        session: merged.session,
+        userText,
+        locale,
+        geocodeFn: geocodeLocationFn,
+      });
+      // Even a confirmed destination never reuses the Client snapshot's center / radius / city:
+      // the trusted scope supplies them (new destination wins over the old snapshot).
+      // No label → unavailable without any provider request.
+      const trustedScope = await resolveTrustedRecommendationSearchScope({
+        label: requestedDestination,
+        ctx: placeCtx,
+        session: merged.session,
+        locale,
+        geocodeFn: geocodeLocationFn,
+      });
+      // A2 F2: the Session changed while the destination / scope resolved — nothing of this
+      // stale request is written, searched or charged; handled (no caller fallback).
+      if (!isSessionAuthorityCurrent(requestSessionAuthority, "more_places_scope")) return true;
+      if (trustedScope.status !== "trusted") {
+        // A named new destination that failed validation: only the switch intent is saved
+        // (no search, Credits, Weather or other Session field); the old city never resumes.
+        const storedSession = sessionRef.current;
+        // Confirmation round: attempts +1 only when the provider was actually asked and failed.
+        const switchPending = opts?.destinationSwitch
+          ? advanceDestinationSwitchPending(opts.destinationSwitch, trustedScope)
+          : planDestinationSwitchPending({
+              userText,
+              requestedDestination,
+              turnStartSession: storedSession,
+              categoryIntent:
+                resolveActiveCategoryIntent(activeSession) ?? activeSession.activeCategoryIntent,
+            });
+        if (switchPending) {
+          const switchVars = {
+            destination: switchPending.rawGeographicLabel,
+            previous: switchPending.previousConfirmedDestination ?? "",
+          };
+          // Ask again only after a cooldown skip or a real provider failure, within the question
+          // limit; a cached miss, no check or the cap gets the non-question stop reply.
+          const askSwitchAgain =
+            !opts?.destinationSwitch ||
+            ((trustedScope.providerOutcome === "provider_cooldown" ||
+              trustedScope.providerOutcome === "provider_attempted_failure") &&
+              canAskDestinationSwitchAgain(
+                switchPending,
+                conversation,
+                chatRuntimeCopy("destinationSwitchConfirm", locale, switchVars),
+                [
+                  chatRuntimeCopy("destinationSwitchStopped", locale, switchVars),
+                  chatRuntimeCopy("destinationSwitchCapped", locale, switchVars),
+                ],
+              ));
+          const switchMsgs: ChatMsg[] = [
+            ...conversation.filter(
+              (m, i) => !(i === conversation.length - 1 && m.role === "assistant" && !m.content),
+            ),
+            {
+              role: "assistant",
+              content: chatRuntimeCopy(
+                askSwitchAgain ? "destinationSwitchConfirm" : "destinationSwitchStopped",
+                locale,
+                switchVars,
+              ),
+            },
+          ];
+          setMsgs(switchMsgs);
+          persistSession({ ...storedSession, pendingClarification: switchPending }, switchMsgs);
+          return true;
+        }
+        if (!legacyLabel) return false;
+        logShortcutRuntime("[RT_RAINY_ROUTE]", {
+          diverted: false,
+          blockedFunction: "pushMorePlaceRecommendations",
+          reason: "unconfirmed_destination",
+        });
+        return false;
+      }
+      const destination = trustedScope.destination;
+      // One checked pool for every branch below: the stored Recommendation Session is reused
+      // only when its geographic scope equals this turn's trusted scope (pure check, no
+      // provider call). Otherwise no old pool is continued, extended, passed or persisted.
+      const priorRec = activeSession.recommendationSession;
+      const scopedRec = recommendationSessionMatchesTrustedScope(priorRec, trustedScope)
+        ? priorRec
+        : undefined;
+      const recScopeChanged = Boolean(priorRec) && !scopedRec;
+      // Same rule for the Refinement Context: kept only when it describes this turn's trusted
+      // scope; otherwise removed (never searched with, passed on or persisted). A later
+      // Refinement rebuilds it from the Recommendation Session written below.
+      const scopedRecContext = activeRecommendationContextMatchesTrustedScope(
+        activeSession.activeRecommendationContext,
+        trustedScope,
+      )
+        ? activeSession.activeRecommendationContext
+        : undefined;
 
       if (!ensureSubscriptionHydratedForCredits(conversation)) return true;
       const placeCreditsGate = await beginPlaceRecommendationCredits({
@@ -5110,6 +5976,10 @@ function Chat() {
         await settleCreditsOperation(placeCreditsHandle, ok);
         placeCreditsHandle = null;
       };
+      if (!isSessionAuthorityCurrent(requestSessionAuthority, "more_places_credits")) {
+        await settlePlaceCredits(false);
+        return true;
+      }
 
       if (isMorePlaceRecommendationsIntent(userText)) {
         logAiFollowupMoreDetected(userText);
@@ -5139,7 +6009,8 @@ function Chat() {
           activeChatIntent: activeSession.activeChatIntent ?? "destination_advice",
           activeCategoryIntent: activeCategory ?? activeSession.activeCategoryIntent,
           travelIntents: activeSession.travelIntents,
-          recommendationSession: nextRecSession ?? activeSession.recommendationSession,
+          recommendationSession: nextRecSession ?? scopedRec,
+          activeRecommendationContext: scopedRecContext,
           conversationMode: "destination_planning",
           phase: "recommend",
           pendingQuestion: undefined,
@@ -5235,10 +6106,10 @@ function Chat() {
       // Shopping「還有嗎」: load reserve first (always log), then Places only if needed.
       const isShoppingFollowup =
         activeCategory === "shopping" &&
-        activeSession.recommendationSession?.topic === "shopping" &&
+        scopedRec?.topic === "shopping" &&
         isContinueRecommendationRequest(userText, activeSession);
 
-      let shoppingSessionForSearch = activeSession.recommendationSession;
+      let shoppingSessionForSearch = scopedRec;
       let shoppingReservePrefetch: RoamieRecommendationItem[] = [];
       const shoppingSubtype = detectShoppingSubtype(userText);
 
@@ -5269,6 +6140,7 @@ function Chat() {
               ...sessionWithUsed,
               activeCategoryIntent: "shopping",
               recommendationSession: shoppingSessionForSearch,
+              activeRecommendationContext: scopedRecContext,
               pendingQuestion: undefined,
               travelContext: {
                 ...placeCtx,
@@ -5328,17 +6200,13 @@ function Chat() {
       if (
         !isShoppingFollowup &&
         isContinueRecommendationRequest(userText, activeSession) &&
-        activeSession.recommendationSession &&
+        scopedRec &&
         activeCategory &&
-        activeSession.recommendationSession.topic === activeCategory
+        scopedRec.topic === activeCategory
       ) {
         logAiPipeline("[CONTINUATION_POOL_RESTORED]", {
-          storedPoolCount: activeSession.recommendationSession.pool.length,
-          remainingCount: Math.max(
-            0,
-            activeSession.recommendationSession.pool.length -
-              activeSession.recommendationSession.cursor,
-          ),
+          storedPoolCount: scopedRec.pool.length,
+          remainingCount: Math.max(0, scopedRec.pool.length - scopedRec.cursor),
         });
         const continuationCurrentProfile = userProfileForReasonFrom(activeSession.preferences, {
           hasPlusAccess,
@@ -5349,29 +6217,25 @@ function Chat() {
           profileVersion: activeSession.preferences?.updated_at,
           sessionPreference: activeSession.sessionPreference,
         });
-        const continued = continueRecommendation(
-          activeSession.recommendationSession,
-          undefined,
-          continuationCurrentContext,
-        );
+        const continued = continueRecommendation(scopedRec, undefined, continuationCurrentContext);
         if (continued.batch.length) {
           logAiPipeline(
             "[RECOMMENDATION_CONTINUATION_SUMMARY]",
             `message=${userText}`,
             "continuationDetected=true",
             "explicitDestinationDetected=false",
-            "destinationChanged=false",
-            `destination=${activeSession.recommendationSession.destination}`,
-            `parentCity=${activeSession.recommendationSession.parentCity ?? ""}`,
-            `area=${activeSession.recommendationSession.area ?? ""}`,
-            `searchScope=${activeSession.recommendationSession.searchScope ?? ""}`,
-            `searchRegionLabel=${activeSession.recommendationSession.searchRegionLabel ?? activeSession.recommendationSession.destination}`,
+            `destinationChanged=${recScopeChanged}`,
+            `destination=${scopedRec.destination}`,
+            `parentCity=${scopedRec.parentCity ?? ""}`,
+            `area=${scopedRec.area ?? ""}`,
+            `searchScope=${scopedRec.searchScope ?? ""}`,
+            `searchRegionLabel=${scopedRec.searchRegionLabel ?? scopedRec.destination}`,
             `category=${activeCategory}`,
             "scene=",
-            `storedPoolCount=${Math.max(0, activeSession.recommendationSession.pool.length - activeSession.recommendationSession.cursor)}`,
+            `storedPoolCount=${Math.max(0, scopedRec.pool.length - scopedRec.cursor)}`,
             "usedStoredPool=true",
             "newSearchTriggered=false",
-            `searchRound=${activeSession.recommendationSession.continuationSearchRound ?? 0}`,
+            `searchRound=${scopedRec.continuationSearchRound ?? 0}`,
             "attemptCount=0",
             "remainingStrategyCount=",
             "rawCount=0",
@@ -5432,15 +6296,23 @@ function Chat() {
             rejectedPlaceNames,
             activeChatIntent: activeSession.activeChatIntent,
             activeCategoryIntent: activeCategory,
-            session: sessionWithUsed,
+            session: stripClientSearchScope({
+              ...sessionWithUsed,
+              recommendationSession: scopedRec,
+              activeRecommendationContext: scopedRecContext,
+            }),
             usedPlaces,
-            recommendationSession: shoppingSessionForSearch,
+            recommendationSession: stripClientSearchScope(shoppingSessionForSearch),
+            trustedCenter: trustedScope.center,
           });
+        // A2 F2: late result of a replaced Session — no message / Session write, no charge.
+        if (!isSessionAuthorityCurrent(requestSessionAuthority, "more_places_result")) {
+          loadingFinalizeReason = "stale_session";
+          await settlePlaceCredits(false);
+          return true;
+        }
 
-        let nextRecSession =
-          recommendationSessionPatch ??
-          shoppingSessionForSearch ??
-          activeSession.recommendationSession;
+        let nextRecSession = recommendationSessionPatch ?? shoppingSessionForSearch ?? scopedRec;
 
         // Merge sparse reserve prefetch with network hits for shopping follow-up.
         let shoppingMerged = recommendations;
@@ -5502,6 +6374,9 @@ function Chat() {
               topic: activeCategory,
               pool: recommendations,
               batchSize: defaultRecommendationDisplayBatchSize(activeCategory),
+              parentCity: trustedScope.area?.parentCity,
+              area: trustedScope.area?.area,
+              searchScope: trustedScope.area ? "area" : "city",
             });
             nextRecSession = created.session;
             const contSummary = buildContinueRecommendationSummary(activeCategory, created.batch);
@@ -5531,8 +6406,7 @@ function Chat() {
         // Shopping must not suggest switching to food/cafe.
         loadingFinalizeReason = "no_results";
         logChatMorePlacesNoResultAllowed(true);
-        const shoppingRecForNoMore =
-          recommendationSessionPatch ?? nextRecSession ?? activeSession.recommendationSession;
+        const shoppingRecForNoMore = recommendationSessionPatch ?? nextRecSession ?? scopedRec;
         const shoppingAlreadyExhausted =
           activeCategory === "shopping" && Boolean(shoppingRecForNoMore?.exhausted);
         const shoppingNowExhausted =
@@ -5584,6 +6458,7 @@ function Chat() {
             ...sessionWithUsed,
             activeCategoryIntent: activeCategory ?? activeSession.activeCategoryIntent,
             recommendationSession: exhaustedRecSession,
+            activeRecommendationContext: scopedRecContext,
             pendingQuestion: undefined,
             travelContext: {
               ...placeCtx,
@@ -5620,6 +6495,8 @@ function Chat() {
       fetchWeather,
       hasPlusAccess,
       ensureSubscriptionHydratedForCredits,
+      captureSessionAuthority,
+      isSessionAuthorityCurrent,
     ],
   );
 
@@ -5628,11 +6505,21 @@ function Chat() {
       activeSession: ChatPlanningSession,
       userText: string,
       conversation: ChatMsg[],
-      opts?: { excludePlaceIds?: string[]; rejectedPlaceNames?: string[] },
+      opts?: {
+        excludePlaceIds?: string[];
+        rejectedPlaceNames?: string[];
+        /** The send turn's single DestinationResolution (Dispatch / Weather already used it). */
+        turnDestination?: DestinationResolution;
+        /** This turn answers a geographic clarification: never ask another one (termination). */
+        fromClarification?: boolean;
+        /** The persisted session at send() start (pending consumed), before any mid-turn persist. */
+        turnStartSession?: ChatPlanningSession;
+      },
     ): Promise<boolean> => {
       // Explicit Nearby requests belong to the Nearby dispatcher. Their full
       // query is not a provisional destination label.
       if (userExplicitlyWantsNearbyPlaces(userText)) return false;
+      const requestSessionAuthority = captureSessionAuthority();
       const merged = mergeTravelContext(activeSession, userText);
       const placeCtx = mergeContextForPlaceFetch(merged.context, activeSession);
       const shortcutNearby =
@@ -5651,55 +6538,136 @@ function Chat() {
       }
       const intents = parseChatPlaceIntents(userText);
       if (!intents.length) return false;
-      const provisionalArea = extractProvisionalDestinationAreaCandidate(userText);
-      const validatedAreaScope = await resolveValidatedDestinationAreaScope({
-        input: userText,
-        locale,
-        geocodeFn: geocodeLocationFn,
-      });
-      // An explicit district-only label must not silently inherit an older session destination.
-      if (provisionalArea && !validatedAreaScope) {
+      // Single turn DestinationResolution; a pending known-parent tail gets the one
+      // existing provider validation (same geocode query as before), classify → apply.
+      const turnDestination = await validateCategoryTurnDestination(
+        opts?.turnDestination ??
+          resolveCategoryTurnDestination({
+            ctx: placeCtx,
+            session: merged.session,
+            userText,
+            locale,
+          }),
+        { locale, geocodeFn: geocodeLocationFn },
+      );
+      // A2 F2: the Session changed while the destination resolved — no clarification / Session
+      // write, Credits or Places for the stale request; handled (no caller fallback).
+      if (!isSessionAuthorityCurrent(requestSessionAuthority, "category_destination")) return true;
+      // Unconfirmed geographic label: a trusted parent + unconfirmed tail asks to confirm the
+      // parent-city scope; a parent-less fragment keeps the existing "which region" question.
+      const clarificationPlan = planCategoryTurnClarification(turnDestination);
+      // Termination: a clarification answer turn never opens another clarification.
+      if (clarificationPlan && opts?.fromClarification) {
+        logShortcutRuntime("[RT_RAINY_ROUTE]", {
+          diverted: false,
+          blockedFunction: "pushDestinationCategoryPlaceRecommendation",
+          reason: "geographic_clarification_already_asked",
+        });
+        return false;
+      }
+      if (clarificationPlan) {
+        const clarificationLabel =
+          clarificationPlan.kind === "parent_city_scope"
+            ? clarificationPlan.confirmedParentCity
+            : clarificationPlan.clarificationLabel;
+        const clarificationCopy =
+          clarificationPlan.kind === "parent_city_scope"
+            ? chatRuntimeCopy("parentScopeConfirm", locale, { destination: clarificationLabel })
+            : chatRuntimeCopy("whichRegion", locale, { destination: clarificationLabel });
         logShortcutRuntime("[RT_RAINY_ROUTE]", {
           diverted: true,
           blockedFunction: "pushDestinationCategoryPlaceRecommendation",
-          reason: "provisional_geographic_clarification",
-          areaCandidate: provisionalArea.areaCandidate,
+          reason:
+            clarificationPlan.kind === "parent_city_scope"
+              ? "parent_city_scope_confirmation"
+              : "provisional_geographic_clarification",
+          areaCandidate: clarificationLabel,
         });
         const clarificationMsgs: ChatMsg[] = [
           ...conversation,
           {
             role: "assistant",
-            content: chatRuntimeCopy("whichRegion", locale, { destination: provisionalArea.areaCandidate }),
+            content: clarificationCopy,
           },
         ];
         setMsgs(clarificationMsgs);
+        // Never persist the unconfirmed label as the session's formal destination.
+        const sessionDestinationForClarification = confirmedContextDestination(
+          activeSession.travelContext ?? { interests: [] },
+          activeSession,
+        )?.destination;
+        // This turn's planning merge may have written the unconfirmed wording into
+        // tripPlanningContext / preferredArea / tripDestination too. A known city read out of
+        // the unconfirmed sentence is kept only if the persisted pre-turn session (captured at
+        // send() start; sessionRef only outside send) already held it as a confirmed destination.
+        const sessionWithoutUnconfirmed = withoutUnconfirmedSessionDestinations(
+          merged.session,
+          opts?.turnStartSession ?? sessionRef.current,
+        );
         persistSession(
           {
-            ...merged.session,
-            pendingClarification: buildPendingGeographicClarification({
-              rawGeographicLabel: provisionalArea.areaCandidate,
-              categoryIntent: intents[0]!,
-              originalUserText: userText,
-            }),
+            ...sessionWithoutUnconfirmed,
+            travelContext: sessionWithoutUnconfirmed.travelContext
+              ? {
+                  ...sessionWithoutUnconfirmed.travelContext,
+                  destination: sessionDestinationForClarification,
+                }
+              : sessionWithoutUnconfirmed.travelContext,
+            pendingClarification:
+              clarificationPlan.kind === "parent_city_scope"
+                ? buildPendingParentScopeClarification({
+                    confirmedParentCity: clarificationPlan.confirmedParentCity,
+                    rawGeographicLabel: turnDestination.rawLabel ?? clarificationLabel,
+                    categoryIntent: intents[0]!,
+                    originalUserText: userText,
+                  })
+                : buildPendingGeographicClarification({
+                    rawGeographicLabel: clarificationLabel,
+                    categoryIntent: intents[0]!,
+                    originalUserText: userText,
+                  }),
             activeCategoryIntent: intents[0],
             pendingQuestion: undefined,
-            lastAssistantReply: chatRuntimeCopy("whichRegion", locale, { destination: provisionalArea.areaCandidate }),
+            lastAssistantReply: clarificationCopy,
           },
           clarificationMsgs,
         );
         return true;
       }
-      const baseDestination = resolveDestinationForCategorySearch(
-        placeCtx,
-        merged.session,
-        userText,
-      );
-      if (!baseDestination && !validatedAreaScope) return false;
-      const destination = validatedAreaScope?.displayLabel ?? baseDestination;
+      // No destination fragment this turn and an unconfirmed context destination (e.g. a
+      // Trip → Chat city outside the known tables): that label is only a pending candidate.
+      const turnSearchDestination =
+        turnDestination.destination ??
+        (await resolveTrustedContextTurnDestination({
+          ctx: placeCtx,
+          session: merged.session,
+          userText,
+          locale,
+          geocodeFn: geocodeLocationFn,
+        }));
+      if (!turnSearchDestination) return false;
+      // Trusted destination + search center before Credits / Places / Session writes.
+      const trustedScope = await resolveTrustedRecommendationSearchScope({
+        label: turnSearchDestination,
+        ctx: placeCtx,
+        session: merged.session,
+        locale,
+        geocodeFn: geocodeLocationFn,
+      });
+      if (trustedScope.status !== "trusted") {
+        logShortcutRuntime("[RT_RAINY_ROUTE]", {
+          diverted: false,
+          blockedFunction: "pushDestinationCategoryPlaceRecommendation",
+          reason: "untrusted_search_scope",
+        });
+        return false;
+      }
+      if (!isSessionAuthorityCurrent(requestSessionAuthority, "category_scope")) return true;
+      const destination = trustedScope.destination;
       const persistedAreaScope =
-        validatedAreaScope ??
-        (destination ? resolveDestinationAreaScope(destination) : null) ??
-        resolveDestinationAreaScope(userText);
+        turnDestination.geographicScope?.searchScope === "area"
+          ? turnDestination.geographicScope
+          : null;
 
       const excludePlaceIds = opts?.excludePlaceIds ?? collectExcludePlaceIds(activeSession);
       const rejectedPlaceNames = opts?.rejectedPlaceNames ?? activeSession.rejectedPlaceNames;
@@ -5717,6 +6685,10 @@ function Chat() {
         return true;
       }
       let placeCreditsHandle: CreditsOperationHandle | null = placeCreditsGate.handle;
+      if (!isSessionAuthorityCurrent(requestSessionAuthority, "category_credits")) {
+        await settleCreditsOperation(placeCreditsHandle, false);
+        return true;
+      }
 
       setStreaming(true);
       try {
@@ -5731,11 +6703,18 @@ function Chat() {
             geocodeFn: geocodeLocationFn,
             excludePlaceIds,
             rejectedPlaceNames,
-            session: activeSession,
+            session: stripClientSearchScope(activeSession),
             userProfile: userProfileForReasonFrom(activeSession.preferences, {
               hasPlusAccess,
             }),
+            trustedCenter: trustedScope.center,
           });
+        // A2 F2: late result of a replaced Session — no message / Session write, no charge.
+        if (!isSessionAuthorityCurrent(requestSessionAuthority, "category_places")) {
+          await settleCreditsOperation(placeCreditsHandle, false);
+          placeCreditsHandle = null;
+          return true;
+        }
 
         if (!recommendations.length) {
           await settleCreditsOperation(placeCreditsHandle, false);
@@ -5945,6 +6924,19 @@ function Chat() {
           // Stay on place recommendation without flipping into device-nearby explore.
           conversationMode: "destination_planning",
           phase: "recommend",
+          // Clarification answer turn: this turn's merge re-parsed the original sentence, so its
+          // preferredArea may be the unconfirmed label (「京都看楓葉」). Keep it only when the
+          // Authority confirms it (e.g. a validated area scope); otherwise the confirmed search
+          // destination of this turn.
+          ...(opts?.fromClarification && merged.session.preferredArea
+            ? {
+                preferredArea:
+                  confirmedDestinationLabelOrUndefined(
+                    merged.session.preferredArea,
+                    merged.session,
+                  ) ?? destination,
+              }
+            : {}),
           pendingClarification: undefined,
           pendingQuestion: preserveCombinationPending,
           tripPlanningContext: activeSession.tripPlanningContext
@@ -6079,15 +7071,23 @@ function Chat() {
       geocodeLocationFn,
       hasPlusAccess,
       ensureSubscriptionHydratedForCredits,
+      captureSessionAuthority,
+      isSessionAuthorityCurrent,
     ],
   );
 
   const pushRecommendationRefinement = useCallback(
     async (
-      activeSession: ChatPlanningSession,
+      turnSession: ChatPlanningSession,
       userText: string,
       conversation: ChatMsg[],
     ): Promise<boolean> => {
+      // A stale Refinement Context (other destination than the stored pool / travel context) is
+      // never refined: it is dropped and rebuilt below from the current Recommendation Session,
+      // then aligned to the trusted scope (search, Credits metadata, Session write-back).
+      const activeSession: ChatPlanningSession = isStaleActiveRecommendationContext(turnSession)
+        ? { ...turnSession, activeRecommendationContext: undefined }
+        : turnSession;
       const arbitration = resolveChatIntentArbitration(userText, activeSession);
       if (
         arbitration.route !== "RECOMMENDATION_REFINEMENT" &&
@@ -6107,7 +7107,7 @@ function Chat() {
           sessionForSearch.tripDestination?.city ||
           "";
         const topic = resolveActiveCategoryIntent(sessionForSearch);
-        if (!dest || !topic) return false;
+        if (!dest || !topic || isUnconfirmedSearchDestination(dest, sessionForSearch)) return false;
         sessionForSearch = {
           ...sessionForSearch,
           activeRecommendationContext: ensureActiveRecommendationContext(sessionForSearch, {
@@ -6156,13 +7156,42 @@ function Chat() {
         };
       }
 
+      // Trusted destination + search center before Credits (with or without a stored context,
+      // after Reload, exhausted): the executor reads recCtx.latitude / longitude / area, so the
+      // Client snapshot scope is stripped and replaced by the trusted one. Unconfirmed → no
+      // search, no charge, nothing persisted.
+      const trustedScope = await resolveTrustedRecommendationSearchScope({
+        label: recCtx.destinationName,
+        ctx: sessionForSearch.travelContext ?? { interests: [] },
+        session: sessionForSearch,
+        locale,
+        geocodeFn: geocodeLocationFn,
+      });
+      if (trustedScope.status !== "trusted") return false;
+      sessionForSearch = {
+        ...sessionForSearch,
+        activeRecommendationContext: {
+          ...stripClientSearchScope(sessionForSearch.activeRecommendationContext ?? recCtx),
+          destinationName: trustedScope.destination,
+          latitude: trustedScope.center.lat,
+          longitude: trustedScope.center.lng,
+          ...(trustedScope.area
+            ? {
+                searchScope: "area" as const,
+                area: trustedScope.area.area,
+                parentCity: trustedScope.area.parentCity,
+              }
+            : {}),
+        },
+      };
+
       const merged = mergeTravelContext(sessionForSearch, userText);
       const placeCtx = mergeContextForPlaceFetch(merged.context, sessionForSearch);
 
       if (!ensureSubscriptionHydratedForCredits(conversation)) return true;
       const placeCreditsGate = await beginPlaceRecommendationCredits({
         hasPlusAccess,
-        metadata: { path: "refinement", destination: recCtx.destinationName },
+        metadata: { path: "refinement", destination: trustedScope.destination },
       });
       if (placeCreditsGate.blocked) {
         setMsgs([
@@ -6343,24 +7372,68 @@ function Chat() {
       conversation: ChatMsg[],
       destination: string,
       opts?: { excludePlaceIds?: string[]; rejectedPlaceNames?: string[] },
-    ): Promise<boolean> => {
+    ): Promise<"applied" | "untrusted" | "empty"> => {
+      const requestSessionAuthority = captureSessionAuthority();
       const merged = mergeTravelContext(activeSession, userText);
       const placeCtx = mergeContextForPlaceFetch(merged.context, activeSession);
       const label = destination.trim();
-      if (!label) return false;
+      if (!label) return "untrusted";
+      let scopeTrusted = false;
 
       const excludePlaceIds = opts?.excludePlaceIds ?? collectExcludePlaceIds(activeSession);
       const rejectedPlaceNames = opts?.rejectedPlaceNames ?? activeSession.rejectedPlaceNames;
 
+      // Generating lock first (a second「好」during the trust check / Credits never re-enters).
       setStreaming(true);
+      let placeCreditsHandle: CreditsOperationHandle | null = null;
+      const settlePlaceCredits = async (ok: boolean) => {
+        await settleCreditsOperation(placeCreditsHandle, ok);
+        placeCreditsHandle = null;
+      };
       try {
+        // Trusted destination + search center before Credits / Places / Weather / Session.
+        const trustedScope = await resolveTrustedRecommendationSearchScope({
+          label,
+          ctx: placeCtx,
+          session: merged.session,
+          locale,
+          geocodeFn: geocodeLocationFn,
+        });
+        if (trustedScope.status !== "trusted") {
+          console.warn("[CHAT_ALTERNATIVE_BLOCKED]", `reason=${trustedScope.reason}`);
+          return "untrusted";
+        }
+        scopeTrusted = true;
+        // A2 F2: stale request (Session replaced meanwhile) — no Credits / Places / writes.
+        if (!isSessionAuthorityCurrent(requestSessionAuthority, "alternative_scope")) return "applied";
+        const trustedLabel = trustedScope.destination;
+
+        // Same billing as more_places (PLACE_RECOMMENDATION batch).
+        if (!ensureSubscriptionHydratedForCredits(conversation)) return "applied";
+        const placeCreditsGate = await beginPlaceRecommendationCredits({
+          hasPlusAccess,
+          metadata: { path: "more_places", destination: trustedScope.destination },
+        });
+        if (placeCreditsGate.blocked) {
+          setMsgs([
+            ...conversation,
+            { role: "assistant", content: chatRuntimeCopy("quotaPlaces", locale) },
+          ]);
+          return "applied";
+        }
+        placeCreditsHandle = placeCreditsGate.handle;
+        if (!isSessionAuthorityCurrent(requestSessionAuthority, "alternative_credits")) {
+          await settlePlaceCredits(false);
+          return "applied";
+        }
+
         const { summary, recommendations, payload, contextPatch } =
           await buildAlternativeDestinationRecommendations({
-            destination: label,
+            destination: trustedLabel,
             userText,
             context: {
               ...placeCtx,
-              destination: label,
+              destination: trustedLabel,
               tripPurpose: "alternative_recommendations",
             },
             locale,
@@ -6369,7 +7442,13 @@ function Chat() {
             fetchWeatherFn: fetchWeather,
             excludePlaceIds,
             rejectedPlaceNames,
+            trustedCenter: trustedScope.center,
           });
+        // A2 F2: late result of a replaced Session — no message / Session write, no charge.
+        if (!isSessionAuthorityCurrent(requestSessionAuthority, "alternative_result")) {
+          await settlePlaceCredits(false);
+          return "applied";
+        }
 
         const sessionWithRecs: ChatPlanningSession = {
           ...merged.session,
@@ -6379,7 +7458,7 @@ function Chat() {
           travelContext: {
             ...placeCtx,
             ...contextPatch,
-            destination: label,
+            destination: trustedLabel,
           },
         };
 
@@ -6387,8 +7466,10 @@ function Chat() {
           finalizeChatRecommendationDisplay(sessionWithRecs, userText, summary, recommendations);
 
         if (!filteredRecs.length && !displaySummary.trim()) {
-          return false;
+          await settlePlaceCredits(false);
+          return "empty";
         }
+        const deliveredRecs = filteredRecs.length ? filteredRecs : recommendations;
 
         setMsgs((prev) => {
           const trimmedPrev = prev.filter(
@@ -6403,7 +7484,7 @@ function Chat() {
               roamie: {
                 ...payload,
                 summary: displaySummary,
-                recommendations: filteredRecs.length ? filteredRecs : recommendations,
+                recommendations: deliveredRecs,
               },
             },
           ];
@@ -6412,25 +7493,37 @@ function Chat() {
         persistSession(
           syncSessionPlaceMemory({
             ...sessionWithRecs,
-            recommendedPlaces: (filteredRecs.length
-              ? filteredRecs
-              : recommendations) as ChatPlaceItem[],
+            recommendedPlaces: deliveredRecs as ChatPlaceItem[],
             pendingQuestion: undefined,
           }),
         );
         setPartial({});
-        return true;
+        // Charged only for delivered cards; a hint-only reply (0 cards) is refunded.
+        if (deliveredRecs.length > 0) await settlePlaceCredits(true);
+        else await settlePlaceCredits(false);
+        return "applied";
       } catch (error) {
+        await settlePlaceCredits(false);
         console.warn(
           "[CHAT_ALTERNATIVE_ERROR]",
           error instanceof Error ? error.message : String(error),
         );
-        return false;
+        return scopeTrusted ? "empty" : "untrusted";
       } finally {
         setStreaming(false);
       }
     },
-    [locale, persistSession, searchNearbyPlaces, geocodeLocationFn, fetchWeather],
+    [
+      locale,
+      persistSession,
+      searchNearbyPlaces,
+      geocodeLocationFn,
+      fetchWeather,
+      hasPlusAccess,
+      ensureSubscriptionHydratedForCredits,
+      captureSessionAuthority,
+      isSessionAuthorityCurrent,
+    ],
   );
 
   const applyLocalFallback = useCallback(
@@ -6439,6 +7532,8 @@ function Chat() {
       activeUserText: string,
       conversation: ChatMsg[],
       reason: string,
+      /** send()'s turnStartSession: the clarification cleanup base (never a mid-turn persist). */
+      turnStartSession?: ChatPlanningSession,
     ): Promise<boolean> => {
       devVerboseInfo(`[CHAT_FALLBACK_USED] reason=${reason}`);
 
@@ -6500,7 +7595,9 @@ function Chat() {
         !isExplicitDeviceNearbyRequest(activeUserText)
       ) {
         const dest =
-          scopedSession.activeRecommendationContext?.destinationName ||
+          (isStaleActiveRecommendationContext(scopedSession)
+            ? undefined
+            : scopedSession.activeRecommendationContext?.destinationName) ||
           scopedSession.recommendationSession?.destination ||
           scopedSession.travelContext?.destination ||
           scopedSession.tripPlanningContext?.destination;
@@ -6630,6 +7727,7 @@ function Chat() {
             scopedSession,
             activeUserText,
             conversation,
+            { turnStartSession },
           );
           if (applied) return true;
         }
@@ -7084,6 +8182,8 @@ function Chat() {
         phase?: import("@/lib/ai/context").ChatPhase;
         userText?: string;
         focusedPlace?: ChatPlaceItem;
+        /** send()'s turnStartSession, forwarded to applyLocalFallback. */
+        turnStartSession?: ChatPlanningSession;
       },
       sessionOverride?: ChatPlanningSession,
     ) => {
@@ -7289,6 +8389,7 @@ function Chat() {
             activeUserText,
             conversation,
             "ai_timeout",
+            opts?.turnStartSession,
           );
           if (!applied) {
             setMsgs((prev) => {
@@ -7320,6 +8421,7 @@ function Chat() {
           activeUserText,
           conversation,
           "ai_reply_failed",
+          opts?.turnStartSession,
         );
         if (!applied) {
           const fallbackMerged = mergeTravelContext(activeForFallback, activeUserText);
@@ -7516,7 +8618,11 @@ function Chat() {
 
   const send = async (
     overrideText?: string,
-    opts?: { source?: "user" | "auto" | "chat_shortcut" | "home_mood"; actionDiagnostic?: TripActionDiagnostic },
+    opts?: {
+      source?: "user" | "auto" | "chat_shortcut" | "home_mood";
+      actionDiagnostic?: TripActionDiagnostic;
+      selectionSwitchResend?: boolean;
+    },
   ) => {
     let session = restorePendingPlanAiOwner(sessionRef.current, loadChatSession());
     observeCombinationDiscovery(session, null);
@@ -7530,7 +8636,34 @@ function Chat() {
     const displayMessage = (opts?.source === "chat_shortcut" || opts?.source === "auto" || opts?.source === "home_mood")
       ? chatShortcutContract(trimmed, locale).displayMessage
       : trimmed;
+    // Planner selection switch confirmed: its original sentence is never dropped silently. Blocked
+    // by streaming / generating → it waits and runs once when both end; blocked again, or only by
+    // the generation lock (no end signal) → the chat asks the user to send it again.
+    if (opts?.selectionSwitchResend && trimmed) {
+      const busy = streaming || generating;
+      if (busy || isChatGenerationLocked()) {
+        if (busy && selectionSwitchResendDeferredRef.current !== trimmed) {
+          selectionSwitchResendDeferredRef.current = trimmed;
+          selectionSwitchResendRef.current = trimmed;
+        } else {
+          selectionSwitchResendDeferredRef.current = null;
+          setMsgs((prev) => [
+            ...prev,
+            {
+              role: "assistant",
+              content: chatRuntimeCopy("planningSelectionSwitchResendBlocked", locale, {
+                text: trimmed,
+              }),
+            },
+          ]);
+        }
+        return;
+      }
+      selectionSwitchResendDeferredRef.current = null;
+    }
     if (!trimmed || streaming || generating) return;
+    // L1: 只靠 UI disabled 不夠；生成鎖住時一律不送出新請求。
+    if (isChatGenerationLocked()) return;
     const action =
       opts?.source === "home_mood"
         ? "mood_shortcut"
@@ -7545,10 +8678,200 @@ function Chat() {
     ) {
       return;
     }
-    if (isRepeatedTripDateConfirmation(session, trimmed)) { setText(""); return; }
+    // A2 (spec 6.2 step 2): the only destination-switch classification of this User Turn; every
+    // later decision of this turn reads this value (never re-classified).
+    const turnSwitch = classifyDestinationSwitchTurn(trimmed);
+    if (isRepeatedTripDateConfirmation(session, trimmed) && turnSwitch.state === "NO_SWITCH") { setText(""); return; }
     defaultGreetingTouchedRef.current = true;
+    // A stale-drop record an earlier turn left unpersisted never reaches this turn's notice.
+    consumeStalePlanningSelectionDrop();
+    clearConfirmedPlanningSelectionSwitch(trimmed); // #PL-FIX-T8: only its own sentence keeps it
+    // #PL-FIX-T7: a selection turn notice an earlier turn left unshown never reaches this turn.
+    clearPlanningSelectionTurnNotice();
     beginUserTurn(msgsRef.current.length);
-    if (session.pendingQuestion?.type === "date_confirmation") {
+    // Answer to a Planner selection destination-switch question (asked by the selection
+    // continuation below, before any Credits / Places). Consumed once; only for the same
+    // selection session. Confirm leaves selection mode (old destinationScope dropped) and runs the
+    // existing A2 more_places path on the original sentence; cancel keeps the selection.
+    const selectionSwitchAsked = selectionSwitchPendingRef.current;
+    if (selectionSwitchAsked) {
+      setSelectionSwitchPending(null);
+      const liveSession = sessionRef.current;
+      const sameSelection =
+        isPlanningSelectionMode(liveSession) &&
+        liveSession.planningSelection?.id === selectionSwitchAsked.selectionId &&
+        liveSession.planningSessionId === selectionSwitchAsked.planningSessionId;
+      const confirmChip = chatRuntimeCopy("planningSelectionSwitchConfirmChip", locale, {
+        destination: selectionSwitchAsked.destination,
+      });
+      const cancelChip = chatRuntimeCopy("planningSelectionSwitchCancelChip", locale, {
+        previous: selectionSwitchAsked.previous,
+      });
+      const lexical = classifyDestinationUpdateAnswer(trimmed, selectionSwitchAsked.destination);
+      const selectionSwitchAnswer = !sameSelection
+        ? "other"
+        : trimmed === confirmChip || lexical === "confirm"
+          ? "confirm"
+          : trimmed === cancelChip || lexical === "cancel"
+            ? "cancel"
+            : "other";
+      if (selectionSwitchAnswer === "cancel") {
+        const replied: ChatMsg[] = [
+          ...msgsRef.current,
+          { role: "user", content: displayMessage },
+          {
+            role: "assistant",
+            content: chatRuntimeCopy("planningSelectionSwitchKept", locale, {
+              previous: selectionSwitchAsked.previous,
+            }),
+          },
+        ];
+        setText("");
+        setMsgs(replied);
+        persistSession(liveSession, replied);
+        return;
+      }
+      if (selectionSwitchAnswer === "confirm") {
+        const conversation: ChatMsg[] = [
+          ...msgsRef.current,
+          { role: "user", content: displayMessage },
+        ];
+        setText("");
+        setMsgs(conversation);
+        // The trip destination becomes the switch's trusted gate result (never the old city) and the
+        // Plan form planning mode ends; the more_places write-back keeps this session's values.
+        const leftSelection = persistSession(
+          leavePlanningSelection(liveSession, {
+            destination: selectionSwitchAsked.destination,
+            center: selectionSwitchAsked.center,
+          }),
+          conversation,
+        );
+        if (selectionSwitchAsked.entry === "general") {
+          // Asked by the general path: its sentence now runs there, after this render (fresh
+          // conversation), on the left-selection session with the trusted destination.
+          selectionSwitchResendRef.current = selectionSwitchAsked.originalUserText;
+          // #PL-FIX-T8: the re-sent switch sentence applies this confirmed switch (A2 wrapper).
+          rememberConfirmedPlanningSelectionSwitch({
+            destination: selectionSwitchAsked.destination,
+            originalUserText: selectionSwitchAsked.originalUserText,
+          });
+          setSelectionSwitchResendTick((tick) => tick + 1);
+          return;
+        }
+        setStreaming(true);
+        try {
+          const applied = await pushMorePlaceRecommendations(
+            {
+              ...leftSelection,
+              travelContext: {
+                ...(leftSelection.travelContext ?? { interests: [] }),
+                tripPurpose: "more_place_recommendations",
+              },
+            },
+            selectionSwitchAsked.originalUserText,
+            conversation,
+          );
+          if (applied) return;
+        } finally {
+          setStreaming(false);
+        }
+        const emptyMsgs: ChatMsg[] = [
+          ...conversation,
+          {
+            role: "assistant",
+            content: chatRuntimeCopy("noResults", locale, {
+              destination: selectionSwitchAsked.destination,
+            }),
+          },
+        ];
+        setMsgs(emptyMsgs);
+        persistSession(sessionRef.current, emptyMsgs);
+        return;
+      }
+      // Any other answer: the question is dropped; this turn continues on the existing flow.
+    }
+    // Destination-switch turn UI: the user message is shown once; every stop below appends one
+    // assistant reply. Stops never reserve Credits, search Places or write a destination.
+    let switchTurnMsgs: ChatMsg[] | undefined;
+    const showSwitchTurnUserMessage = (): ChatMsg[] => {
+      if (!switchTurnMsgs) {
+        switchTurnMsgs = [...msgsRef.current, { role: "user", content: displayMessage }];
+        setText("");
+        setMsgs(switchTurnMsgs);
+      }
+      return switchTurnMsgs;
+    };
+    // Stop states (T138): A before the wrapper Commit (old Session / Planner untouched);
+    // B wrapper committed the reset but the switched Session is not (fully) synchronised;
+    // C the persist outcome after the Commit cannot be confirmed.
+    type DestinationSwitchStopState =
+      | "A_not_committed"
+      | "B_committed_sync_pending"
+      | "C_commit_unconfirmed";
+    let switchCommitted = false;
+    const replyDestinationSwitchTurn = (
+      reason: string,
+      content: string,
+      stopState?: DestinationSwitchStopState | "none",
+    ): ChatMsg[] => {
+      const replied: ChatMsg[] = [...showSwitchTurnUserMessage(), { role: "assistant", content }];
+      setMsgs(replied);
+      console.info("[DESTINATION_SWITCH_GATE]", {
+        reason,
+        stopState: stopState ?? (switchCommitted ? "B_committed_sync_pending" : "A_not_committed"),
+        state: turnSwitch.state,
+        authority: turnSwitch.authority ?? "",
+        form: turnSwitch.form ?? "",
+      });
+      return replied;
+    };
+    // B / C: never claims the previous trip is kept, never writes the previous city back, no
+    // search, no Credits; flags that a later sync is needed (reason code only).
+    // Copy (F3): C → commit unconfirmed; B with D* known to be in the Session (appliedDestination)
+    // → applied, sync pending; B otherwise → commit not synced (never claims D* was applied).
+    const stopCommittedSwitchTurn = (
+      stopState: "B_committed_sync_pending" | "C_commit_unconfirmed",
+      reason: string,
+      appliedDestination?: string,
+    ): ChatMsg[] => {
+      destinationSwitchSyncPendingRef.current = { stopState, reason };
+      const applied = appliedDestination?.trim();
+      return replyDestinationSwitchTurn(
+        reason,
+        stopState === "C_commit_unconfirmed"
+          ? chatRuntimeCopy("destinationSwitchCommitUnconfirmed", locale)
+          : applied
+            ? chatRuntimeCopy("destinationSwitchAppliedSyncPending", locale, { destination: applied })
+            : chatRuntimeCopy("destinationSwitchCommitNotSynced", locale),
+        stopState,
+      );
+    };
+    const destinationSwitchStopCopy = (destination?: string, previous?: string) =>
+      destination?.trim()
+        ? chatRuntimeCopy("destinationSwitchStopped", locale, {
+            destination: destination.trim(),
+            previous: previous?.trim() ?? "",
+          })
+        : chatRuntimeCopy("destinationSwitchExpired", locale);
+    if (turnSwitch.state !== "NO_SWITCH" && session.pendingQuestion?.type === "date_confirmation") {
+      // 6.2 step 4 (non NO_SWITCH): never consume the pending date confirmation; only clear it,
+      // persist once and check D1 against this turn's start. Old candidate dates are dropped,
+      // dates written in this sentence are kept by the normal flow below.
+      const dateClearedSession: ChatPlanningSession = { ...session, pendingQuestion: undefined };
+      const d1PlusBefore = plusDurableWorkspaceSnapshot(dateClearedSession, hasPlusAccess);
+      const saved0 = persistSession(dateClearedSession);
+      const d1 = destinationSwitchPersistFailure(dateClearedSession, saved0, {
+        hasPlusAccess,
+        plusDurableBefore: d1PlusBefore,
+      });
+      if (d1) {
+        replyDestinationSwitchTurn(`d1_${d1}`, destinationSwitchStopCopy(turnSwitch.targetLabel));
+        return;
+      }
+      session = saved0;
+    }
+    if (session.pendingQuestion?.type === "date_confirmation" && turnSwitch.state === "NO_SWITCH") {
       const conversation: ChatMsg[] = [...msgsRef.current, {role:"user",content:trimmed}];
       setText("");
       setMsgs(conversation);
@@ -7600,6 +8923,601 @@ function Chat() {
       }
       return;
     }
+    // A geographic clarification is asked once: this free-text user turn is its answer. The
+    // consumed state is written back here (before any early branch below can take the turn and
+    // keep or re-persist the pending for a later「好」to revive); the answer handlers further down
+    // still receive it on nextSession. Legacy nearby pendings keep their own location re-ask;
+    // shortcut / auto turns keep the existing handling below.
+    const turnPendingGeographic =
+      (opts?.source === undefined || opts.source === "user") &&
+      session.pendingClarification &&
+      !(
+        session.pendingClarification.kind === "destination_area" &&
+        userExplicitlyWantsNearbyPlaces(session.pendingClarification.originalUserText ?? "")
+      )
+        ? session.pendingClarification
+        : undefined;
+    if (turnPendingGeographic) {
+      session = { ...session, pendingClarification: undefined };
+      const storedSession = sessionRef.current;
+      if (storedSession.pendingClarification) {
+        persistSession({ ...storedSession, pendingClarification: undefined });
+      }
+    }
+    const turnSourceIsUser = opts?.source === undefined || opts.source === "user";
+    // B3 (spec 2.1 (11), W16): a user switch turn drops only the legacy nearby destination_area
+    // pending (not consumed above); persisted once, then D2.
+    if (
+      turnSwitch.state !== "NO_SWITCH" &&
+      turnSourceIsUser &&
+      session.pendingClarification?.kind === "destination_area" &&
+      userExplicitlyWantsNearbyPlaces(session.pendingClarification.originalUserText ?? "")
+    ) {
+      session = { ...session, pendingClarification: undefined };
+      const b3Expected: ChatPlanningSession = { ...sessionRef.current, pendingClarification: undefined };
+      const d2PlusBefore = plusDurableWorkspaceSnapshot(b3Expected, hasPlusAccess);
+      const b3Saved = persistSession(b3Expected);
+      const d2 = destinationSwitchPersistFailure(b3Expected, b3Saved, {
+        hasPlusAccess,
+        plusDurableBefore: d2PlusBefore,
+      });
+      if (d2) {
+        replyDestinationSwitchTurn(`d2_${d2}`, destinationSwitchStopCopy(turnSwitch.targetLabel));
+        return;
+      }
+    }
+    if (turnSwitch.state !== "NO_SWITCH") {
+      // D2 (6.2 step 5): stored session still carries this turn's generation (G1) and no pending
+      // date confirmation (G2).
+      const storedAtStart = sessionRef.current;
+      const expectedGeneration =
+        session.phase === "done" ? undefined : session.tripCreationAuthority?.generationId;
+      if (
+        storedAtStart.tripCreationAuthority?.generationId !== expectedGeneration ||
+        storedAtStart.pendingQuestion?.type === "date_confirmation"
+      ) {
+        replyDestinationSwitchTurn("d2_stored", destinationSwitchStopCopy(turnSwitch.targetLabel));
+        return;
+      }
+    }
+    // This turn's starting persisted session (pending already consumed above): the clarification
+    // `before`, unaffected by any persistSession(nextSession) later in this turn.
+    // Position fields follow this turn's base `session` (identical unless restorePendingPlanAiOwner
+    // switched to the stored owner), so its pre-turn position is never read as acquired this turn.
+    // A verified destination switch (D5 below) re-bases it once on the switched saved session.
+    let turnStartSession: ChatPlanningSession = {
+      ...sessionRef.current,
+      location: session.location,
+      nearbyLocationAuthority: session.nearbyLocationAuthority,
+      pendingClarification: undefined,
+    };
+    let turnResetBase: Pick<ChatPlanningSession, "planningSessionId" | "planVersion"> = {
+      planningSessionId: turnStartSession.planningSessionId,
+      planVersion: turnStartSession.planVersion,
+    };
+    let turnSwitchVerified = false;
+
+    // ── A2 Destination Authority Gate (spec 6.3, V4): E0 → N4 → E1 → CONFIRMED. ─────────────
+    // Before any Places / Credits / push* / streamChat call of this turn (all after this block).
+    const turnPreviousSession = turnStartSession;
+    let switchedSession: ChatPlanningSession | undefined;
+    let switchTrustedDestination: string | undefined;
+    let switchTargetLabelForTurn: string | undefined;
+    let switchAuthorityRecord: DestinationSwitchAuthorityRecord | undefined;
+    let switchAuthorityCountryCode: string | undefined;
+    let switchSavedCountryCode: string | undefined;
+    let switchAuthorityCountry: string | undefined;
+    // 7.4.1: wraps only the Authority's own provider request (no request added).
+    const switchProbe: {
+      providerCalls: number;
+      captured?: {
+        request: DestinationSwitchGeocodeRequest;
+        envelope: DestinationSwitchGeocodeEnvelope;
+      };
+    } = { providerCalls: 0 };
+    const capturingGeocodeFn: GeocodeDestinationFn = async (req) => {
+      switchProbe.providerCalls += 1;
+      const envelope = await geocodeLocationFn(req);
+      switchProbe.captured = { request: { ...req.data }, envelope };
+      return envelope;
+    };
+    const destinationUpdatePending =
+      turnPendingGeographic?.kind === "destination_switch" &&
+      turnPendingGeographic.originatingRoute === "destination_update"
+        ? turnPendingGeographic
+        : undefined;
+    let switchTargetLabel: string | undefined =
+      turnSwitch.state === "CONFIRMED_SWITCH" ? turnSwitch.targetLabel : undefined;
+    let switchFromPendingConfirm = false;
+    // #PL-FIX-T7: a Planner selection confirmed-switch sentence handed to the selection general path.
+    let selectionSwitchDeferred = false;
+    if (destinationUpdatePending) {
+      // E0 (6.3.2): answer to a destination_update pending (consumed at turn start).
+      const trustedPrevious = confirmedDestinationLabelOrUndefined(
+        destinationSwitchTrustedPrevious(turnStartSession),
+        turnStartSession,
+      );
+      const updatePending = sanitizeDestinationUpdatePending(destinationUpdatePending, trustedPrevious);
+      if (!updatePending) {
+        replyDestinationSwitchTurn("e0_expired", chatRuntimeCopy("destinationSwitchExpired", locale));
+        return;
+      }
+      const updateAnswer = classifyDestinationUpdateAnswer(trimmed, updatePending.rawGeographicLabel);
+      if (updateAnswer === "cancel") {
+        replyDestinationSwitchTurn(
+          "e0_cancel",
+          chatRuntimeCopy("destinationSwitchKept", locale, {
+            previous: trustedPrevious ?? "",
+            destination: updatePending.rawGeographicLabel,
+          }),
+        );
+        return;
+      }
+      // The E1 question offers 「繼續{previous}」: naming the trusted previous destination (no
+      // switch in this sentence) keeps it like a cancel — never a "replace" into a paid flow.
+      if (
+        updateAnswer !== "confirm" &&
+        turnSwitch.state === "NO_SWITCH" &&
+        sameNormalizedSwitchDestination(parseDestinationFromText(trimmed), trustedPrevious)
+      ) {
+        replyDestinationSwitchTurn(
+          "e0_keep_previous",
+          chatRuntimeCopy("destinationSwitchKept", locale, {
+            previous: trustedPrevious ?? "",
+            destination: updatePending.rawGeographicLabel,
+          }),
+          "none",
+        );
+        return;
+      }
+      if (updateAnswer === "confirm") {
+        // 「對」never skips the Authority: the pending label goes through the CONFIRMED path.
+        switchTargetLabel = updatePending.rawGeographicLabel;
+        switchFromPendingConfirm = true;
+      }
+      // replace / other: the pending stays consumed; this turn's own classification decides.
+    }
+    if (switchFromPendingConfirm || turnSwitch.state !== "NO_SWITCH") {
+      const previousLabel = destinationSwitchTrustedPrevious(turnStartSession);
+      // W0 (6.3.3): user turn, no other geographic pending (a consumed destination_update is not
+      // one), no explicit nearby request or nearby pending, never a trip → add-place session.
+      const nearbyPendingOnTurn =
+        Boolean(session.pendingNearbyLocationRequest) ||
+        (session.pendingClarification?.kind === "destination_area" &&
+          userExplicitlyWantsNearbyPlaces(session.pendingClarification.originalUserText ?? ""));
+      const w0 =
+        turnSourceIsUser &&
+        !(turnPendingGeographic && !destinationUpdatePending) &&
+        !resolveExplicitNearbyIntent(trimmed) &&
+        !nearbyPendingOnTurn &&
+        !session.fromTripAddPlace &&
+        !isTripAddPlaceSession(session) &&
+        !turnStartSession.fromTripAddPlace &&
+        !isTripAddPlaceSession(turnStartSession);
+      if (!w0) {
+        // N4: stop; nothing consumed; only date / nearby pendings are cleared.
+        const replied = replyDestinationSwitchTurn(
+          "n4_w0_failed",
+          destinationSwitchStopCopy(switchTargetLabel ?? turnSwitch.targetLabel, previousLabel),
+        );
+        const stored = sessionRef.current;
+        persistSession(
+          {
+            ...stored,
+            pendingQuestion:
+              stored.pendingQuestion?.type === "date_confirmation" ? undefined : stored.pendingQuestion,
+            pendingNearbyLocationRequest: undefined,
+            pendingClarification:
+              stored.pendingClarification?.kind === "destination_area" &&
+              userExplicitlyWantsNearbyPlaces(stored.pendingClarification.originalUserText ?? "")
+                ? undefined
+                : stored.pendingClarification,
+          },
+          replied,
+        );
+        return;
+      }
+      if (!switchFromPendingConfirm && turnSwitch.state === "NEGATED_UNCERTAIN") {
+        // E1 (6.3.4): keep the trusted session; ask only. A pending is built on turnStartSession
+        // only for a candidate label with a trusted previous destination.
+        const previous = confirmedDestinationLabelOrUndefined(previousLabel, turnStartSession);
+        const updatePending =
+          turnSwitch.reason === "no_negated_place" && turnSwitch.targetLabel && previous
+            ? planDestinationUpdatePending({
+                rawGeographicLabel: turnSwitch.targetLabel,
+                previousConfirmedDestination: previous,
+                originalUserText: trimmed,
+                confirmationAttempts: 0,
+              })
+            : null;
+        const replied = replyDestinationSwitchTurn(
+          updatePending ? "e1_pending" : "e1_ask",
+          updatePending
+            ? chatRuntimeCopy("destinationSwitchConfirm", locale, {
+                destination: updatePending.rawGeographicLabel,
+                previous: previous ?? "",
+              })
+            : chatRuntimeCopy("destinationSwitchExpired", locale),
+        );
+        if (updatePending) {
+          const e1Base: ChatPlanningSession = {
+            ...turnStartSession,
+            pendingQuestion: undefined,
+            pendingClarification: updatePending,
+          };
+          const e1PlusBefore = plusDurableWorkspaceSnapshot(e1Base, hasPlusAccess);
+          const e1Saved = persistSession(e1Base, replied);
+          const e1Check = destinationSwitchPersistFailure(e1Base, e1Saved, {
+            hasPlusAccess,
+            plusDurableBefore: e1PlusBefore,
+          });
+          // Owner branch / mismatch: no retry, no further write this turn.
+          if (e1Check) console.warn("[DESTINATION_SWITCH_GATE]", { reason: `e1_persist_${e1Check}` });
+        }
+        return;
+      }
+      // CONFIRMED (6.2 step 8): Authority (once) → K2 → P0 → P1 → wrapper → D5.
+      const targetLabel = switchTargetLabel?.trim();
+      if (!targetLabel) {
+        replyDestinationSwitchTurn("k2_no_target", destinationSwitchStopCopy(undefined));
+        return;
+      }
+      let trustedScope: TrustedRecommendationSearchScope;
+      setStreaming(true);
+      try {
+        trustedScope = await resolveTrustedRecommendationSearchScope({
+          label: targetLabel,
+          ctx: turnStartSession.travelContext ?? { interests: [] },
+          session: turnStartSession,
+          locale,
+          geocodeFn: capturingGeocodeFn,
+        });
+      } catch {
+        trustedScope = { status: "unavailable", reason: "authority_error" };
+      } finally {
+        setStreaming(false);
+      }
+      // #PL-FIX-T7: Planner selection — a confirmed switch sentence (「不去台南了，改去京都」) never
+      // commits here. Another trusted city is asked first (the existing selection switch question:
+      // no Credits, no search, no write); the selection itself, a place inside it, or a name that
+      // cannot be confirmed goes on to the selection general path below with the selection's
+      // destination (this lookup is reused there: no second request).
+      selectionConfirmedSwitch: {
+      if (!switchFromPendingConfirm && isPlanningSelectionMode(session)) {
+        const selectionA2Label = planningSelectionDestinationLabel(session);
+        const selectionA2Ctx = session.travelContext ?? { interests: [] };
+        const selectionA2Equal = (identity: string | undefined, label: string | undefined) =>
+          Boolean(identity?.trim() && label?.trim()) &&
+          isEquivalentSwitchDestination({
+            label: identity,
+            trusted: label,
+            ctx: selectionA2Ctx,
+            session,
+            locale,
+          });
+        const selectionA2Identities = [
+          session.planningSelection?.trustedDestination,
+          selectionA2Label,
+          ...(session.planningSelection?.destinationScope?.administrativeNames ?? []),
+        ];
+        const selectionA2Own = [session.planningSelection?.trustedDestination, selectionA2Label];
+        const selectionA2Trusted = trustedScope.status === "trusted" ? trustedScope : undefined;
+        const selectionA2Inside =
+          Boolean(selectionA2Trusted) &&
+          (selectionA2Identities.some((identity) =>
+            selectionA2Equal(identity, selectionA2Trusted?.destination),
+          ) ||
+            (selectionA2Trusted?.parentAdministrativeNames ?? []).some((parent) =>
+              selectionA2Own.some((identity) => selectionA2Equal(identity, parent)),
+            ));
+        if (trustedScope.status === "trusted" && !selectionA2Inside) {
+          const previous =
+            session.planningSelection?.trustedDestination?.trim() || selectionA2Label || "";
+          console.info("[PLANNING_SELECTION_SCOPE_GATE]", {
+            entry: "general",
+            reason: "destination_differs_from_selection",
+            form: "confirmed_switch",
+          });
+          setSelectionSwitchPending({
+            selectionId: session.planningSelection?.id ?? "",
+            planningSessionId: session.planningSessionId,
+            destination: trustedScope.destination,
+            center: trustedScope.center,
+            previous,
+            originalUserText: trimmed,
+            entry: "general",
+          });
+          replyDestinationSwitchTurn(
+            "selection_switch_asked",
+            chatRuntimeCopy("planningSelectionSwitchConfirm", locale, {
+              destination: trustedScope.destination,
+              previous,
+            }),
+            "none",
+          );
+          return;
+        }
+        selectionSwitchDeferred = true;
+        break selectionConfirmedSwitch;
+      }
+      if (trustedScope.status !== "trusted") {
+        // K2: no destination write, no reset, no pending, no Places / Credits.
+        replyDestinationSwitchTurn(
+          `k2_${trustedScope.reason}`,
+          destinationSwitchStopCopy(targetLabel, previousLabel),
+        );
+        return;
+      }
+      const trustedDestination = trustedScope.destination;
+      // P0: the turn base (and the stored session after the await) is still the reset base.
+      const switchBase: ChatPlanningSession = { ...session, pendingClarification: undefined };
+      const storedAfterAuthority = sessionRef.current;
+      if (
+        switchBase.planningSessionId !== turnResetBase.planningSessionId ||
+        switchBase.planVersion !== turnResetBase.planVersion ||
+        storedAfterAuthority.planningSessionId !== turnResetBase.planningSessionId ||
+        storedAfterAuthority.planVersion !== turnResetBase.planVersion ||
+        storedAfterAuthority.workspaceId !== turnStartSession.workspaceId ||
+        storedAfterAuthority.conversationId !== turnStartSession.conversationId
+      ) {
+        replyDestinationSwitchTurn("p0", destinationSwitchStopCopy(targetLabel, previousLabel));
+        return;
+      }
+      // P1: every destination this sentence yields through the lib chain must be the trusted D*
+      // (7.1 evidence); text difference alone (金沢／金澤) never stops.
+      const p1Ctx = switchBase.travelContext ?? { interests: [] };
+      const textIntent = parseTripIntentFromText(trimmed, {
+        ...switchBase,
+        location: undefined,
+        preferredArea: undefined,
+        tripDestination: undefined,
+      });
+      const p1Labels = [
+        parseDestinationFromText(trimmed),
+        globalPlanningTurn(switchBase, trimmed)?.destinationCandidate?.raw,
+        textIntent.destinationCity,
+        textIntent.destinationArea,
+      ].filter((label): label is string => Boolean(label?.trim()));
+      const p1Failed = p1Labels.find(
+        (label) =>
+          !isEquivalentSwitchDestination({
+            label,
+            trusted: trustedDestination,
+            ctx: p1Ctx,
+            session: switchBase,
+            locale,
+          }),
+      );
+      if (p1Failed) {
+        replyDestinationSwitchTurn("p1", destinationSwitchStopCopy(targetLabel, previousLabel));
+        return;
+      }
+      // #PL-FIX-T8: the re-sent sentence of a confirmed Planner selection switch: the trip
+      // destination already names the confirmed target (written when the user confirmed), so the
+      // wrapper reads the previous destination without that placeholder (never a no-op switch).
+      const confirmedSelectionSwitch = takeConfirmedPlanningSelectionSwitch(trimmed);
+      const confirmedSelectionSwitchTarget =
+        Boolean(confirmedSelectionSwitch) &&
+        isEquivalentSwitchDestination({
+          label: confirmedSelectionSwitch?.destination,
+          trusted: trustedDestination,
+          ctx: p1Ctx,
+          session: switchBase,
+          locale,
+        });
+      if (confirmedSelectionSwitchTarget) switchBase.tripDestination = undefined; // #PL-FIX-T8
+      // Wrapper: the single Planner reset of this turn (Prepare → Validate → Commit inside).
+      const switchResult = applyConfirmedDestinationSwitch(switchBase, {
+        label: targetLabel,
+        requestText: trimmed,
+        turnResetBase,
+        resetAlreadyThisTurn: false,
+      });
+      if ("stop" in switchResult || !switchResult.applied) {
+        // A: every wrapper stop / not-applied result returns before its Commit.
+        replyDestinationSwitchTurn(
+          "stop" in switchResult ? `wrapper_${switchResult.stop}` : "wrapper_not_applied",
+          destinationSwitchStopCopy(targetLabel, previousLabel),
+          "A_not_committed",
+        );
+        return;
+      }
+      // From here the wrapper Commit (the turn's single reset) has run: every stop is B or C.
+      switchCommitted = true;
+      // The previous destination's selection / place-detail / shown-card state never becomes the
+      // switched Session's search authority (no old-city planningSelection.destinationScope, no
+      // old place focus, no old shown candidates).
+      const switchedFromWrapper = switchResult.session;
+      // Cards rendered so far belong to the previous destination's Session (identified by its
+      // planningSessionId; the Commit opened a new one): later persists / selections of any
+      // other Session read only cards rendered after this point (B / C stops included).
+      const switchHistory = msgsRef.current;
+      destinationSwitchCardBoundaryRef.current = switchHistory.length
+        ? {
+            previousPlanningSessionId: turnPreviousSession.planningSessionId,
+            switchedPlanningSessionId: switchedFromWrapper.planningSessionId,
+            messageCount: switchHistory.length,
+            anchor: switchHistory[switchHistory.length - 1],
+          }
+        : null;
+      storeDestinationSwitchCardBoundary(destinationSwitchCardBoundaryRef.current);
+      const switchedCandidate: ChatPlanningSession = {
+        ...switchedFromWrapper,
+        planningSelection: undefined,
+        placeDetailFocus: undefined,
+        placeFocusRecommendationScope: undefined,
+        activeShownCandidates: undefined,
+        conversationMode:
+          switchedFromWrapper.conversationMode === "place_focus"
+            ? switchedFromWrapper.previousConversationMode
+            : switchedFromWrapper.conversationMode,
+      };
+      const switchedLabel = confirmedDestinationLabelOrUndefined(
+        switchedCandidate.travelContext?.destination ??
+          switchedCandidate.tripPlanningContext?.destination,
+        switchedCandidate,
+      );
+      if (
+        !isEquivalentSwitchDestination({
+          label: switchedLabel,
+          trusted: trustedDestination,
+          ctx: switchedCandidate.travelContext ?? { interests: [] },
+          session: switchedCandidate,
+          locale,
+        })
+      ) {
+        // B: committed, switched Session not persisted (stored Session untouched, not rewritten).
+        stopCommittedSwitchTurn("B_committed_sync_pending", "wrapper_destination_mismatch");
+        return;
+      }
+      // D5: persist S' once and check G1–G6 + G3'.
+      const d5PlusBefore = plusDurableWorkspaceSnapshot(switchedCandidate, hasPlusAccess);
+      let d5Saved: ChatPlanningSession;
+      try {
+        d5Saved = persistSession(switchedCandidate, undefined, undefined, {
+          ignoreRenderedCandidates: true,
+        });
+      } catch {
+        // C: persistSession threw part-way; what was written cannot be confirmed.
+        stopCommittedSwitchTurn("C_commit_unconfirmed", "d5_persist_error");
+        return;
+      }
+      const d5 = destinationSwitchPersistFailure(switchedCandidate, d5Saved, {
+        hasPlusAccess,
+        plusDurableBefore: d5PlusBefore,
+        previousDestination: {
+          labels: [
+            turnPreviousSession.travelContext?.destination,
+            turnPreviousSession.tripPlanningContext?.destination,
+          ],
+          scopeId: turnPreviousSession.travelContext?.destinationScopeId,
+        },
+      });
+      if (d5) {
+        if (d5 === "G3") {
+          // 7.5(3): partial write state, read back from the actual stores (booleans only).
+          const g3WorkspaceId = d5Saved.workspaceId?.trim();
+          const g3Workspace = g3WorkspaceId
+            ? hasPlusAccess
+              ? loadConversationWorkspace(g3WorkspaceId, readCachedAuthenticatedUserIdSync())
+              : loadEphemeralWorkspace()
+            : null;
+          const g3Stored = loadChatSession();
+          console.warn("[DESTINATION_SWITCH_GATE]", {
+            stage: "G3",
+            workspaceWritten: Boolean(
+              g3Workspace &&
+                g3Workspace.workspaceId === g3WorkspaceId &&
+                sameNormalizedSwitchDestination(
+                  g3Workspace.destination,
+                  workspaceDestinationOfSession(d5Saved),
+                ),
+            ),
+            sessionRefWritten: sessionRef.current === d5Saved,
+            chatSessionSaved:
+              g3Stored.planningSessionId === d5Saved.planningSessionId &&
+              g3Stored.planVersion === d5Saved.planVersion &&
+              g3Stored.workspaceId === d5Saved.workspaceId,
+          });
+        }
+        // B: committed; the persisted result is known but does not match the switched Session.
+        // Copy only: D* counts as applied when the live Session (next turn's base) is the saved
+        // result and its destination is the wrapper-verified switched label.
+        stopCommittedSwitchTurn(
+          "B_committed_sync_pending",
+          `d5_${d5}`,
+          sessionRef.current === d5Saved &&
+            sameNormalizedSwitchDestination(d5Saved.travelContext?.destination, switchedLabel)
+            ? trustedDestination
+            : undefined,
+        );
+        return;
+      }
+      destinationSwitchSyncPendingRef.current = null;
+      // C3 #4 trusted snapshot of the saved country, taken before the pin applies the Authority
+      // country onto this turn's nextSession.
+      const switchSavedCountrySnapshot = {
+        country: d5Saved.travelContext?.destinationCountry?.trim() || undefined,
+        countryCode: normalizeCountryReference(
+          d5Saved.travelContext?.destinationCountry,
+          d5Saved.travelContext?.destinationCountryCode,
+        ).countryCode,
+      };
+      switchSavedCountryCode = switchSavedCountrySnapshot.countryCode;
+      session = d5Saved;
+      turnStartSession = {
+        ...d5Saved,
+        location: session.location,
+        nearbyLocationAuthority: session.nearbyLocationAuthority,
+        pendingClarification: undefined,
+        pendingNearbyLocationRequest: undefined,
+      };
+      turnResetBase = { planningSessionId: d5Saved.planningSessionId, planVersion: d5Saved.planVersion };
+      switchedSession = d5Saved;
+      switchTrustedDestination = trustedDestination;
+      switchTargetLabelForTurn = targetLabel;
+      turnSwitchVerified = true;
+      // 7.4.1 / 7.4.3: the turn's Authority record exists only when the Authority itself called
+      // the provider this turn; otherwise the D5 saved (local table) country is the reference.
+      const captured = switchProbe.captured;
+      if (switchProbe.providerCalls > 0 && captured) {
+        const providerCountry = captured.envelope.location?.country;
+        switchAuthorityRecord = {
+          targetLabel,
+          request: captured.request,
+          location: captured.envelope.location,
+          rawResultCount: captured.envelope.providerResult?.rawResultCount,
+          providerOk: captured.envelope.providerResult?.ok,
+          error: captured.envelope.error,
+          locale,
+          countryCode: normalizeCountryReference(providerCountry).countryCode,
+          country: providerCountry,
+          source: "provider_this_turn",
+        };
+      }
+      switchAuthorityCountryCode = switchAuthorityRecord?.countryCode ?? switchSavedCountryCode;
+      switchAuthorityCountry = switchAuthorityRecord?.country ?? switchSavedCountrySnapshot.country;
+      // Step 9: E3 Applied, unless this turn explicitly asks for recommendations (4.4).
+      const switchRequestText = turnSwitch.requestText?.trim() ?? "";
+      const switchRoute = switchRequestText
+        ? resolveChatIntentArbitration(switchRequestText, turnStartSession).route
+        : undefined;
+      const turnRequestsRecommendation =
+        !switchFromPendingConfirm &&
+        (analyzeContinueRecommendationStructure(trimmed).isContinue ||
+          (Boolean(switchRequestText) && hasExplicitPlaceRecommendationIntent(switchRequestText)) ||
+          switchRoute === "NEW_RECOMMENDATION" ||
+          switchRoute === "MORE_RECOMMENDATIONS" ||
+          switchRoute === "RECOMMENDATION_REFINEMENT");
+      if (!turnRequestsRecommendation) {
+        // #PL-FIX-T8: a confirmed selection switch goes on to this turn's recommendations.
+        if (!confirmedSelectionSwitchTarget) { // #PL-FIX-T8
+        replyDestinationSwitchTurn(
+          "e3_applied",
+          chatRuntimeCopy("destinationSwitchKept", locale, {
+            previous: trustedDestination,
+            destination: trustedDestination,
+          }),
+          "none",
+        );
+        return;
+        } // #PL-FIX-T8
+      }
+      } // #PL-FIX-T7: end selectionConfirmedSwitch
+    }
+    // Single gate (6.3.1): leaving the block needs NO_SWITCH or a verified switch (fail closed).
+    // #PL-FIX-T7: or a Planner selection sentence deferred to the selection general path above.
+    if (
+      (switchFromPendingConfirm || turnSwitch.state !== "NO_SWITCH") &&
+      !turnSwitchVerified &&
+      !selectionSwitchDeferred
+    ) {
+      replyDestinationSwitchTurn(
+        "gate_unverified",
+        destinationSwitchStopCopy(turnSwitch.targetLabel, destinationSwitchTrustedPrevious(turnPreviousSession)),
+      );
+      return;
+    }
     if (rejectNumericSelection(session, trimmed)) {
       const conversation: ChatMsg[] = [...msgsRef.current,
         {role: "user", content: trimmed},
@@ -7640,7 +9558,11 @@ function Chat() {
       }
     }
 
+    // A verified destination switch turn (T138): no branch below may run on the previous
+    // destination's selection / pending nearby / refresh / regenerate / trip add-place / place
+    // detail state before the pin and C3; it goes straight to the pinned merge path.
     if (
+      !turnSwitchVerified &&
       isPlanningSelectionMode(sessionRef.current) &&
       /^(?:生成行程|生成完整行程|幫我生成)$/.test(trimmed)
     ) {
@@ -7699,7 +9621,11 @@ function Chat() {
       return;
     }
 
-    if (isPlanningSelectionMode(session) && isPlanningSelectionContinuation(trimmed)) {
+    if (
+      !turnSwitchVerified &&
+      isPlanningSelectionMode(session) &&
+      isPlanningSelectionContinuation(trimmed)
+    ) {
       if (selectionRecommendationInFlightRef.current) return;
       selectionRecommendationInFlightRef.current = true;
       const conversation: ChatMsg[] = [...msgs, { role: "user", content: displayMessage }];
@@ -7710,9 +9636,151 @@ function Chat() {
       let delivered = false;
       try {
         if (!ensureSubscriptionHydratedForCredits(conversation)) return;
+        // A2 gate before Credits / Places: this sentence's destination (a named city wins, never
+        // the old one), then the trusted scope. The selection's destinationScope is never the
+        // search scope; a different trusted destination is asked first.
+        const selectionAuthority = captureSessionAuthority();
+        const selectionLabel = planningSelectionDestinationLabel(session);
+        const selectionCtx = session.travelContext ?? { interests: [] };
+        // The selection's own Plan form labels (comparison only; pure Authority check, no provider).
+        const selectionIdentities = [
+          session.planningSelection?.trustedDestination,
+          selectionLabel,
+          ...(session.planningSelection?.destinationScope?.administrativeNames ?? []),
+        ];
+        const matchesSelection = (label: string | undefined) =>
+          Boolean(label?.trim()) &&
+          selectionIdentities.some((identity) =>
+            isEquivalentSwitchDestination({
+              label: identity,
+              trusted: label,
+              ctx: selectionCtx,
+              session,
+              locale,
+            }),
+          );
+        // Containment: a named place whose trusted administrative parents name the selection's
+        // own destination (never its upper region) is inside the selection (新北 ⊃ 淡水).
+        const selectionOwnIdentities = [
+          session.planningSelection?.trustedDestination,
+          selectionLabel,
+        ];
+        const insideSelection = (scope: TrustedRecommendationSearchScope) =>
+          scope.status === "trusted" &&
+          (scope.parentAdministrativeNames ?? []).some((parent) =>
+            selectionOwnIdentities.some((identity) =>
+              isEquivalentSwitchDestination({
+                label: identity,
+                trusted: parent,
+                ctx: selectionCtx,
+                session,
+                locale,
+              }),
+            ),
+          );
+        // The selection's own place name: qualified by its upper level first, then alone, then
+        // its parent administrative name (same as the initial recommendation; at most 3 attempts).
+        const selectionGateLabels = [
+          planningSelectionDestinationLabel(session, "qualified"),
+          selectionLabel,
+          planningSelectionDestinationLabel(session, "parent"),
+        ].filter((label, index, all) => Boolean(label) && all.indexOf(label) === index);
+        let turnScope: TrustedRecommendationSearchScope;
+        let turnIsSelectionDestination = false;
+        try {
+          const requestedDestination = await resolvePlanningSelectionTurnDestination({
+            ctx: selectionCtx,
+            session,
+            userText: trimmed,
+            locale,
+            geocodeFn: geocodeLocationFn,
+            selectionLabel,
+          });
+          // Same destination as the selection → the selection's own label goes to the gate;
+          // anything else is gated as named (and asked about below when trusted).
+          turnIsSelectionDestination = matchesSelection(requestedDestination);
+          const gate = async (labels: Array<string | undefined>) => {
+            let scope: TrustedRecommendationSearchScope = {
+              status: "unavailable",
+              reason: "no_destination",
+            };
+            for (const label of labels) {
+              if (!label) continue;
+              scope = await resolveTrustedRecommendationSearchScope({
+                label,
+                ctx: selectionCtx,
+                session: stripClientSearchScope(session),
+                locale,
+                geocodeFn: geocodeLocationFn,
+              });
+              if (scope.status === "trusted") break;
+            }
+            return scope;
+          };
+          turnScope = await gate(
+            turnIsSelectionDestination ? selectionGateLabels : [requestedDestination],
+          );
+          if (
+            !turnIsSelectionDestination &&
+            !matchesSelection(turnScope.status === "trusted" ? turnScope.destination : undefined) &&
+            insideSelection(turnScope)
+          ) {
+            // A sub-area of the selection: same destination, searched with the selection's scope.
+            turnIsSelectionDestination = true;
+            turnScope = await gate(selectionGateLabels);
+          }
+        } catch {
+          turnScope = { status: "unavailable", reason: "authority_error" };
+        }
+        if (!isSessionAuthorityCurrent(selectionAuthority, "planning_selection_scope")) return;
+        if (turnScope.status !== "trusted") {
+          console.info("[PLANNING_SELECTION_SCOPE_GATE]", {
+            entry: "continuation",
+            reason: turnScope.reason,
+          });
+          setMsgs([
+            ...conversation,
+            {
+              role: "assistant",
+              content: chatRuntimeCopy("planningSelectionTurnDestinationUnconfirmed", locale),
+            },
+          ]);
+          return;
+        }
+        if (!turnIsSelectionDestination && !matchesSelection(turnScope.destination)) {
+          // Another city: ask before leaving the selection (no Credits, no search this turn).
+          const previous =
+            session.planningSelection?.trustedDestination?.trim() || selectionLabel || "";
+          console.info("[PLANNING_SELECTION_SCOPE_GATE]", {
+            entry: "continuation",
+            reason: "destination_differs_from_selection",
+          });
+          setSelectionSwitchPending({
+            selectionId: session.planningSelection?.id ?? "",
+            planningSessionId: session.planningSessionId,
+            destination: turnScope.destination,
+            center: turnScope.center,
+            previous,
+            originalUserText: trimmed,
+          });
+          setMsgs([
+            ...conversation,
+            {
+              role: "assistant",
+              content: chatRuntimeCopy("planningSelectionSwitchConfirm", locale, {
+                destination: turnScope.destination,
+                previous,
+              }),
+            },
+          ]);
+          return;
+        }
         const creditsGate = await beginPlaceRecommendationCredits({
           hasPlusAccess,
-          metadata: { path: "planning_selection_continuation" },
+          metadata: {
+            path: "planning_selection_continuation",
+            destination: turnScope.destination,
+          },
         });
         if (creditsGate.blocked) {
           setMsgs([
@@ -7728,6 +9796,7 @@ function Chat() {
           session,
           searchPlaces: searchNearbyPlaces,
           locale,
+          trustedScope: turnScope,
           userProfile: userProfileForReasonFrom(prefs, {
             travelStyle: profile.travelStyle,
             personalityType: profile.personalityType,
@@ -7770,8 +9839,9 @@ function Chat() {
           session,
         ) ?? mapCategoryIntentToNearbyIntent(legacyNearbyClarification.categoryIntent))
       : null;
-    const pendingNearbyLocation =
-      session.pendingNearbyLocationRequest ??
+    const pendingNearbyLocation = turnSwitchVerified
+      ? undefined
+      : session.pendingNearbyLocationRequest ??
       (legacyNearbyClarification && legacyNearbyIntent
         ? createPendingNearbyLocationRequest(
             legacyNearbyIntent,
@@ -8089,11 +10159,12 @@ function Chat() {
 
     // Refresh destination recommendations — keep dest/dates, clear discovery cache only.
     const wantsRefreshRecommendations =
-      trimmed === REFRESH_DESTINATION_RECOMMENDATIONS_OPTION ||
+      !turnSwitchVerified &&
+      (trimmed === REFRESH_DESTINATION_RECOMMENDATIONS_OPTION ||
       /^(重新整理推薦|重新整理)$/.test(trimmed) ||
       (session.pendingQuestion?.options.includes(REFRESH_DESTINATION_RECOMMENDATIONS_OPTION) ===
         true &&
-        /重新整理/.test(trimmed));
+        /重新整理/.test(trimmed)));
     if (wantsRefreshRecommendations) {
       markShortcutEngaged();
       const ctx = session.travelContext ?? { interests: [] as string[] };
@@ -8183,6 +10254,7 @@ function Chat() {
       /^(重新生成|再生成一次|再試一次|重試)$/.test(trimmed) ||
       (session.pendingQuestion?.options.includes("重新生成") === true && /重新生成/.test(trimmed));
     if (
+      !turnSwitchVerified &&
       wantsRegen &&
       (session.aiItineraryState === "FAILED" ||
         session.chatPlanningState === "generationFailed" ||
@@ -8259,7 +10331,9 @@ function Chat() {
       return;
     }
 
-    const tripSession = resolveTripAddPlaceChatSession(session, loadChatSession());
+    const tripSession = turnSwitchVerified
+      ? null
+      : resolveTripAddPlaceChatSession(session, loadChatSession());
     if (tripSession && opts?.source !== "auto") {
       markShortcutEngaged();
       const userMsg: ChatMsg = { role: "user", content: displayMessage };
@@ -8286,7 +10360,271 @@ function Chat() {
       return;
     }
 
-    if (isPlaceDetailChatActive(session)) {
+    // Planner selection, general / place-detail turn naming a place: the same A2 gate as the
+    // selection continuation runs before any destination write, on the destination name this
+    // turn would write (trip intent → travel context merge; no name → no gate). Same as / trusted
+    // inside the selection → the selection and its places stay (the place is only this turn's
+    // query focus); another trusted city → asked first (no Credits, no search, no write);
+    // unconfirmed (explicit switch wording included) → the turn goes on with the selection's
+    // destination (no unverified write). Every selection turn keeps the selection destination.
+    let selectionTurnFocus: string | undefined;
+    // #PL-FIX-T7: the gate trusted this turn's place as the selection itself / inside it.
+    let selectionTurnFocusInside = false;
+    // #PL-FIX-T7: the name the gate could not confirm (cleared wherever this turn wrote it).
+    let selectionTurnUnverifiedName: string | undefined;
+    const selectionTurnBefore = session;
+    const selectionTurnKeep = !turnSwitchVerified && isPlanningSelectionMode(session);
+    const selectionTurnLabel =
+      session.planningSelection?.trustedDestination?.trim() ||
+      planningSelectionDestinationLabel(session) ||
+      "";
+    const keepSelectionTurnDestination = (next: ChatPlanningSession): ChatPlanningSession => {
+      const focus = selectionTurnFocus ?? selectionTurnLabel;
+      return selectionTurnKeep && focus
+        ? keepPlanningSelectionDestination(next, selectionTurnBefore, focus, {
+            focusInsideSelection: selectionTurnFocusInside,
+            unverifiedName: selectionTurnUnverifiedName,
+          })
+        : next;
+    };
+    // #PL-FIX-T7: a Planner selection advice turn (every completeAdviceTurn caller of this turn):
+    // the kept session, and a contextPatch (re-applied when the turn persists / generates) that
+    // carries no other city / unverified name — those keys take the kept session's values.
+    const keepSelectionAdviceTurn = (adviceTurn: ChatTurnResult): ChatTurnResult => {
+      const kept = { ...adviceTurn, session: keepSelectionTurnDestination(adviceTurn.session) };
+      const patch = kept.advice.contextPatch;
+      if (!patch) return kept;
+      const keptContext = kept.session.travelContext;
+      const cleaned: Partial<CanonicalTravelContext> = { ...patch };
+      for (const key of [
+        "destination",
+        "destinationCandidate",
+        "destinationInputNames",
+        "destinationCity",
+        "destinationRegion",
+      ] as const) {
+        if (key in patch) (cleaned as Record<string, unknown>)[key] = keptContext?.[key];
+      }
+      return { ...kept, advice: { ...kept.advice, contextPatch: cleaned } };
+    };
+    // #PL-FIX-T7: the travel context passed with a selection advice turn (completeAdviceTurn
+    // reads it for generation): destination labels from the kept session, never another city.
+    const keepSelectionAdviceContext = (
+      context: CanonicalTravelContext,
+      kept: ChatPlanningSession,
+    ): CanonicalTravelContext =>
+      selectionTurnKeep
+        ? {
+            ...context,
+            destination: kept.travelContext?.destination,
+            destinationCandidate: kept.travelContext?.destinationCandidate,
+            destinationInputNames: kept.travelContext?.destinationInputNames,
+            destinationCity: kept.travelContext?.destinationCity,
+            destinationRegion: kept.travelContext?.destinationRegion,
+          }
+        : context;
+    // #PL-FIX-T7: the written name is gated as written (no leading-city rule), unless the sentence
+    // only uses it incidentally (「大阪燒好吃嗎」「我朋友住大阪」: kept selection, no question);
+    // explicit switch wording (「改去〇〇」) names the requested place even when nothing is written.
+    // #PL-FIX-T8: an explicit nearby turn is gated when the written name is the nearby anchor itself
+    // (「大阪附近」「京都車站附近」: another trusted city is asked first); a landmark anchor
+    // (「大阪道頓堀附近」), a same-city / unnamed anchor goes on as before.
+    const selectionTurnWrittenRaw = selectionTurnKeep
+      ? planningSelectionTurnWrittenDestination(
+          session,
+          mergeTravelContext(applyTripIntentToSession(trimmed, session), trimmed).session,
+        )
+      : undefined;
+    const selectionTurnWrittenName = explicitNearbyAuthority
+      ? planningSelectionTurnNearbyAnchor(trimmed, selectionTurnWrittenRaw)
+      : selectionTurnWrittenRaw;
+    const selectionTurnWritten = planningSelectionTurnMentionsPlaceIncidentally(
+      trimmed,
+      selectionTurnWrittenName,
+    )
+      ? undefined
+      : selectionTurnWrittenName;
+    const selectionTurnSwitchTarget = selectionTurnKeep
+      ? planningSelectionTurnSwitchTarget(trimmed)
+      : undefined;
+    // #PL-FIX-T7: geocode answers this turn's gate already received (notice only; no request).
+    const selectionGateEnvelopes: Array<Awaited<ReturnType<GeocodeDestinationFn>>> = [];
+    const selectionGateLabel = planningSelectionDestinationLabel(session);
+    const selectionGateCtx = session.travelContext ?? { interests: [] };
+    const selectionGateIdentities = [
+      session.planningSelection?.trustedDestination,
+      selectionGateLabel,
+      ...(session.planningSelection?.destinationScope?.administrativeNames ?? []),
+    ];
+    const matchesSelectionGate = (label: string | undefined) =>
+      Boolean(label?.trim()) &&
+      selectionGateIdentities.some((identity) =>
+        isEquivalentSwitchDestination({
+          label: identity,
+          trusted: label,
+          ctx: selectionGateCtx,
+          session,
+          locale,
+        }),
+      );
+    const selectionGateOwnIdentities = [
+      session.planningSelection?.trustedDestination,
+      selectionGateLabel,
+    ];
+    const insideSelectionGate = (scope: TrustedRecommendationSearchScope) =>
+      scope.status === "trusted" &&
+      (scope.parentAdministrativeNames ?? []).some((parent) =>
+        selectionGateOwnIdentities.some((identity) =>
+          isEquivalentSwitchDestination({
+            label: identity,
+            trusted: parent,
+            ctx: selectionGateCtx,
+            session,
+            locale,
+          }),
+        ),
+      );
+    const selectionTurnRequested = selectionTurnSwitchTarget || selectionTurnWritten;
+    // The A2 gate for one requested label (no Credits, no Places): same as / trusted inside the
+    // selection → "inside" (this turn's focus); another trusted city → asked first ("asked");
+    // otherwise "unverified" (the caller decides). "stale": the session changed meanwhile.
+    const runSelectionTurnGate = async (
+      requested: string,
+      originalUserText: string,
+    ): Promise<{ kind: "inside" | "unverified" | "asked" | "stale"; reason?: string }> => {
+      const gateAuthority = captureSessionAuthority();
+      let generalScope: TrustedRecommendationSearchScope = {
+        status: "unavailable",
+        reason: "no_destination",
+      };
+      const sameAsSelection = matchesSelectionGate(requested);
+      if (!sameAsSelection) {
+        setStreaming(true);
+        try {
+          generalScope = await resolveTrustedRecommendationSearchScope({
+            label: requested,
+            ctx: selectionGateCtx,
+            session: stripClientSearchScope(session),
+            locale,
+            // #PL-FIX-T7: same single request; its answer is only kept for the no-result notice.
+            geocodeFn: async (request) => {
+              const envelope = await geocodeLocationFn(request);
+              selectionGateEnvelopes.push(envelope);
+              return envelope;
+            },
+          });
+        } catch {
+          generalScope = { status: "unavailable", reason: "authority_error" };
+        } finally {
+          setStreaming(false);
+        }
+        if (!isSessionAuthorityCurrent(gateAuthority, "planning_selection_general_gate")) {
+          return { kind: "stale" };
+        }
+      }
+      const trustedInside =
+        !sameAsSelection &&
+        generalScope.status === "trusted" &&
+        (matchesSelectionGate(generalScope.destination) || insideSelectionGate(generalScope));
+      if (sameAsSelection || trustedInside) {
+        selectionTurnFocus =
+          generalScope.status === "trusted" && trustedInside ? generalScope.destination : requested;
+        selectionTurnFocusInside = true; // #PL-FIX-T7
+        return { kind: "inside" };
+      }
+      if (generalScope.status !== "trusted") {
+        return { kind: "unverified", reason: generalScope.reason };
+      }
+      const gateConversation: ChatMsg[] = [...msgs, { role: "user", content: displayMessage }];
+      setText("");
+      const previous =
+        session.planningSelection?.trustedDestination?.trim() || selectionGateLabel || "";
+      console.info("[PLANNING_SELECTION_SCOPE_GATE]", {
+        entry: "general",
+        reason: "destination_differs_from_selection",
+      });
+      setSelectionSwitchPending({
+        selectionId: session.planningSelection?.id ?? "",
+        planningSessionId: session.planningSessionId,
+        destination: generalScope.destination,
+        center: generalScope.center,
+        previous,
+        originalUserText,
+        entry: "general",
+      });
+      setMsgs([
+        ...gateConversation,
+        {
+          role: "assistant",
+          content: chatRuntimeCopy("planningSelectionSwitchConfirm", locale, {
+            destination: generalScope.destination,
+            previous,
+          }),
+        },
+      ]);
+      return { kind: "asked" };
+    };
+    if (
+      !turnSwitchVerified &&
+      isPlanningSelectionMode(session) &&
+      planningSelectionTurnNamesPlace(trimmed) &&
+      selectionTurnRequested
+    ) {
+      const gate = await runSelectionTurnGate(selectionTurnRequested, trimmed);
+      if (gate.kind === "asked" || gate.kind === "stale") return;
+      if (gate.kind === "unverified") {
+        // #PL-FIX-T7: unconfirmed (explicit switch wording included): the turn goes on; the
+        // selection keeps its own destination (never the unverified name) as this turn's focus.
+        console.info("[PLANNING_SELECTION_SCOPE_GATE]", {
+          entry: "general",
+          reason: gate.reason,
+          outcome: "kept_selection_destination",
+          switchWording: planningSelectionTurnRequestsSwitch(trimmed),
+        });
+        selectionTurnFocus = selectionTurnLabel || undefined;
+        // #PL-FIX-T7: the written name had no geocoding result at all this turn (never a transient
+        // failure, never an untrusted result): one notice after the reply. A confirmed-switch
+        // sentence deferred by the A2 gate above reuses that gate's answer (no second request).
+        const noticeEnvelopes = [
+          ...selectionGateEnvelopes,
+          ...(switchProbe.captured ? [switchProbe.captured.envelope] : []),
+        ];
+        // #PL-FIX-T7: this turn's own lookup answer places the name in the selection's city /
+        // region (a sub-area the identity gate could not confirm, e.g.「北投泡湯」「嵐山」): its
+        // preferred area stays this turn's focus. Otherwise the name is cleared where written.
+        const selectionAreaEvidence = noticeEnvelopes.some(
+          (envelope) =>
+            Boolean(envelope?.location) &&
+            [envelope?.location?.city, envelope?.location?.region].some((label) =>
+              matchesSelectionGate(label),
+            ),
+        );
+        if (selectionAreaEvidence) selectionTurnFocusInside = true;
+        else selectionTurnUnverifiedName = selectionTurnRequested;
+        if (
+          selectionTurnSwitchTarget && // #PL-FIX-T8: only explicit switch wording names a place
+          noticeEnvelopes.length > 0 &&
+          noticeEnvelopes.every((envelope) => isGeocodeZeroResultsEnvelope(envelope))
+        ) {
+          setPlanningSelectionTurnNotice({
+            message: chatRuntimeCopy("planningSelectionTurnPlaceNotFound", locale, {
+              name: selectionTurnRequested,
+            }),
+            conversationLength: msgs.length,
+            userText: displayMessage,
+          });
+        }
+      }
+    }
+    // #PL-FIX-T8: an explicit nearby turn that was not asked keeps its earlier selection handling
+    // (the anchor only decided whether to ask; no focus / cleanup from it).
+    if (selectionTurnKeep && explicitNearbyAuthority && !selectionTurnSwitchTarget) {
+      selectionTurnFocus = undefined;
+      selectionTurnFocusInside = false;
+      selectionTurnUnverifiedName = undefined;
+    }
+
+    if (!turnSwitchVerified && isPlaceDetailChatActive(session)) {
       markShortcutEngaged();
       const followUp = parsePlaceDetailFollowUp(trimmed);
       const userMsg: ChatMsg = { role: "user", content: displayMessage };
@@ -8401,7 +10739,8 @@ function Chat() {
 
       let nextSession = enterPlaceDetailChat(session, session.placeDetailFocus!);
       const merged = mergeTravelContext(nextSession, trimmed);
-      nextSession = merged.session;
+      // Planner selection: the selection keeps its destination before the stale check.
+      nextSession = dropStalePlanningSelection(keepSelectionTurnDestination(merged.session));
       persistSession(nextSession);
       await streamChat(
         baseConversation,
@@ -8415,15 +10754,74 @@ function Chat() {
       return;
     }
 
+    // The geographic pending consumed at turn start goes to its answer handlers below.
+    // A destination_update pending was answered by E0 above (never a more_places switch answer).
+    const sessionForTurn: ChatPlanningSession = turnPendingGeographic && !destinationUpdatePending
+      ? { ...session, pendingClarification: turnPendingGeographic }
+      : session;
     let nextSession = explicitNearbyAuthority
       ? {
-          ...session,
+          ...sessionForTurn,
           explicitNearbyKeyword: explicitNearbyAuthority.rawKeyword,
           canonicalNearbyKeyword: explicitNearbyAuthority.canonicalKeyword,
           nearbySemanticFamily: explicitNearbyAuthority.semanticFamily,
           activeChatIntent: explicitNearbyAuthority.intent,
         }
-      : applyTripIntentToSession(trimmed, session);
+      : applyTripIntentToSession(trimmed, sessionForTurn);
+    if (turnSwitchVerified && switchedSession && switchTrustedDestination) {
+      // 8837 pin (7.2): the verified switch owns the destination fields; Authority country
+      // (7.4.3); the previous scope id never survives. Dates / days / discovery are not pinned.
+      nextSession = {
+        ...nextSession,
+        location: switchedSession.location,
+        preferredArea: switchedSession.preferredArea,
+        tripDestination: switchedSession.tripDestination,
+        travelContext: nextSession.travelContext
+          ? {
+              ...nextSession.travelContext,
+              destinationCountry: switchAuthorityCountry,
+              destinationCountryCode: normalizeCountryReference(switchAuthorityCountry).countryCode,
+              destinationScopeId: undefined,
+            }
+          : nextSession.travelContext,
+      };
+      // Pinned destination must still be D* (no second switch from this sentence), and the
+      // pinned Session must not be one a merge would reset again (7.2 (a); pure prediction
+      // through travel-context, same isNewTripPlanning semantics as the merge).
+      const pinnedSession = nextSession;
+      let pinWouldResetAgain = true;
+      try {
+        pinWouldResetAgain = wouldMergeTravelContextResetTrip(pinnedSession, trimmed);
+      } catch {
+        pinWouldResetAgain = true;
+      }
+      if (pinWouldResetAgain) {
+        stopCommittedSwitchTurn("B_committed_sync_pending", "pin_second_reset_blocked", switchTrustedDestination);
+        return;
+      }
+      const pinMismatch = [
+        pinnedSession.travelContext?.destination,
+        pinnedSession.tripPlanningContext?.destination,
+      ].some(
+        (label) =>
+          Boolean(label?.trim()) &&
+          !isEquivalentSwitchDestination({
+            label,
+            trusted: switchTrustedDestination,
+            ctx: pinnedSession.travelContext ?? { interests: [] },
+            session: pinnedSession,
+            locale,
+          }),
+      );
+      if (
+        pinMismatch ||
+        pinnedSession.planningSessionId !== switchedSession.planningSessionId ||
+        pinnedSession.planVersion !== switchedSession.planVersion
+      ) {
+        stopCommittedSwitchTurn("B_committed_sync_pending", "pin_mismatch", switchTrustedDestination);
+        return;
+      }
+    }
     let planningConstraintTurn: PlanningConstraintDelta | null = null;
     let unresolvedPlanningCandidateContext = false;
     const planningStateBeforeHomeIsolation =
@@ -8570,71 +10968,276 @@ function Chat() {
     const nearbyShortcutTurn =
       nextSession.normalizedShortcutRequest?.structured === true &&
       nextSession.normalizedShortcutRequest.intent === "nearby_recommendation";
-    if (pendingGeographic?.kind === "destination_area" && !nearbyShortcutTurn) {
-      if (isPlaceClarificationTripPlanningOverride(trimmed)) {
+    if (nearbyShortcutTurn && turnPendingGeographic && nextSession.pendingClarification) {
+      // The handlers below are skipped: the pending consumed at turn start must not ride on
+      // nextSession into a later persistSession(nextSession) and be revived from storage.
+      nextSession = { ...nextSession, pendingClarification: undefined };
+    }
+    if (
+      !nearbyShortcutTurn &&
+      turnPendingGeographic &&
+      isDestinationSwitchPending(pendingGeographic)
+    ) {
+      // Saved destination switch (more_places): consumed at turn start; only a confirmation
+      // re-validates its original sentence through the existing Destination Authority. Every
+      // other answer stops here without Places / Weather / Credits or old-city search.
+      const trustedPrevious = destinationSwitchTrustedPrevious(turnStartSession);
+      const switchPending = sanitizeDestinationSwitchPending(pendingGeographic, trustedPrevious);
+      const switchAnswer = classifyDestinationSwitchAnswer(
+        trimmed,
+        pendingGeographic.rawGeographicLabel,
+        trustedPrevious,
+      );
+      if (switchAnswer === "replace") {
+        // A newly named destination / request replaces the pending: existing flow below.
         nextSession = { ...nextSession, pendingClarification: undefined };
       } else {
-        const restored = restorePlaceIntentAfterGeographicClarification(pendingGeographic, trimmed);
         const next: ChatMsg[] = [...msgs, { role: "user", content: displayMessage }];
         setMsgs(next);
         setText("");
-        if (restored) {
-          const explicitScope = resolveExplicitDestinationFallbackScope({
-            userText: restored.restoredUserText,
-            session: nextSession,
-            restored,
-          });
-          const sessionForRec: ChatPlanningSession = isolateSessionToExplicitDestination(
-            {
-              ...nextSession,
-              pendingClarification: undefined,
-              activeCategoryIntent: restored.categoryIntent,
-            },
-            explicitScope ?? {
-              destination: restored.destinationLabel,
-              parentCity: restored.parentCity,
-              area: restored.area,
-              searchScope: restored.searchScope,
-            },
-          );
-          persistSession(sessionForRec, next);
-          const applied = await pushDestinationCategoryPlaceRecommendation(
-            sessionForRec,
-            restored.restoredUserText,
-            next,
-          );
-          if (applied) return;
-          logDestinationRecommendationFallbackSummary({
-            destination: restored.destinationLabel,
-            sourcePath: "local-recommendation-fallback",
-            fallbackDestination:
-              nextSession.recommendationSession?.destination ||
-              nextSession.travelContext?.destination,
-            accepted: false,
-            reason: "explicit_destination_builder_empty",
-          });
+        const copyVars = {
+          destination: switchPending?.rawGeographicLabel ?? "",
+          previous: trustedPrevious ?? "",
+        };
+        // Checked at the turn start, before any provider request: attempts cap or question cap
+        // reached → no re-validation (the same sentence repeated included), pending kept as-is.
+        const askSwitchAgain = switchPending
+          ? canAskDestinationSwitchAgain(
+              switchPending,
+              next,
+              chatRuntimeCopy("destinationSwitchConfirm", locale, copyVars),
+              [
+                chatRuntimeCopy("destinationSwitchStopped", locale, copyVars),
+                chatRuntimeCopy("destinationSwitchCapped", locale, copyVars),
+              ],
+            )
+          : false;
+        if (
+          switchPending &&
+          switchAnswer === "confirm" &&
+          !isDestinationSwitchCapped(switchPending) &&
+          askSwitchAgain
+        ) {
+          setStreaming(true);
+          try {
+            const applied = await pushMorePlaceRecommendations(
+              {
+                ...nextSession,
+                pendingClarification: undefined,
+                travelContext: {
+                  ...(nextSession.travelContext ?? { interests: [] }),
+                  tripPurpose: "more_place_recommendations",
+                },
+              },
+              switchPending.originalUserText ?? "",
+              next,
+              { destinationSwitch: switchPending },
+            );
+            if (applied) return;
+          } finally {
+            setStreaming(false);
+          }
+          // Validated but nothing to show: the pending is consumed (cleared at turn start).
           const emptyMsgs: ChatMsg[] = [
             ...next,
             {
               role: "assistant",
-              content: chatRuntimeCopy("noResults", locale, { destination: restored.destinationLabel }),
+              content: chatRuntimeCopy("noResults", locale, {
+                destination: switchPending.rawGeographicLabel,
+              }),
             },
           ];
           setMsgs(emptyMsgs);
-          persistSession(sessionForRec, emptyMsgs);
+          persistSession({ ...sessionRef.current, pendingClarification: undefined }, emptyMsgs);
           return;
         }
-        const reaskMsgs: ChatMsg[] = [
+        // Hold / capped answers run no provider check: the pending is kept unchanged.
+        const keptPending =
+          switchPending && switchAnswer !== "keep_previous" && switchAnswer !== "cancel"
+            ? switchPending
+            : undefined;
+        const switchReply =
+          switchAnswer === "keep_previous" && trustedPrevious
+            ? chatRuntimeCopy("destinationSwitchKept", locale, copyVars)
+            : switchAnswer === "keep_previous" || switchAnswer === "cancel"
+              ? chatRuntimeCopy("destinationSwitchCancelled", locale)
+              : !switchPending
+                ? chatRuntimeCopy("destinationSwitchExpired", locale)
+                : isDestinationSwitchCapped(switchPending)
+                  ? chatRuntimeCopy("destinationSwitchCapped", locale, copyVars)
+                  : askSwitchAgain
+                    ? chatRuntimeCopy("destinationSwitchConfirm", locale, copyVars)
+                    : chatRuntimeCopy("destinationSwitchStopped", locale, copyVars);
+        const replied: ChatMsg[] = [...next, { role: "assistant", content: switchReply }];
+        setMsgs(replied);
+        persistSession({ ...sessionRef.current, pendingClarification: keptPending }, replied);
+        return;
+      }
+    }
+    if (pendingGeographic?.kind === "parent_city_scope" && !nearbyShortcutTurn) {
+      // Asked once. Whatever the answer, this pending is consumed now (never re-asked).
+      nextSession = { ...nextSession, pendingClarification: undefined };
+      const confirmedParentCity = pendingGeographic.confirmedParentCity?.trim();
+      // Confirm: the answer is exactly the pending's own parent city, or a whole-answer
+      // affirmative (existing isAffirmativeReply contract, then the existing parent-scope yes
+      // tokens). Partial / mixed answers (「好的，謝謝」) are unresolved, never a search.
+      // The exact parent-city echo is checked before the trip-planning override, because a
+      // bare city name would otherwise read as a destination selection.
+      // #PL-FIX-T7: label for leaving this answer to the general flow (Planner selection only).
+      selectionPendingParentAnswer:
+      if (
+        confirmedParentCity &&
+        (isParentScopeCityEchoAnswer(trimmed, confirmedParentCity) ||
+          (!isPlaceClarificationTripPlanningOverride(trimmed) &&
+            (isAffirmativeReply(trimmed) ||
+              parseParentScopeConfirmationAnswer(trimmed) === "confirm")))
+      ) {
+        // #PL-FIX-T6: Planner selection — an answer that moves the turn to another trusted city is
+        // asked first (no Credits, no search); same-city answers go on unchanged.
+        if (selectionTurnKeep && !matchesSelectionGate(confirmedParentCity)) {
+          const gate = await runSelectionTurnGate(
+            confirmedParentCity,
+            pendingGeographic.originalUserText?.trim() || trimmed,
+          );
+          if (gate.kind === "asked" || gate.kind === "stale") return;
+          // #PL-FIX-T7: unconfirmed (Google transient failure included): never isolate / drop the
+          // selection / recommend there; the general flow answers with the selection's destination.
+          if (gate.kind === "unverified") break selectionPendingParentAnswer;
+        }
+        const next: ChatMsg[] = [...msgs, { role: "user", content: displayMessage }];
+        setMsgs(next);
+        setText("");
+        const sessionForRec: ChatPlanningSession = isolateSessionToExplicitDestination(
+          { ...nextSession, activeCategoryIntent: pendingGeographic.categoryIntent },
+          {
+            destination: confirmedParentCity,
+            parentCity: confirmedParentCity,
+            area: confirmedParentCity,
+            searchScope: "city",
+          },
+        );
+        persistSession(sessionForRec, next);
+        // Search destination: the confirmed parent only (Authority verdict, no geocode
+        // validation). The original sentence is kept as userText for the existing flow.
+        const applied = await pushDestinationCategoryPlaceRecommendation(
+          sessionForRec,
+          resolveParentScopeSearchUserText(pendingGeographic, confirmedParentCity),
+          next,
+          {
+            turnDestination: resolveConfirmedParentScopeTurnDestination(confirmedParentCity),
+            fromClarification: true,
+          },
+        );
+        if (applied) return;
+        logDestinationRecommendationFallbackSummary({
+          destination: confirmedParentCity,
+          sourcePath: "local-recommendation-fallback",
+          fallbackDestination:
+            nextSession.recommendationSession?.destination ||
+            nextSession.travelContext?.destination,
+          accepted: false,
+          reason: "explicit_destination_builder_empty",
+        });
+        const emptyMsgs: ChatMsg[] = [
           ...next,
           {
             role: "assistant",
-            content: chatRuntimeCopy("whichRegion", locale, { destination: pendingGeographic.rawGeographicLabel }),
+            content: chatRuntimeCopy("noResults", locale, { destination: confirmedParentCity }),
           },
         ];
-        setMsgs(reaskMsgs);
-        persistSession(nextSession, reaskMsgs);
-        logRtResponseBranch("destination_clarification");
+        setMsgs(emptyMsgs);
+        persistSession(sessionForRec, emptyMsgs);
         return;
+      }
+      // decline / unresolved / trip-planning override: general flow with this turn's text.
+    }
+    if (pendingGeographic?.kind === "destination_area" && !nearbyShortcutTurn) {
+      const restored = isPlaceClarificationTripPlanningOverride(trimmed)
+        ? null
+        : restorePlaceIntentAfterGeographicClarification(pendingGeographic, trimmed);
+      // Asked once. Unresolvable answers clear the pending and continue in the general flow.
+      nextSession = { ...nextSession, pendingClarification: undefined };
+      // #PL-FIX-T7: label for leaving this answer to the general flow (Planner selection only).
+      selectionPendingAreaAnswer:
+      if (restored) {
+        // #PL-FIX-T6: Planner selection — an answer naming another known city is asked first
+        // (no Credits, no search); same-city / sub-area answers go on unchanged (no extra lookup).
+        // #PL-FIX-T7: or the restored parent city itself (「雲場池」＋「輕井澤」), same single gate.
+        const restoredOtherCity = selectionTurnKeep
+          ? planningSelectionWrittenLeadingCity(restored.destinationLabel) ||
+            restored.parentCity?.trim() ||
+            undefined
+          : undefined;
+        if (restoredOtherCity && !matchesSelectionGate(restoredOtherCity)) {
+          const gate = await runSelectionTurnGate(restoredOtherCity, restored.restoredUserText);
+          if (gate.kind === "asked" || gate.kind === "stale") return;
+          // #PL-FIX-T7: unconfirmed (Google transient failure included): never isolate / drop the
+          // selection / recommend there; the general flow answers with the selection's destination.
+          if (gate.kind === "unverified") break selectionPendingAreaAnswer;
+        }
+        const next: ChatMsg[] = [...msgs, { role: "user", content: displayMessage }];
+        setMsgs(next);
+        setText("");
+        const explicitScope = resolveExplicitDestinationFallbackScope({
+          userText: restored.restoredUserText,
+          session: nextSession,
+          restored,
+        });
+        const sessionForRec: ChatPlanningSession = isolateSessionToExplicitDestination(
+          {
+            ...nextSession,
+            pendingClarification: undefined,
+            activeCategoryIntent: restored.categoryIntent,
+          },
+          explicitScope ?? {
+            destination: restored.destinationLabel,
+            parentCity: restored.parentCity,
+            area: restored.area,
+            searchScope: restored.searchScope,
+          },
+        );
+        persistSession(sessionForRec, next);
+        const applied = await pushDestinationCategoryPlaceRecommendation(
+          sessionForRec,
+          restored.restoredUserText,
+          next,
+          { fromClarification: true },
+        );
+        if (applied) return;
+        logDestinationRecommendationFallbackSummary({
+          destination: restored.destinationLabel,
+          sourcePath: "local-recommendation-fallback",
+          fallbackDestination:
+            nextSession.recommendationSession?.destination ||
+            nextSession.travelContext?.destination,
+          accepted: false,
+          reason: "explicit_destination_builder_empty",
+        });
+        const emptyMsgs: ChatMsg[] = [
+          ...next,
+          {
+            role: "assistant",
+            content: chatRuntimeCopy("noResults", locale, { destination: restored.destinationLabel }),
+          },
+        ];
+        setMsgs(emptyMsgs);
+        persistSession(sessionForRec, emptyMsgs);
+        return;
+      }
+      // No re-ask of the same clarification: unresolved answers fall through.
+    }
+    if (
+      !nearbyShortcutTurn &&
+      (pendingGeographic?.kind === "parent_city_scope" ||
+        pendingGeographic?.kind === "destination_area")
+    ) {
+      // Declined / cancelled / switched / unresolved answer (confirmed and restored answers
+      // returned above). The session's pendingClarification is the single authority: write the
+      // consumed state back now, so no later branch (no results, early return without persist)
+      // can leave the cancelled pending in storage to be revived by the next "好" / restore.
+      const storedSession = sessionRef.current;
+      if (storedSession.pendingClarification) {
+        persistSession({ ...storedSession, pendingClarification: undefined });
       }
     }
 
@@ -8660,6 +11263,21 @@ function Chat() {
         travelContext: { ...existingTravelContext, destination: undefined },
       };
     }
+    if (turnSwitchVerified && !(structuredHomeNearbyTurn || explicitNearbyTurn)) {
+      // Second-reset line (T138 一, 7.2 (a)): this turn already reset once (wrapper Commit). The
+      // merge below must not reset again — checked BEFORE the merge runs (no reset side effect
+      // has happened when stopping here). Pure prediction, same semantics as the merge.
+      let mergeWouldResetAgain = true;
+      try {
+        mergeWouldResetAgain = wouldMergeTravelContextResetTrip(nextSession, trimmed);
+      } catch {
+        mergeWouldResetAgain = true;
+      }
+      if (mergeWouldResetAgain) {
+        stopCommittedSwitchTurn("B_committed_sync_pending", "merge_second_reset_blocked", switchTrustedDestination);
+        return;
+      }
+    }
     const merged =
       structuredHomeNearbyTurn || explicitNearbyTurn
         ? {
@@ -8670,22 +11288,218 @@ function Chat() {
           }
         : mergeTravelContext(nextSession, trimmed, lastAssistantReply);
     nextSession = merged.session;
+    const selectionTurnBeforeContext = selectionTurnBefore.travelContext;
+    if (
+      selectionTurnKeep &&
+      ((merged.context.destinationCandidate &&
+        merged.context.destinationCandidate !== selectionTurnBeforeContext?.destinationCandidate) ||
+        (merged.context.destinationClarification &&
+          merged.context.destinationClarification !==
+            selectionTurnBeforeContext?.destinationClarification))
+    ) {
+      // Planner selection: the A2 gate above already judged this turn's destination name, so the
+      // global candidate flow never geocodes / clarifies it again; the selection's destination
+      // context stays (this turn's dates / preferences from the merge are kept).
+      const beforeContext: CanonicalTravelContext = selectionTurnBeforeContext ?? { interests: [] };
+      const selectionContext: CanonicalTravelContext = {
+        ...merged.context,
+        destination: beforeContext.destination,
+        destinationCandidate: beforeContext.destinationCandidate,
+        destinationClarification: beforeContext.destinationClarification,
+        destinationInputNames: beforeContext.destinationInputNames,
+        destinationScopeId: beforeContext.destinationScopeId,
+        destinationCoordinates: beforeContext.destinationCoordinates,
+        weather: beforeContext.weather,
+        offeredCombinations: beforeContext.offeredCombinations,
+        selectedCombinationIds: beforeContext.selectedCombinationIds,
+        selectedCombinationPlaceNames: beforeContext.selectedCombinationPlaceNames,
+        excludedCombinationPlaceNames: beforeContext.excludedCombinationPlaceNames,
+        lastIntent: beforeContext.lastIntent,
+        tripPurpose: beforeContext.tripPurpose,
+      };
+      nextSession = keepSelectionTurnDestination({
+        ...nextSession,
+        travelContext: selectionContext,
+      });
+      merged.context = nextSession.travelContext ?? selectionContext;
+      merged.session = nextSession;
+    }
     const globalResolutionEpoch = ++globalResolutionEpochRef.current;
     const globalResolutionSession = sessionRef.current;
+    // 7.4.2 (1): the verified switch's Authority record is bound to this epoch.
+    if (turnSwitchVerified && switchAuthorityRecord) switchAuthorityRecord.epoch = globalResolutionEpoch;
+    // Label the existing global-candidate flow resolved in THIS turn (provider-confirmed).
+    let providerResolvedTurnDestination: string | undefined;
     if (merged.context.destinationCandidate?.status === 'pending') {
+      const switchGlobalCandidate = merged.context.destinationCandidate;
+      const switchGlobalClarification = merged.context.destinationClarification;
       nextSession = await resolveGlobalPlanningCandidate(nextSession, locale, async query => {
+        if (turnSwitchVerified) {
+          // 7.4.2: a verified switch turn never sends a second provider request. A: reuse the
+          // same Authority evidence only when every check holds; C: provider already called
+          // without a record → undefined (C3 stops); B: no provider call yet → existing request.
+          const record = switchAuthorityRecord;
+          if (record) {
+            const recordLocation = record.location;
+            const hint = switchGlobalCandidate.countryHint?.trim();
+            const hintCode = hint ? normalizeCountryReference(hint).countryCode : undefined;
+            const expectedLevel = switchedSession?.travelContext?.destinationType;
+            const sameCandidate = [record.targetLabel, switchTrustedDestination].some((trusted) =>
+              isEquivalentSwitchDestination({
+                label: switchGlobalCandidate.raw,
+                trusted,
+                ctx: merged.context,
+                session: nextSession,
+                locale,
+              }),
+            );
+            const usable =
+              record.epoch === globalResolutionEpoch &&
+              isGlobalResolutionCurrent(globalResolutionEpoch, globalResolutionEpochRef.current, globalResolutionSession, sessionRef.current) &&
+              sameCandidate &&
+              (!hint ||
+                (Boolean(hintCode) && Boolean(record.countryCode) && hintCode === record.countryCode) ||
+                hint === record.country) &&
+              isResolvedDestination(recordLocation) &&
+              Boolean(recordLocation.city?.trim() || recordLocation.region?.trim()) &&
+              (!expectedLevel || expectedLevel === (recordLocation.city?.trim() ? "city" : "region")) &&
+              record.request.locale === locale &&
+              record.request.disableLocaleRegionBias === true &&
+              record.request.placesFallback === false &&
+              !record.request.region &&
+              !record.request.countryCode &&
+              record.request.query === record.targetLabel &&
+              !switchGlobalClarification &&
+              Number.isInteger(record.rawResultCount) &&
+              record.rawResultCount === 1 &&
+              record.error == null &&
+              record.providerOk !== undefined &&
+              record.providerOk !== false;
+            return usable && recordLocation ? { location: recordLocation, rawResultCount: 1 } : undefined;
+          }
+          if (switchProbe.providerCalls >= 1) return undefined;
+        }
         const response = await geocodeLocationFn({data:{query,destinationName:query,locale,disableLocaleRegionBias:true,placesFallback:false}});
         return {location:response.location,rawResultCount:response.providerResult.rawResultCount};
       });
       if (!isGlobalResolutionCurrent(globalResolutionEpoch,globalResolutionEpochRef.current,globalResolutionSession,sessionRef.current)) return;
+      if (
+        turnSwitchVerified &&
+        switchedSession &&
+        nextSession.travelContext?.destinationCandidate?.status === "resolved" &&
+        nextSession.pendingQuestion?.type === "ask_days"
+      ) {
+        // 7.5(2): the switched saved session already holds valid days → no repeated ask_days.
+        const savedDays = switchedSession.tripDays;
+        const savedContextDays = switchedSession.travelContext?.days;
+        if (
+          typeof savedDays === "number" &&
+          Number.isInteger(savedDays) &&
+          savedDays >= 1 &&
+          (savedContextDays === undefined || savedContextDays === savedDays)
+        ) {
+          nextSession = { ...nextSession, pendingQuestion: undefined };
+        }
+      }
       merged.session = nextSession;
       merged.context = nextSession.travelContext ?? merged.context;
+      if (merged.context.destinationCandidate?.status === "resolved") {
+        providerResolvedTurnDestination = merged.context.destination;
+      }
+    }
+    if (turnSwitchVerified && switchedSession) {
+      // C3 (7.3): post-check of the verified switch before any later Places / Planner / Credits
+      // step (also guards the 9256 merge). Failure: stop, nothing persisted, no geocode.
+      const c3Session = nextSession;
+      const c3Context = merged.context;
+      const c3Candidate = c3Context.destinationCandidate;
+      const isD = (label: string | undefined) =>
+        isEquivalentSwitchDestination({
+          label,
+          trusted: switchTrustedDestination,
+          ctx: c3Context,
+          session: c3Session,
+          locale,
+        });
+      const previousScopeId = turnPreviousSession.travelContext?.destinationScopeId;
+      const scopeId = c3Session.travelContext?.destinationScopeId;
+      const tripDestinationLabel =
+        c3Session.tripDestination?.city?.trim() || c3Session.tripDestination?.region?.trim();
+      const nextCountryCode = normalizeCountryReference(
+        c3Session.travelContext?.destinationCountry,
+        c3Session.travelContext?.destinationCountryCode,
+      ).countryCode;
+      const c3Failure = c3Context.destinationClarification
+        ? "clarification"
+        : c3Candidate &&
+            (c3Candidate.status !== "resolved" ||
+              !(isD(c3Candidate.raw) || isD(c3Context.destination)))
+          ? "candidate"
+          : !isD(c3Context.destination ?? c3Session.travelContext?.destination) ||
+              (tripDestinationLabel && !isD(tripDestinationLabel)) ||
+              (c3Session.tripPlanningContext?.destination?.trim() &&
+                !isD(c3Session.tripPlanningContext.destination))
+            ? "destination"
+            : (c3Candidate
+                  ? scopeId !== undefined
+                  : scopeId !== undefined &&
+                    scopeId !== switchedSession.travelContext?.destinationScopeId) ||
+                (scopeId !== undefined &&
+                  previousScopeId !== undefined &&
+                  scopeId === previousScopeId &&
+                  !sameNormalizedSwitchDestination(
+                    turnPreviousSession.travelContext?.destination,
+                    switchTrustedDestination,
+                  ))
+              ? "scope"
+              : // #4: this turn's nextSession and the D5 saved snapshot (taken before the pin
+                // wrote the Authority country) must both carry the Authority country code; a
+                // saved country that differs is a conflict (a missing one is no evidence).
+                !switchAuthorityCountryCode ||
+                  nextCountryCode !== switchAuthorityCountryCode ||
+                  (switchSavedCountryCode !== undefined &&
+                    switchSavedCountryCode !== switchAuthorityCountryCode)
+                ? "country"
+                : c3Session.planningSessionId !== switchedSession.planningSessionId ||
+                    c3Session.planVersion !== switchedSession.planVersion
+                  ? "plan_version"
+                  : null;
+      // Downstream merges (push* helpers re-merge the same text): a further reset is a stop.
+      let c3DownstreamReset = true;
+      if (!c3Failure) {
+        try {
+          c3DownstreamReset = wouldMergeTravelContextResetTrip(c3Session, trimmed);
+        } catch {
+          c3DownstreamReset = true;
+        }
+      }
+      const c3Stop = c3Failure ?? (c3DownstreamReset ? "downstream_reset" : null);
+      if (c3Stop) {
+        // B: D5 persisted the switched Session; the downstream sync of this turn is incomplete.
+        stopCommittedSwitchTurn("B_committed_sync_pending", `c3_${c3Stop}`, switchTrustedDestination);
+        return;
+      }
     }
     if (merged.context.destinationClarification || (merged.context.destinationCandidate && merged.context.destinationCandidate.status !== 'resolved')) {
-      const turn = processAdviceTurn(trimmed,nextSession,merged.context,undefined,locale);
+      // Planner selection: this branch persists too; the selection keeps its destination.
+      nextSession = keepSelectionTurnDestination(nextSession);
+      const adviceTurn = processAdviceTurn(
+        trimmed,
+        nextSession,
+        merged.context,
+        undefined,
+        locale,
+      );
+      // #PL-FIX-T6: the advice contextPatch (re-applied when the turn persists) keeps the
+      // selection's destination too: never another city / an unverified name.
+      // #PL-FIX-T7: shared with the other completeAdviceTurn callers (keepSelectionAdviceTurn).
+      const turn = selectionTurnKeep
+        ? keepSelectionAdviceTurn({ ...adviceTurn, session: keepSelectionTurnDestination(adviceTurn.session) })
+        : adviceTurn;
       const next: ChatMsg[] = [...msgs,{role:'user',content:displayMessage}];
       setMsgs(next); setText(''); scrollToUserMessage(next.length-1);
-      await completeAdviceTurn(turn,nextSession,merged.context,next);
+      // #PL-FIX-T7: selection turns pass the kept destination labels (never another city).
+      await completeAdviceTurn(turn,nextSession,keepSelectionAdviceContext(merged.context, turn.session),next);
       return;
     }
     if (isBudgetRefinementText(trimmed)) {
@@ -8705,6 +11519,11 @@ function Chat() {
           }
         : mergeTripPlanningContext(trimmed, nextSession, merged.context);
     nextSession = planningMerge.session;
+    // After this turn's destination writes (trip intent, travel / planning context, global
+    // candidate): a selection of another city ends here, before any later step reads it.
+    // Planner selection (not a confirmed switch): the selection keeps its destination first.
+    nextSession = keepSelectionTurnDestination(nextSession);
+    nextSession = dropStalePlanningSelection(nextSession);
     const conversationMode = structuredHomeNearbyTurn
       ? "mood_recommend"
       : resolveConversationMode(trimmed, nextSession);
@@ -8797,7 +11616,9 @@ function Chat() {
       nextSession = extractChatPlanningContextFromText(trimmed, nextSession);
       let parseStage: PlanningParseStage = "prepare_context";
       try {
-        const renderedCandidates = extractLatestShownCandidatesFromMsgs(msgs);
+        const renderedCandidates = extractLatestShownCandidatesFromMsgs(
+          candidateMessagesForSession(msgs, nextSession, destinationSwitchCardBoundaryRef.current),
+        );
         const candidateContext = resolvePlanningCandidateContext(nextSession, renderedCandidates);
         const shownCandidates = candidateContext.candidates;
         logPlanningCandidateContext({
@@ -8974,7 +11795,14 @@ function Chat() {
       setMsgs(next);
       setText("");
       scrollToUserMessage(next.length - 1);
-      await completeAdviceTurn(planningTurn, nextSession, merged.context, next);
+      // #PL-FIX-T7: Planner selection — same cleanup as the advice branch (no other city).
+      const keptPlanningTurn = selectionTurnKeep ? keepSelectionAdviceTurn(planningTurn) : planningTurn;
+      await completeAdviceTurn(
+        keptPlanningTurn,
+        nextSession,
+        keepSelectionAdviceContext(merged.context, keptPlanningTurn.session),
+        next,
+      );
       return;
     }
 
@@ -9074,41 +11902,77 @@ function Chat() {
         setMsgs(next);
         setText("");
 
+        // Empty strings count as missing so they never block the next fallback.
         const dest =
-          altCtx.destination?.trim() ??
-          nextSession.tripPlanningContext?.destination?.trim() ??
+          altCtx.destination?.trim() ||
+          nextSession.tripPlanningContext?.destination?.trim() ||
           nextSession.tripDestination?.city?.trim();
 
         if (dest) {
-          const applied = await pushAlternativeDestinationPlaceRecommendation(
+          const altResult = await pushAlternativeDestinationPlaceRecommendation(
             { ...nextSession, travelContext: { ...altCtx, destination: dest } },
             trimmed,
             next,
             dest,
             { excludePlaceIds, rejectedPlaceNames: nextSession.rejectedPlaceNames },
           );
-          if (applied) return;
+          if (altResult === "applied") return;
+          // Untrusted destination, or trusted but no cards: never re-route to GPS Nearby
+          // (no snapshot center, no Credits, no Places, no Session write).
+          console.warn("[CHAT_ALTERNATIVE_SAFE_STOP]", `result=${altResult}`);
+          setMsgs([...next, { role: "assistant", content: chatRuntimeCopy("recovery", locale) }]);
+          return;
         }
 
-        nextSession = await resolveChatLocation(nextSession);
-        if (sessionHasLocation(nextSession)) {
+        // No destination at all (pure GPS conversation): device-only Nearby. Destination fields,
+        // Client search scope and recommendation snapshots never reach the Nearby search.
+        const gpsCtx: CanonicalTravelContext = { ...altCtx };
+        for (const key of [
+          "destination",
+          "destinationCandidate",
+          "destinationInputNames",
+          "destinationClarification",
+          "destinationCountry",
+          "destinationCountryCode",
+          "destinationType",
+          "destinationCity",
+          "destinationRegion",
+          "destinationScopeId",
+          "destinationCoordinates",
+          "destinationCities",
+          "destinationDisplay",
+          "offeredDestinationOptions",
+        ] as const) {
+          delete gpsCtx[key];
+        }
+        const altTurnSession = nextSession;
+        nextSession = await resolveChatLocation({
+          ...stripClientSearchScope(nextSession),
+          travelContext: gpsCtx,
+          recommendationSession: undefined,
+          activeRecommendationContext: undefined,
+        });
+        const gpsSession: ChatPlanningSession = { ...nextSession, travelContext: gpsCtx };
+        const gpsMerged = mergeTravelContext(gpsSession, trimmed);
+        // A leftover destination candidate (never trust-checked) must not become a search.
+        const pendingDestination =
+          resolveDestinationNameForSearch(gpsCtx, gpsSession) ??
+          resolveDestinationNameForSearch(gpsMerged.context, gpsMerged.session);
+        if (!pendingDestination && sessionHasLocation(gpsSession)) {
           for (const nearbyIntent of ["restaurant", "cafe", "attraction"] as const) {
             setStreaming(true);
             try {
               const applied = await pushNearbyPlaceRecommendation(
-                { ...nextSession, travelContext: altCtx },
+                gpsSession,
                 trimmed,
                 next,
                 nearbyIntent,
                 {
                   excludePlaceIds,
-                  rejectedPlaceNames: nextSession.rejectedPlaceNames,
-                  blockedCoreNames: collectBlockedCoreNames(nextSession, msgs),
+                  rejectedPlaceNames: altTurnSession.rejectedPlaceNames,
+                  blockedCoreNames: collectBlockedCoreNames(altTurnSession, msgs),
                   userText: trimmed,
-                  cityLabel:
-                    nextSession.location?.city ??
-                    altCtx.destination ??
-                    nextSession.tripDestination?.city,
+                  cityLabel: gpsSession.location?.city,
                 },
               );
               if (applied) return;
@@ -9254,8 +12118,12 @@ function Chat() {
             const applied = await pushRecommendationRefinement(nextSession, trimmed, next);
             if (applied) return;
           }
+          // A stale Refinement Context (other destination than the stored pool) never decides
+          // the next search destination.
           const destForMore =
-            nextSession.activeRecommendationContext?.destinationName ||
+            (isStaleActiveRecommendationContext(nextSession)
+              ? undefined
+              : nextSession.activeRecommendationContext?.destinationName) ||
             nextSession.recommendationSession?.destination ||
             nextSession.travelContext?.destination ||
             nextSession.tripPlanningContext?.destination ||
@@ -9283,6 +12151,43 @@ function Chat() {
             } finally {
               setStreaming(false);
             }
+          }
+          // Explicit "negate + switch" whose new destination was not verified: never offer
+          // alternatives for the previous city; stop without searching or charging.
+          // 6.3.5: reads this turn's single classification. Only NO_SWITCH with a negated clause
+          // whose target is not a place reaches here (verified switches skip; unverified ones
+          // stopped at the single gate).
+          const negatedSwitchedText =
+            turnSwitch.state === "NO_SWITCH" && turnSwitch.hasNegatedClause
+              ? turnSwitch.switchedText
+              : undefined;
+          if (negatedSwitchedText) {
+            const stoppedMsgs = [
+              ...next,
+              {
+                role: "assistant" as const,
+                content: chatRuntimeCopy("destinationSwitchStopped", locale, {
+                  destination: negatedSwitchedText,
+                  previous: destForMore?.trim() ?? "",
+                }),
+              },
+            ];
+            setMsgs(stoppedMsgs);
+            // W30 negatedSwitchStopSession: never written back from nextSession's destination
+            // fields (this turn may carry the negated city or a broken label).
+            persistSession(
+              {
+                ...turnStartSession,
+                pendingQuestion: undefined,
+                travelContext: {
+                  ...(turnStartSession.travelContext ?? merged.context),
+                  tripPurpose: "more_place_recommendations",
+                },
+              },
+              stoppedMsgs,
+            );
+            logRtResponseBranch("no_more");
+            return;
           }
           // Destination-scoped continue exhausted — never fall through to GPS nearby.
           const activeCategoryOnRefresh = resolveActiveCategoryIntent(nextSession);
@@ -9458,10 +12363,24 @@ function Chat() {
       }
 
       const placeFetchContext = mergeContextForPlaceFetch(merged.context, nextSession);
+      // The turn's single DestinationResolution (Dispatch / Category Search / Weather /
+      // Credits / Session). Only its confirmed | curated `destination` reaches providers.
+      const turnDestination = resolveCategoryTurnDestination({
+        ctx: placeFetchContext,
+        session: nextSession,
+        userText: trimmed,
+        locale,
+        providerResolvedTurnDestination,
+      });
 
-      if (placeFetchContext.destination?.trim() && !placeFetchContext.weather) {
+      // Weather only for a confirmed destination (pending / ambiguous: no prefetch).
+      if (
+        placeFetchContext.destination?.trim() &&
+        !placeFetchContext.weather &&
+        turnDestination.destination
+      ) {
         const weather = await prefetchDestinationWeather({
-          destination: placeFetchContext.destination,
+          destination: turnDestination.destination,
           locale,
           geocodeFn: geocodeLocationFn,
           fetchWeatherFn: fetchWeather,
@@ -9498,6 +12417,7 @@ function Chat() {
           trimmed,
           next,
           "destination_places_failed",
+          turnStartSession,
         );
         if (fallbackApplied) return;
         return;
@@ -9535,8 +12455,7 @@ function Chat() {
 
       if (earlyRouteAuthority === "destination_category") {
         const intents = parseChatPlaceIntents(trimmed);
-        const dest =
-          resolveDestinationForCategorySearch(refreshedPlaceCtx, nextSession, trimmed) ?? "";
+        const dest = turnDestination.destination ?? "";
         console.info(
           "[CHAT_INTENT_ROUTED]",
           `intent=place_recommendation`,
@@ -9564,11 +12483,11 @@ function Chat() {
           { ...nextSession, travelContext: refreshedPlaceCtx },
           trimmed,
           next,
+          { turnDestination, turnStartSession },
         );
         if (applied) return;
         logDestinationRecommendationFallbackSummary({
-          destination:
-            resolveDestinationForCategorySearch(refreshedPlaceCtx, nextSession, trimmed) ?? dest,
+          destination: dest,
           sourcePath: "local-recommendation-fallback",
           fallbackDestination:
             nextSession.recommendationSession?.destination ||
@@ -9577,10 +12496,7 @@ function Chat() {
           reason: "explicit_destination_builder_empty",
         });
 
-        const destLabel =
-          resolveDestinationForCategorySearch(refreshedPlaceCtx, nextSession, trimmed) ??
-          dest ??
-          "這個目的地";
+        const destLabel = dest;
         setMsgs((prev) => [
           ...prev,
           {
@@ -9711,12 +12627,17 @@ function Chat() {
             { ...nextSession, travelContext: refreshedPlaceCtx },
             trimmed,
             next,
+            { turnDestination, turnStartSession },
           );
           if (appliedNew) return;
         }
         if (arbitration.route === "MORE_RECOMMENDATIONS") {
+          // A stale Refinement Context (other destination than the stored pool) never decides
+          // the next search destination.
           const destForMore =
-            nextSession.activeRecommendationContext?.destinationName ||
+            (isStaleActiveRecommendationContext(nextSession)
+              ? undefined
+              : nextSession.activeRecommendationContext?.destinationName) ||
             nextSession.recommendationSession?.destination ||
             nextSession.travelContext?.destination ||
             nextSession.tripPlanningContext?.destination ||
@@ -9746,9 +12667,7 @@ function Chat() {
           !nextSession.recommendationSession;
         if (firstTurnNewRecommendation) {
           const destLabel =
-            resolveDestinationForCategorySearch(refreshedPlaceCtx, nextSession, trimmed) ??
-            refreshedPlaceCtx.destination?.trim() ??
-            "";
+            turnDestination.destination ?? refreshedPlaceCtx.destination?.trim() ?? "";
           if (destLabel) {
             logRtResponseBranch("other");
             setMsgs([
@@ -9971,7 +12890,16 @@ function Chat() {
             if (isPlaceFailureCopy && !isComboOffered) {
               // Fall through to soft failure only when advice truly has no combo path.
             } else {
-              await completeAdviceTurn(earlyPlanningTurn, nextSession, merged.context, next);
+              // #PL-FIX-T7: Planner selection — same cleanup as the advice branch (no other city).
+              const keptEarlyTurn = selectionTurnKeep
+                ? keepSelectionAdviceTurn(earlyPlanningTurn)
+                : earlyPlanningTurn;
+              await completeAdviceTurn(
+                keptEarlyTurn,
+                nextSession,
+                keepSelectionAdviceContext(merged.context, keptEarlyTurn.session),
+                next,
+              );
               return;
             }
           }
@@ -10365,7 +13293,13 @@ function Chat() {
             return true;
           }
           logAiPipeline("[NEARBY_FAILURE_REASON]", { reason: "genuine_zero_results" });
-          return await applyLocalFallback(nextSession, trimmed, next, "places_empty");
+          return await applyLocalFallback(
+            nextSession,
+            trimmed,
+            next,
+            "places_empty",
+            turnStartSession,
+          );
         } finally {
           setStreaming(false);
         }
@@ -10480,6 +13414,7 @@ function Chat() {
           nextSession,
           trimmed,
           next,
+          { turnStartSession },
         );
         if (applied) return;
       }
@@ -10620,6 +13555,7 @@ function Chat() {
           nextSession,
           trimmed,
           next,
+          { turnStartSession },
         );
         if (applied) return;
       } else if (isPlanningTurnActive(nextSession, merged.context)) {
@@ -10629,7 +13565,13 @@ function Chat() {
           await completeAdviceTurn(planningTurn, nextSession, merged.context, next);
           return;
         }
-        const applied = await applyLocalFallback(nextSession, trimmed, next, "planning_no_reply");
+        const applied = await applyLocalFallback(
+          nextSession,
+          trimmed,
+          next,
+          "planning_no_reply",
+          turnStartSession,
+        );
         if (applied) return;
         const offline = buildPlanningOfflineReply(merged.context, nextSession, trimmed, locale);
         if (offline) {
@@ -10641,7 +13583,11 @@ function Chat() {
         return;
       }
 
-      await streamChat(next, { phase: route.chatPhase, userText: trimmed }, nextSession);
+      await streamChat(
+        next,
+        { phase: route.chatPhase, userText: trimmed, turnStartSession },
+        nextSession,
+      );
       logRtResponseBranch("general_chat");
     } catch (error) {
       logAppError("CHAT_STATE_MACHINE_ERROR", error);
@@ -10655,11 +13601,19 @@ function Chat() {
 
       const errorConversation: ChatMsg[] = [...msgs, { role: "user", content: displayMessage }];
       try {
+        // Retry from the turn-start snapshot, carrying over only the position this turn already
+        // acquired (cleaned against turnStartSession; unconfirmed / Trip Add Place stays pre-turn).
+        const turnLocation = withoutUnconfirmedSessionDestinations(nextSession, turnStartSession);
         const fallbackApplied = await applyLocalFallback(
-          session,
+          {
+            ...session,
+            location: turnLocation.location,
+            nearbyLocationAuthority: turnLocation.nearbyLocationAuthority,
+          },
           trimmed,
           errorConversation,
           "state_machine_error",
+          turnStartSession,
         );
         if (fallbackApplied) {
           setText("");
@@ -10777,10 +13731,22 @@ function Chat() {
       );
     }
     const activeMsgs = msgsOverride ?? msgs;
-    const assistantCandidates = extractLatestShownCandidatesFromMsgs(activeMsgs);
-    const generationWorkspace = activeSession.workspaceId
+    const switchCardBoundary = destinationSwitchCardBoundaryRef.current;
+    const assistantCandidates = extractLatestShownCandidatesFromMsgs(
+      candidateMessagesForSession(activeMsgs, activeSession, switchCardBoundary),
+    );
+    const boundGenerationWorkspace = activeSession.workspaceId
       ? loadConversationWorkspace(activeSession.workspaceId, readCachedAuthenticatedUserIdSync())
       : null;
+    // A workspace still holding the pre-switch Session (upsert skipped, S-243) never supplies
+    // the previous destination's shown candidates to another Session.
+    const generationWorkspace =
+      switchCardBoundary?.previousPlanningSessionId &&
+      boundGenerationWorkspace?.planningSession?.planningSessionId ===
+        switchCardBoundary.previousPlanningSessionId &&
+      activeSession.planningSessionId !== switchCardBoundary.previousPlanningSessionId
+        ? null
+        : boundGenerationWorkspace;
     const generationCandidateContext = resolvePlanningCandidateContextForGeneration({
       session: activeSession,
       assistantCandidates,
@@ -10802,6 +13768,10 @@ function Chat() {
         setGenerating(false);
         setSelectionGenerationStatus(null);
       }
+      // L1: 呼叫端（runDirect／persist）已上鎖；使用者已不在原對話時不得靜默解鎖，改發失敗提示。
+      if (ownership && !isOriginalConversation(activeSession.planningSessionId)) {
+        notifyChatGenerationFailed(ownership.generationId);
+      }
       return;
     }
 
@@ -10811,6 +13781,8 @@ function Chat() {
     let itinerarySucceeded = false;
     let abandonPendingCover: (() => void) | null = null;
     let lifecycleFailureCode: TripLifecycleFailure = "generation_failed";
+    // L1: 不在原對話時失敗提示的具體原因（完整 i18n key）；未設定則用通用文案。
+    let detachedFailureReasonKey: string | undefined;
     if (isPlanningSelectionMode(activeSession)) {
       console.info("[PLANNING_SELECTION_CREDITS_READY]", {
         sessionId: selectionSessionId,
@@ -10823,9 +13795,13 @@ function Chat() {
     }
 
     if (!isPlanningSelectionMode(activeSession)) setGenerating(true);
+    // L1: 全域生成鎖（與 runDirectItinerary／persistGeneratedPlan 同 owner 時只計數）。
+    const generationLockOwner = ownership?.generationId || `generate:${crypto.randomUUID()}`;
+    const generationOriginSessionId = activeSession.planningSessionId;
     logAiState("CREATING_TRIP");
     persistSession({ ...activeSession, phase: "generating", aiItineraryState: "CREATING_TRIP" });
 
+    beginChatGenerationLock(generationLockOwner);
     try {
       logSelectionStage("trip_context_start", true);
       logSelectionStage("start_place_resolve_start", true);
@@ -11026,7 +14002,8 @@ function Chat() {
         if (!prepared.ok) {
           logItineraryFailureReason(prepared.message);
           setMsgs((prev) => [...prev, { role: "assistant", content: prepared.message }]);
-          if (prepared.apiEmpty) {
+          // L1: 不在原對話時只留 finally 的單一失敗提示（此訊息無 i18n key，用通用文案）。
+          if (prepared.apiEmpty && isOriginalConversation(generationOriginSessionId)) {
             toast.error(prepared.message);
           }
           persistSession({
@@ -11367,6 +14344,7 @@ function Chat() {
             { role: "assistant", content: chatRuntimeCopy("capacity", locale) },
           ]);
           persistSession(workingSession);
+          detachedFailureReasonKey = "chatRuntime.capacity";
           return;
         }
         logSelectionTiming("server_request_start");
@@ -11397,7 +14375,8 @@ function Chat() {
         logTripLifecycle("aborted", { failureCode: "generation_failed" });
         logItineraryFailureReason(createResult.message);
         setMsgs((prev) => [...prev, { role: "assistant", content: createResult.message }]);
-        if (createResult.offerMustVisit) {
+        // L1: 不在原對話時只留 finally 的單一失敗提示（此訊息無 i18n key，用通用文案）。
+        if (createResult.offerMustVisit && isOriginalConversation(generationOriginSessionId)) {
           toast.error(createResult.message);
         }
         persistSession(createResult.session);
@@ -11643,12 +14622,26 @@ function Chat() {
       lifecycleFailureCode = "navigation_failed";
       if ((ownership && !ownership.isCurrent()) || !isCurrentTripDateSnapshot(activeSession, sessionRef.current)) {
         logTripLifecycle("aborted", { failureCode: "entry_blocked" });
+        // L1: 行程已保存成功；使用者已不在原對話時改發完成提示（不導向、不發失敗提示）。
+        if (!isOriginalConversation(generationOriginSessionId)) {
+          notifyChatGenerationDone(() => {
+            void navigate(tripDetailNavigateOptions(saved.id));
+          });
+        }
         return;
       }
-      logTripLifecycle("navigation_started");
-      const navigation = navigate(tripDetailNavigateOptions(saved.id));
-      await Promise.resolve(navigation);
-      logTripLifecycle("navigation_completed", { success: true });
+      if (isOriginalConversation(generationOriginSessionId)) {
+        logTripLifecycle("navigation_started");
+        const navigation = navigate(tripDetailNavigateOptions(saved.id));
+        await Promise.resolve(navigation);
+        logTripLifecycle("navigation_completed", { success: true });
+      } else {
+        // L1: 使用者已不在原對話（別頁或新對話）：不自動導向，改顯示「行程已完成」提示。
+        console.info("[CHAT_GENERATION_DONE_DETACHED]", { generationId, tripId: saved.id });
+        notifyChatGenerationDone(() => {
+          void navigate(tripDetailNavigateOptions(saved.id));
+        });
+      }
       lifecycleFailureCode = "generation_failed";
       logSelectionTiming("navigation_done");
 
@@ -11763,6 +14756,16 @@ function Chat() {
       ]);
       // Keep a single error surface — chat card only (no duplicate toast).
     } finally {
+      endChatGenerationLock(generationLockOwner);
+      // L1: 使用者已不在原對話時，失敗改以頂部提示通知（仍在原對話則沿用聊天卡片，不重複）。
+      // 通知例外不得阻斷下方 Credits settle。
+      try {
+        if (!itinerarySucceeded && !isOriginalConversation(generationOriginSessionId)) {
+          notifyChatGenerationFailed(generationLockOwner, detachedFailureReasonKey);
+        }
+      } catch (notifyError) {
+        console.warn("[CHAT_GENERATION_NOTIFY_FAILED]", notifyError);
+      }
       // Render settlement is local; credits still settle through the existing
       // authority and never change Selection pricing/entitlement semantics.
       setGenerating(false);
@@ -11805,11 +14808,13 @@ function Chat() {
       };
       setGenerating(true);
       const finishPlanningLoading = explicitCreateLoading.begin({ explicitCreate: true, generationId });
+      beginChatGenerationLock(generationId);
       try {
         logGeneratedPlanHandoff("handed_to_persistence", { correlationToken: planCorrelationToken(generationId), sourceStage: "persistence", current: ownership.isCurrent(), hasGenerationId: Boolean(generationId) });
         await handleGenerateItinerary({ ...readySession, phase: "ready" }, conversation, ownership);
       } finally {
         finishPlanningLoading();
+        endChatGenerationLock(generationId);
         if (activeGenerationRequestIdRef.current === generationId) activeGenerationRequestIdRef.current = null;
         setGenerating(false);
       }
@@ -11858,6 +14863,7 @@ function Chat() {
     setStreaming(true);
     setGenerating(true);
     const finishPlanningLoading = explicitCreateLoading.begin(activeSession.tripCreationAuthority);
+    beginChatGenerationLock(generationRequestId);
     try {
       const prepared = await prepareDirectItineraryFlow({
         session: activeSession,
@@ -11877,6 +14883,7 @@ function Chat() {
       logTripLifecycle("final_planner_gate", { success: prepared.ok });
       if (!prepared.ok) {
         logTripLifecycle("aborted", { failureCode: "generation_failed" });
+        if (!isOriginalConversation(activeSession.planningSessionId)) notifyChatGenerationFailed(generationRequestId);
         await settleCreditsOperation(itinCreditsHandle, false);
         itinCreditsHandle = null;
         logItineraryFailureReason(
@@ -11927,6 +14934,7 @@ function Chat() {
       itinCreditsHandle = null;
       lastFailureGenerationRequestIdRef.current = null;
     } catch (e) {
+      if (!isOriginalConversation(activeSession.planningSessionId)) notifyChatGenerationFailed(generationRequestId);
       if (!isCurrentTripDateSnapshot(activeSession, sessionRef.current)) return;
       logTripLifecycle("aborted", { failureCode: "generation_failed" });
       await settleCreditsOperation(itinCreditsHandle, false);
@@ -11973,6 +14981,7 @@ function Chat() {
       });
     } finally {
       finishPlanningLoading();
+      endChatGenerationLock(generationRequestId);
       if (activeGenerationRequestIdRef.current === generationRequestId) {
         activeGenerationRequestIdRef.current = null;
         setStreaming(false);
@@ -11983,11 +14992,13 @@ function Chat() {
 
   const retry = async () => {
     if (!lastFailed || streaming) return;
+    if (blockIfChatGenerationLocked(t("uiCoverage.chatGenerationLockedNotice"))) return;
     await streamChat(lastFailed);
   };
 
   const confirmClearChat = async () => {
     if (streaming || generating || clearing) return;
+    if (isChatGenerationLocked()) return;
     setClearing(true);
     try {
       abortRef.current?.abort();
@@ -12104,7 +15115,7 @@ function Chat() {
         <button
           type="button"
           onClick={() => setClearDialogOpen(true)}
-          disabled={streaming || generating || clearing}
+          disabled={streaming || generating || clearing || generationLock.locked}
           className="relative z-20 flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
           aria-label={t("chat.clearAria")}
           title={uiT("productionUi.p5e72860a8c")}
@@ -12187,16 +15198,22 @@ function Chat() {
               void handleSavePlace(rec);
             }}
             onAddToTrip={(rec) => {
+              if (blockIfChatGenerationLocked(t("uiCoverage.chatGenerationLockedNotice"))) return;
               if (selectionMode) {
-                persistSession(
-                  togglePlanningSelectionPlace(sessionRef.current, roamieRecToChatItem(rec)),
-                );
+                const selectionItem = roamieRecToChatItem(rec);
+                // Only cards this selection session recommended (or already selected) may join it.
+                if (!isPlanningSelectionPlaceInScope(sessionRef.current, selectionItem)) {
+                  toast.info(chatRuntimeCopy("planningSelectionPlaceOutOfScope", locale));
+                  return;
+                }
+                persistSession(togglePlanningSelectionPlace(sessionRef.current, selectionItem));
               } else {
                 void handleAddToTripFromChat(rec);
               }
             }}
             onOpenPlaceDetail={handleOpenPlaceDetail}
             onDiscussPlace={(rec) => {
+              if (blockIfChatGenerationLocked(t("uiCoverage.chatGenerationLockedNotice"))) return;
               void handleDiscussPlace(rec);
             }}
           />
@@ -12241,11 +15258,19 @@ function Chat() {
             onFocus={() => {
               scrollToBottom("keyboard_did_show");
             }}
-            disabled={streaming || generating}
+            disabled={streaming || generating || generationLock.locked}
             showShortcutChips={showShortcutChips}
             keyboardOpen={keyboardVisible}
             inputRef={inputRef}
-            generating={generating}
+            generating={generating || generationLock.locked}
+            lockedPlaceholder={
+              generationLock.locked ? t("uiCoverage.chatGenerationLockedPlaceholder") : undefined
+            }
+            lockedHint={
+              generationLock.locked && generationLock.slow
+                ? t("uiCoverage.chatGenerationSlowHint")
+                : undefined
+            }
             streaming={streaming}
             onChipSend={(s) => void send(s, { source: "chat_shortcut", actionDiagnostic: captureChatAction(s) })}
             actionChips={actionChips}

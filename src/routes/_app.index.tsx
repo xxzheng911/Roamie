@@ -45,6 +45,7 @@ import { applyCoreTripCover, getLatestCoreTrip, type CoreTrip } from "@/lib/trip
 import { supabase } from "@/integrations/supabase/client";
 import { recordAnalyticsEvent } from "@/lib/analytics/record";
 import { useI18n } from "@/hooks/use-i18n";
+import { blockIfChatGenerationLocked } from "@/lib/ai/chat-generation-lock";
 import { searchPlaces } from "@/lib/places.functions";
 import { createUnifiedSearchPlacesFn } from "@/lib/places-search-unified";
 import { isPlacesRateLimited } from "@/lib/places-api-guard";
@@ -112,6 +113,8 @@ import {
   type HomeNearbyRenderState,
 } from "@/lib/home-nearby-log";
 import { useAddToTrip } from "@/hooks/use-add-to-trip";
+import { useDuoLayout } from "@/hooks/use-duo-layout";
+import { useDuoLaptop } from "@/hooks/use-duo-laptop";
 import { useAccess } from "@/hooks/use-access";
 import { tripPlaceFromPlaceResult } from "@/lib/trip/trip-place-input";
 import { userProfileForReasonFrom } from "@/lib/build-place-recommendation-reason";
@@ -165,6 +168,25 @@ function Home() {
   const { hasPlusAccess } = useAccess();
   const { user: authenticatedUser, loading: authLoading } = useAuth();
   const { openAddToTrip } = useAddToTrip();
+  // iPhone Duo 展開雙欄（與收藏頁、我的頁 duoTwoPane 條件相同）：左頁 1–5 區塊，右頁其餘卡片。
+  // 只切換 className（home-duo-*），React 樹與子元素位置不變，開合時不 remount、不重新觸發 effect。
+  const duoLayout = useDuoLayout();
+  const duoTwoPane =
+    duoLayout.navPlacement === "right-rail" &&
+    duoLayout.tripLayout === "two-pane" &&
+    duoLayout.pane != null;
+  // iPhone Duo 筆電半開（與 _app 設定 html.duo-laptop 的條件相同：雙欄優先）：版面與手機相同（一頁式捲動，不分上下）。
+  const duoLaptop = useDuoLaptop();
+  const homeLaptop = duoLaptop.laptop && !duoTwoPane;
+  // 筆電半開時在 <html> 標記 home-laptop-active（styles.css 只以此限定本頁浮層不跨摺痕；版面與手機相同、一頁式捲動）；其他狀態不加 class。
+  useLayoutEffect(() => {
+    if (!homeLaptop) return;
+    const root = document.documentElement;
+    root.classList.add("home-laptop-active");
+    return () => {
+      root.classList.remove("home-laptop-active");
+    };
+  }, [homeLaptop]);
   const navigate = useNavigate();
   const router = useRouter();
   const fetchWeather = useServerFn(getWeather);
@@ -922,6 +944,7 @@ function Home() {
       resetHomeMoodUi();
       return;
     }
+    if (blockIfChatGenerationLocked(t("uiCoverage.chatGenerationLockedNotice"))) return;
     if (!requireAuthForAction("mood_shortcut", { moodId: next })) return;
     setSelectedMood(next);
     clearHomeMoodUiSelection();
@@ -1287,9 +1310,76 @@ function Home() {
     }
   };
 
+  // 附近推薦、進階規劃、行程卡、個人化卡：所有姿勢一律原位渲染（筆電半開與手機相同，一頁式捲動）。
+  const nearbySectionNode = (
+    <section className={`mt-6 min-w-0${duoTwoPane ? " home-duo-left" : ""}`}>
+      <h2 className="font-display text-[17px] leading-snug">{t("home.nearbySection")}</h2>
+      <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+        {t("home.nearbyExploreDesc")}
+      </p>
+      <div className="app-bleed-x mt-3 min-w-0">
+        <HomeNearbyPlaceCards
+          places={nearbyPicks}
+          renderState={nearbyRenderState}
+          loading={nearbyLoading}
+          showSlowEmpty={nearbySlowLoad}
+          userLocation={nearbyLocationForCards}
+          emptyMessage={t("home.nearbyEmpty")}
+          slowEmptyMessage={t("home.nearbySlowEmpty")}
+          retryLabel={t("home.nearbyRetry")}
+          onRetry={() => void loadNearbyPicks("retry", effectiveLocation, { forceRefresh: true })}
+          savedNames={savedNames}
+          busyId={saveBusyId}
+          navigatingPlaceId={navigatingPlaceId}
+          onSelect={handleNearbyPick}
+          onAddToTrip={(p) => openAddToTrip(tripPlaceFromPlaceResult(p), "home")}
+          onToggleSave={(p) => void handleToggleSaveNearby(p)}
+          addToTripLabel={t("chat.addToTrip")}
+        />
+      </div>
+    </section>
+  );
+
+  const advancedPlanLinkNode = (
+    <Link
+      to="/plan"
+      className={`mt-3 flex items-center justify-between rounded-2xl border border-dashed border-border bg-card/60 px-4 py-3 text-xs text-muted-foreground${duoTwoPane ? " home-duo-left" : ""}`}
+    >
+      <span>{t("home.advancedPlan")}</span>
+      <ChevronRight className="h-4 w-4" />
+    </Link>
+  );
+
+  const latestTripCardNode = latestTrip ? <HomeTripCard trip={latestTrip} /> : null;
+
+  const personalizationCardNode = (
+    <HomePersonalizationCard
+      className="mt-8"
+      prefs={prefs}
+      savedPlaces={savedPlaces}
+      weather={weather}
+      nearbyPicks={nearbyPicks}
+      selectedMood={selectedMoodLabel}
+      latestTripTitle={latestTrip?.displayTitle ?? null}
+      chatSession={homeChatSession}
+      personalizationReady={
+        prefsHydrated &&
+        savedPlacesHydrated &&
+        latestTripHydrated &&
+        weatherStatus !== "loading" &&
+        !nearbyLoading &&
+        nearbyRenderState !== "loading"
+      }
+    />
+  );
+
   return (
-    <div className="animate-rise w-full min-w-0 max-w-full overflow-x-hidden pb-6 pl-[max(1.25rem,var(--safe-area-left))] pr-[max(1.25rem,var(--safe-area-right))] pt-2">
-      <div className="flex items-start justify-between gap-3">
+    <div
+      className={`animate-rise w-full min-w-0 max-w-full overflow-x-hidden pb-6 pl-[max(1.25rem,var(--safe-area-left))] pr-[max(1.25rem,var(--safe-area-right))] pt-2${duoTwoPane ? " home-duo-root" : ""}`}
+    >
+      <div
+        className={`flex items-start justify-between gap-3${duoTwoPane ? " home-duo-left" : ""}`}
+      >
         <div className="min-w-0 flex-1">
           <h1 className="text-2xl leading-tight">{t("home.greeting")}</h1>
         </div>
@@ -1305,7 +1395,7 @@ function Home() {
       <Link
         to="/chat"
         search={selectedMood ? { mood: selectedMood } : undefined}
-        className="mt-5 block rounded-3xl border border-border bg-card p-5 shadow-soft transition active:scale-[0.99]"
+        className={`mt-5 block rounded-3xl border border-border bg-card p-5 shadow-soft transition active:scale-[0.99]${duoTwoPane ? " home-duo-left" : ""}`}
       >
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <Sparkles className="h-3.5 w-3.5 text-clay" />
@@ -1320,7 +1410,7 @@ function Home() {
         </div>
       </Link>
 
-      <div className="mt-6 min-w-0">
+      <div className={`mt-6 min-w-0${duoTwoPane ? " home-duo-left" : ""}`}>
         <SectionTitle title={t("home.moodSectionTitle")} />
         <div className="app-h-scroll app-bleed-x mt-3">
           <div className="app-h-scroll-track">
@@ -1364,42 +1454,11 @@ function Home() {
         </button>
       </div>
 
-      <section className="mt-6 min-w-0">
-        <h2 className="font-display text-[17px] leading-snug">{t("home.nearbySection")}</h2>
-        <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
-          {t("home.nearbyExploreDesc")}
-        </p>
-        <div className="app-bleed-x mt-3 min-w-0">
-          <HomeNearbyPlaceCards
-            places={nearbyPicks}
-            renderState={nearbyRenderState}
-            loading={nearbyLoading}
-            showSlowEmpty={nearbySlowLoad}
-            userLocation={nearbyLocationForCards}
-            emptyMessage={t("home.nearbyEmpty")}
-            slowEmptyMessage={t("home.nearbySlowEmpty")}
-            retryLabel={t("home.nearbyRetry")}
-            onRetry={() => void loadNearbyPicks("retry", effectiveLocation, { forceRefresh: true })}
-            savedNames={savedNames}
-            busyId={saveBusyId}
-            navigatingPlaceId={navigatingPlaceId}
-            onSelect={handleNearbyPick}
-            onAddToTrip={(p) => openAddToTrip(tripPlaceFromPlaceResult(p), "home")}
-            onToggleSave={(p) => void handleToggleSaveNearby(p)}
-            addToTripLabel={t("chat.addToTrip")}
-          />
-        </div>
-      </section>
+      {nearbySectionNode}
 
-      <Link
-        to="/plan"
-        className="mt-3 flex items-center justify-between rounded-2xl border border-dashed border-border bg-card/60 px-4 py-3 text-xs text-muted-foreground"
-      >
-        <span>{t("home.advancedPlan")}</span>
-        <ChevronRight className="h-4 w-4" />
-      </Link>
+      {advancedPlanLinkNode}
 
-      {latestTrip ? <HomeTripCard trip={latestTrip} /> : null}
+      {latestTripCardNode}
 
       <HomeWeatherCard
         weather={weather}
@@ -1438,24 +1497,7 @@ function Home() {
         }}
       />
 
-      <HomePersonalizationCard
-        className="mt-8"
-        prefs={prefs}
-        savedPlaces={savedPlaces}
-        weather={weather}
-        nearbyPicks={nearbyPicks}
-        selectedMood={selectedMoodLabel}
-        latestTripTitle={latestTrip?.displayTitle ?? null}
-        chatSession={homeChatSession}
-        personalizationReady={
-          prefsHydrated &&
-          savedPlacesHydrated &&
-          latestTripHydrated &&
-          weatherStatus !== "loading" &&
-          !nearbyLoading &&
-          nearbyRenderState !== "loading"
-        }
-      />
+      {personalizationCardNode}
     </div>
   );
 }

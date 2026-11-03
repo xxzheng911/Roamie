@@ -27,7 +27,10 @@ import {
 } from "@/lib/ai/destination-provider-coords";
 import {
   isValidAnchorCoordinate,
+  providerEvidenceForGeocodeLocation,
+  providerEvidenceFromPlaceDetails,
   tripLocationToProviderResult,
+  type DestinationProviderEvidence,
   type DestinationProviderResult,
 } from "@/lib/ai/destination-provider-result";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
@@ -647,7 +650,11 @@ async function resolveViaPlacesAutocompleteDetails(params: {
   language: string;
   regionCode?: string;
   requestId?: string;
-}): Promise<{ location: TripLocation | null; error: GeocodeFailureCode | null }> {
+}): Promise<{
+  location: TripLocation | null;
+  error: GeocodeFailureCode | null;
+  evidence?: DestinationProviderEvidence;
+}> {
   const { query, apiKey, language, regionCode } = params;
   const requestId = params.requestId ?? newDestinationProviderRequestId();
 
@@ -723,10 +730,11 @@ async function resolveViaPlacesAutocompleteDetails(params: {
       return { suggestions: [], httpStatus: autoRes.status, error: code };
     }
 
+    // Google / proxy may return a JSON `null` body.
     let autoJson: {
       suggestions?: AutocompleteSuggestion[];
       error?: { message?: string; status?: string };
-    };
+    } | null;
     try {
       autoJson = (await autoRes.json()) as typeof autoJson;
     } catch {
@@ -744,7 +752,7 @@ async function resolveViaPlacesAutocompleteDetails(params: {
       return { suggestions: [], httpStatus: autoRes.status, error: "geocode_decode_error" };
     }
 
-    const suggestions = autoJson.suggestions ?? [];
+    const suggestions = autoJson?.suggestions ?? [];
     logProviderResponse({
       requestId,
       provider: "places_autocomplete",
@@ -755,9 +763,9 @@ async function resolveViaPlacesAutocompleteDetails(params: {
       responseShape: includedPrimaryTypes?.length
         ? `places.suggestions[]+types=${includedPrimaryTypes.join("|")}`
         : "places.suggestions[]",
-      rawStatus: autoJson.error?.status,
+      rawStatus: autoJson?.error?.status,
       errorCode: suggestions.length ? undefined : "places_autocomplete_empty",
-      errorMessage: autoJson.error?.message,
+      errorMessage: autoJson?.error?.message,
       elapsedMs: Date.now() - started,
     });
     return { suggestions, httpStatus: autoRes.status, error: null };
@@ -845,6 +853,22 @@ async function resolveViaPlacesAutocompleteDetails(params: {
     return { location: null, error: "geocode_decode_error" };
   }
 
+  // Google / proxy may return a JSON `null` body — no details (existing failure code).
+  if (!detailJson || typeof detailJson !== "object") {
+    logProviderResponse({
+      requestId,
+      provider: "places_details",
+      query,
+      httpStatus: detailRes.status,
+      rawResultCount: 0,
+      parsedCandidateCount: 0,
+      responseShape: "non_object",
+      errorCode: "places_details_empty",
+      elapsedMs: Date.now() - detailStarted,
+    });
+    return { location: null, error: "places_details_empty" };
+  }
+
   const extracted = extractCoordinatesFromProviderResponse(detailJson);
   logProviderResponse({
     requestId,
@@ -858,9 +882,10 @@ async function resolveViaPlacesAutocompleteDetails(params: {
     elapsedMs: Date.now() - detailStarted,
   });
 
+  const evidence = providerEvidenceFromPlaceDetails(detailJson);
   const location = rawToTripLocation(detailJson, placeId);
   if (location && Number.isFinite(location.lat) && Number.isFinite(location.lng)) {
-    return { location, error: null };
+    return { location, error: null, evidence };
   }
 
   // Soft accept: even if type filter rejected, use raw geometry for Destination Anchor.
@@ -882,6 +907,7 @@ async function resolveViaPlacesAutocompleteDetails(params: {
         utcOffsetMinutes: null,
       },
       error: null,
+      evidence,
     };
   }
 
@@ -992,6 +1018,7 @@ export const geocodeTripLocationFromText = createServerFn({ method: "POST" })
             httpStatus: 200,
             apiStatus: "OK",
             sourceShape: "places_details",
+            evidence: placesFallback.evidence,
           });
           return finish(placesFallback.location, null, providerResult);
         }
@@ -1099,6 +1126,9 @@ export const geocodeTripLocationFromText = createServerFn({ method: "POST" })
         });
         return runPlacesFallback("geocode_decode_error");
       }
+      // Google / proxy may return a JSON `null` body — treat it as `{}`: no status maps to the
+      // existing `geocode_empty_response` code, then the same Places fallback as no results.
+      if (!json || typeof json !== "object") json = {};
 
       const extracted = extractCoordinatesFromProviderResponse(json);
       const statusCode = mapGeocodeApiStatus(json.status);
@@ -1184,6 +1214,7 @@ export const geocodeTripLocationFromText = createServerFn({ method: "POST" })
             httpStatus: res.status,
             apiStatus: json.status ?? "OK",
             sourceShape: "geocode_results",
+            evidence: providerEvidenceForGeocodeLocation(json, location),
           });
           return finish(location, null, providerResult);
         }

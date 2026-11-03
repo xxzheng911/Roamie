@@ -21,6 +21,12 @@ import { extractItineraryDestinationFromText } from "@/lib/ai/itinerary-entity-e
 import { enrichTripDatesInContext } from "@/lib/ai/ai-trip-style";
 import { applyCityLocaleAlias, extractKnownAliasDestination } from "@/lib/ai/destination-locale-aliases";
 import { normalizeDestinationAndDuration } from "@/lib/parse-chinese-duration";
+import {
+  isContinuationGrammarOnly,
+  matchLeadingNegatedClause,
+  negatedClauseSwitchedText,
+  parseNegatedDestinationSwitch,
+} from "@/lib/ai/continue-recommendation-intent";
 
 /** A 附近探索 | B 目的地規劃 | C 特定地點 | D 心情推薦 */
 export type ChatConversationMode =
@@ -129,6 +135,70 @@ const INVALID_STRUCTURED_AREA_TAIL =
 const INVALID_STRUCTURED_AREA_SUBSTRING =
   /(?:安靜|安静|熱鬧|热闹|便宜|高級|高级|不限時|不限时|更多|其他|還有|还有|一點|一点|一些|更好|插座|甜點|甜点)/;
 
+/** The single activity-tail rule (「玩」「走走」「玩兩天」「三天」); anchored on the whole tail. */
+const NON_GEOGRAPHIC_ACTIVITY_TAIL_RE =
+  /^(?:(?:走走|逛逛|玩玩|玩|旅行|旅遊|旅游)(?:(?:[一二三四五六七八九十兩两]{1,3}|\d{1,2})\s*(?:天|日))?|(?:[一二三四五六七八九十兩两]{1,3}|\d{1,2})\s*天)$/;
+
+/**
+ * True when the whole tail is an activity (+ optional day count) or a bare 「N天」, never a
+ * geographic area (「金澤玩」→「玩」, 「福岡玩兩天」→「玩兩天」). Pure; the only activity-tail rule.
+ */
+export function isNonGeographicActivityTail(tail: string): boolean {
+  return NON_GEOGRAPHIC_ACTIVITY_TAIL_RE.test(tail);
+}
+
+export type TrailingActivityTailSplit =
+  | { kind: "none" }
+  | { kind: "activity_only" }
+  | { kind: "invalid_head"; tail: string }
+  | { kind: "split"; head: string; tail: string };
+
+/**
+ * Shared trailing activity-tail split (no own pattern; only isNonGeographicActivityTail):
+ * whole text is an activity tail → activity_only; else the longest activity-tail suffix wins
+ * (first hit stops) → split when the head has ≥2 chars and is no activity tail, otherwise
+ * invalid_head; no suffix → none. Does not guess a place name.
+ */
+export function splitTrailingActivityTail(raw: string): TrailingActivityTailSplit {
+  const t = (raw ?? "").trim();
+  if (!t) return { kind: "none" };
+  if (isNonGeographicActivityTail(t)) return { kind: "activity_only" };
+  for (let len = t.length - 1; len >= 1; len -= 1) {
+    const tail = t.slice(t.length - len);
+    if (!isNonGeographicActivityTail(tail)) continue;
+    const head = t.slice(0, t.length - len).trim();
+    if (head.length >= 2 && !isNonGeographicActivityTail(head)) {
+      return { kind: "split", head, tail };
+    }
+    return { kind: "invalid_head", tail };
+  }
+  return { kind: "none" };
+}
+
+/** Sentence-initial pronoun set (same literals as the cri extended negated clause). */
+const LEADING_PRONOUN = "(?:我們|我们|那我|那就|我|那|就|還是|还是|先)";
+const LEADING_PRONOUN_ONLY_RE = new RegExp(`^${LEADING_PRONOUN}$`);
+const KNOWN_CITY_ACTIVITY_PHRASE_RE = new RegExp(
+  `^${LEADING_PRONOUN}?(?:(?:想|要)?[去到在])?([\\u4e00-\\u9fff]{2,8}?)` +
+    "((?:走走|逛逛|玩玩|玩|旅行|旅遊|旅游)(?:(?:[一二三四五六七八九十兩两]{1,3}|\\d{1,2})\\s*(?:天|日))?)" +
+    "(?=推薦|推荐|有|景點|景点|地點|地点|吃|喝|，|,|。|！|!|？|\\?|\\s|$)",
+);
+
+/**
+ * Additive fallback after the existing parse patterns: sentence-initial (pronoun)?(想/要)?去／到／在?
+ * + local known city + activity tail (「去金澤玩推薦咖啡廳」「到金澤玩，…」→ 金澤; 「到處玩」→ none,
+ * the label must be a known city as a whole). Never runs on a negated
+ * clause; non-local places are left to the provisional split (no unverified write).
+ */
+function matchKnownCityActivityPhrase(t: string): string | undefined {
+  if (matchLeadingNegatedClause(t) !== null) return undefined;
+  const m = t.match(KNOWN_CITY_ACTIVITY_PHRASE_RE);
+  if (!m?.[1] || !m[2]) return undefined;
+  if (!isNonGeographicActivityTail(m[2])) return undefined;
+  const label = normalizeDestinationLabel(m[1]);
+  return isKnownTouristCityLabel(label) ? label : undefined;
+}
+
 /**
  * Known parent city/county/region + adjacent geographic tail.
  * City-wide labels have no tail. One-character tails (東京港) are allowed;
@@ -147,6 +217,7 @@ export function splitKnownParentAreaLabel(input: string): KnownParentAreaSplit |
       .replace(/^[市縣县都府]/, "")
       .replace(/^(?:的|之)/, "");
     if (!area || area.length > 8) continue;
+    if (isNonGeographicActivityTail(area)) continue;
     if (/^有/.test(area) || INVALID_STRUCTURED_AREA_TAIL.test(area)) continue;
     if (INVALID_STRUCTURED_AREA_SUBSTRING.test(area)) continue;
     if (!STRUCTURED_AREA_TAIL_RE.test(area)) continue;
@@ -726,6 +797,9 @@ export function parseDestinationFromText(text: string): string | undefined {
   try {
     const t = text.trim();
     if (!t) return undefined;
+    // 「大阪不去了，換金澤」：被否定的舊城市不可當目的地，只解析切換後的語句。
+    const negatedSwitch = parseNegatedDestinationSwitch(t);
+    if (negatedSwitch) return parseDestinationFromText(negatedSwitch.remainderText);
 
     if (isCalendarOnly(t)) return undefined;
     const globalCandidates = travelDestinationCandidates(t);
@@ -790,6 +864,9 @@ export function parseDestinationFromText(text: string): string | undefined {
       }
     }
 
+    const knownCityActivity = matchKnownCityActivityPhrase(t);
+    if (knownCityActivity) return knownCityActivity;
+
     const selection = parseDestinationSelectionFromText(t);
     if (selection) return selection;
 
@@ -826,6 +903,204 @@ export function isNearbyExploreText(text: string): boolean {
   if (!t) return false;
   if (parseDestinationFromText(t) && !/(附近|這一帶|現在|今天)/.test(t)) return false;
   return /(附近|這一帶|現在|今天|當下|離我|我這邊|我附近)/.test(t);
+}
+
+export type DestinationSwitchTurn = {
+  state: "CONFIRMED_SWITCH" | "NEGATED_UNCERTAIN" | "NO_SWITCH";
+  authority?: "local" | "pending_provider";
+  reason?: "no_negated_place" | "target_not_place" | "same_place";
+  form?: "legacy" | "extended" | "negated_only";
+  hasNegatedClause: boolean;
+  negatedText?: string;
+  /** The only string that may be sent to the Destination Authority. */
+  targetLabel?: string;
+  remainderText?: string;
+  switchedText?: string;
+  /** Whole sentence without the negated clause and the target wording (activity tail incl.). */
+  requestText: string;
+};
+
+const SWITCH_SEPARATOR_RE = /[\s，,、]/;
+const SWITCH_PUNCT_TRIM_RE = /^[\s，,、]+|[\s，,、]+$/g;
+const SWITCH_ADMIN_TAIL_RE = /^\p{Script=Han}{1,5}(?:區|区|市|町|村|鄉|乡|鎮|镇|縣|县|郡)$/u;
+const SWITCH_LABEL_MAX = 12;
+const SWITCH_LABEL_FRAGMENT_RE = /(?:了|再|吧|嗎|呢|一點|一下)/;
+const SWITCH_VENUE_SUFFIX_RE = /[廳厅店]$/;
+/**
+ * Generic alternative wording as a whole candidate (anchored; never a substring match):
+ * optional determiner (一／另一／下一／別／其他…) + optional classifier (個／家／間) +
+ * optional generic noun (地方／地點／城市／的), at least one part present
+ * (「地方」「一個城市」「別家」「另一家」「下一個」), or the fixed 「新的」 wording
+ * (「新的」「新的一家」「新的一個」, optionally after 「換」). 「新」 is no free determiner:
+ * 「新城市」「新店」「那霸」 never match.
+ */
+const SWITCH_GENERIC_DETERMINER = "(?:另一|下一|一|另|別|别|其他|其它)";
+const SWITCH_GENERIC_CLASSIFIER = "(?:個|个|家|間|间)";
+const SWITCH_GENERIC_NOUN = "(?:地方|地點|地点|城市|的)";
+const SWITCH_GENERIC_NEW_ONE = "(?:[換换]?新的(?:一家|一個|一个)?)";
+const SWITCH_GENERIC_PLACE_WORD_RE = new RegExp(
+  `^(?:${SWITCH_GENERIC_DETERMINER}?${SWITCH_GENERIC_CLASSIFIER}?${SWITCH_GENERIC_NOUN}|` +
+    `${SWITCH_GENERIC_DETERMINER}?${SWITCH_GENERIC_CLASSIFIER}|${SWITCH_GENERIC_DETERMINER}|` +
+    `${SWITCH_GENERIC_NEW_ONE})$`,
+);
+
+/** Label without a trailing activity tail when one splits off cleanly; otherwise as written. */
+function withoutActivityTail(label: string): string {
+  const split = splitTrailingActivityTail(label);
+  return split.kind === "split" ? split.head : label;
+}
+
+/**
+ * Existing local place Authority (known city / destination / known parent + admin tail).
+ * Always checked before isPlaceShapedSwitchTarget, so a suffix exclusion never overrides it.
+ */
+function isLocalSwitchTarget(label: string): boolean {
+  if (isKnownTouristCityLabel(label) || isKnownDestinationLabel(label)) return true;
+  const split = splitKnownParentAreaLabel(label);
+  return Boolean(split && SWITCH_ADMIN_TAIL_RE.test(split.area));
+}
+
+/**
+ * Non-local wording that may name a place (pending provider). Only for labels the local
+ * Authority did not resolve: venue-suffix (廳／店) labels are unprovable here and stay
+ * NEGATED_UNCERTAIN (no paid lookup). Generic alternative wording (「一家」「別的」「其他的」
+ * via the shared continuation grammar; existing non-area substrings; 「…的地方」 (exclusion
+ * only); the anchored generic wording 「一個地方」「換城市」「別家」「新的」) is never one.
+ */
+function isPlaceShapedSwitchTarget(label: string): boolean {
+  return (
+    !SWITCH_GENERIC_PLACE_WORD_RE.test(label) &&
+    label.length >= 2 &&
+    label.length <= SWITCH_LABEL_MAX &&
+    STRUCTURED_AREA_TAIL_RE.test(label) &&
+    !hasCategoryPlaceQuery(label) &&
+    !SWITCH_VENUE_SUFFIX_RE.test(label) &&
+    !SWITCH_LABEL_FRAGMENT_RE.test(label) &&
+    !isContinuationGrammarOnly(label) &&
+    !INVALID_STRUCTURED_AREA_SUBSTRING.test(label) &&
+    !isCategoryNonDestinationLabel(label)
+  );
+}
+
+/**
+ * Per-turn destination switch state (pure, lexical; no Session, no provider):
+ * CONFIRMED_SWITCH (local / pending_provider), NEGATED_UNCERTAIN or NO_SWITCH.
+ */
+export function classifyDestinationSwitchTurn(text: string): DestinationSwitchTurn {
+  const raw = (text ?? "").trim();
+  const clause = matchLeadingNegatedClause(raw);
+  if (!clause) return { state: "NO_SWITCH", hasNegatedClause: false, requestText: raw };
+
+  const negatedText = clause.negatedText;
+  const negatedPlace = withoutActivityTail(negatedText);
+  // Full lead for legacy too (「換到京都」「換去京都」→「京都」); parse keeps the legacy strip.
+  const { remainderText, afterLeadText, switchedText } = negatedClauseSwitchedText(raw, clause, {
+    fullLead: true,
+  });
+  const base = {
+    hasNegatedClause: true,
+    form: clause.form,
+    negatedText,
+    remainderText,
+  } as const;
+  const clauseRequestText = remainderText.replace(SWITCH_PUNCT_TRIM_RE, "");
+
+  if (clause.form === "negated_only") {
+    // Narrow level check: only a known city / country is a negated destination.
+    const isDestination =
+      Boolean(negatedPlace) &&
+      (isKnownTouristCityLabel(negatedPlace) || isKnownCountryLabel(negatedPlace));
+    return isDestination
+      ? {
+          ...base,
+          state: "NEGATED_UNCERTAIN",
+          reason: "target_not_place",
+          requestText: clauseRequestText,
+        }
+      : { ...base, state: "NO_SWITCH", requestText: clauseRequestText };
+  }
+
+  const negatedIsPlace =
+    Boolean(negatedPlace) &&
+    (isKnownDestinationLabel(negatedPlace) || splitKnownParentAreaLabel(negatedPlace) !== null);
+
+  if (clause.idiom) {
+    return negatedIsPlace
+      ? {
+          ...base,
+          switchedText,
+          state: "NEGATED_UNCERTAIN",
+          reason: "target_not_place",
+          requestText: clauseRequestText,
+        }
+      : { ...base, switchedText, state: "NO_SWITCH", requestText: clauseRequestText };
+  }
+
+  const yHead = switchedText.split(SWITCH_SEPARATOR_RE)[0]?.trim() ?? "";
+  const ySplit = splitTrailingActivityTail(yHead);
+  const yLabel =
+    ySplit.kind === "split"
+      ? ySplit.head
+      : ySplit.kind === "none"
+        ? yHead
+        : "";
+  const target = yLabel ? normalizeDestinationAndDuration(yLabel).destinationLabel.trim() : "";
+  const isLocal = Boolean(target) && isLocalSwitchTarget(target);
+  const isPlaceShaped = Boolean(target) && !isLocal && isPlaceShapedSwitchTarget(target);
+  const afterTarget =
+    yHead && afterLeadText.startsWith(yHead) ? afterLeadText.slice(yHead.length) : afterLeadText;
+  const requestText = afterTarget.replace(SWITCH_PUNCT_TRIM_RE, "");
+  const withSwitch = { ...base, switchedText };
+
+  if (!negatedText || LEADING_PRONOUN_ONLY_RE.test(negatedText)) {
+    return isLocal || isPlaceShaped
+      ? {
+          ...withSwitch,
+          state: "NEGATED_UNCERTAIN",
+          reason: "no_negated_place",
+          targetLabel: target,
+          requestText,
+        }
+      : {
+          ...withSwitch,
+          state: "NEGATED_UNCERTAIN",
+          reason: "target_not_place",
+          requestText: clauseRequestText,
+        };
+  }
+  if (!negatedIsPlace) return { ...withSwitch, state: "NO_SWITCH", requestText: clauseRequestText };
+  if (isLocal) {
+    if (normalizeDestinationLabel(target) === normalizeDestinationLabel(negatedPlace)) {
+      return {
+        ...withSwitch,
+        state: "NEGATED_UNCERTAIN",
+        reason: "same_place",
+        requestText: clauseRequestText,
+      };
+    }
+    return {
+      ...withSwitch,
+      state: "CONFIRMED_SWITCH",
+      authority: "local",
+      targetLabel: target,
+      requestText,
+    };
+  }
+  if (isPlaceShaped) {
+    return {
+      ...withSwitch,
+      state: "CONFIRMED_SWITCH",
+      authority: "pending_provider",
+      targetLabel: target,
+      requestText,
+    };
+  }
+  return {
+    ...withSwitch,
+    state: "NEGATED_UNCERTAIN",
+    reason: "target_not_place",
+    requestText: clauseRequestText,
+  };
 }
 
 export function isDestinationPlanningText(text: string, session: ChatPlanningSession): boolean {

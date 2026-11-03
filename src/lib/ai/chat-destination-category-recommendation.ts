@@ -115,6 +115,7 @@ import {
 import { resolveChatShortcutContext } from "@/lib/ai/chat-intent";
 import { logShortcutRecommendationSummary } from "@/lib/ai/shortcut-recommendation-telemetry";
 import { applyRecommendationPlaceTypeMetadata } from "@/lib/ai/recommendation-place-type-metadata";
+import { isValidAnchorCoordinate } from "@/lib/ai/destination-provider-result";
 import {
   selectAreaFirstCandidates,
   type DestinationAreaCandidate,
@@ -637,6 +638,8 @@ export async function buildDestinationCategoryRecommendations(params: {
   rejectedPlaceNames?: string[];
   session?: ChatPlanningSession;
   userProfile?: UserProfileForReason | null;
+  /** Trusted search center: used as-is (no geocode / approx / (0,0) / text-only fallback). */
+  trustedCenter?: { lat: number; lng: number };
 }): Promise<{
   summary: string;
   recommendations: RoamieRecommendationItem[];
@@ -657,9 +660,32 @@ export async function buildDestinationCategoryRecommendations(params: {
     rejectedPlaceNames = [],
     session,
     userProfile,
+    trustedCenter,
   } = params;
   const label = normalizeDestinationLabel(destination);
   const mealIntent = resolveExplicitMealIntent(userText);
+  if (
+    trustedCenter &&
+    (!isValidAnchorCoordinate(trustedCenter.lat, trustedCenter.lng) ||
+      (trustedCenter.lat === 0 && trustedCenter.lng === 0))
+  ) {
+    // Unusable trusted center: stop safely — no geocode, no Places.
+    return {
+      summary: "",
+      recommendations: [],
+      payload: {
+        version: 2,
+        title: "Roamie 推薦",
+        summary: "",
+        moodTag: resolvePresentableMoodTag(undefined, context),
+        recommendations: [],
+        itinerary: [],
+        generatedAt: new Date().toISOString(),
+      },
+      contextPatch: {},
+      usedQueries: [],
+    };
+  }
 
   const scopeGate = evaluateDestinationScopeGate({
     destination: label,
@@ -713,11 +739,26 @@ export async function buildDestinationCategoryRecommendations(params: {
 
   const flow = beginPlacesFlow("chat_destination_category");
   try {
-    const geocoded = await geocodeDestinationWithFallback({
-      destination: label,
-      locale,
-      geocodeFn,
-    });
+    // Trusted center: same label-only location shape the scope-lock / approx path yields
+    // (city = displayLabel = formattedName = label, no region), so the search profile is unchanged.
+    const geocoded = trustedCenter
+      ? {
+          placeId: `scope:${label}`,
+          country: "unknown",
+          city: label,
+          lat: trustedCenter.lat,
+          lng: trustedCenter.lng,
+          formattedName: label,
+          displayLabel: label,
+          address: label,
+          timezone: undefined,
+          utcOffsetMinutes: null,
+        }
+      : await geocodeDestinationWithFallback({
+          destination: label,
+          locale,
+          geocodeFn,
+        });
 
     let lat: number;
     let lng: number;

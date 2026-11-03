@@ -28,7 +28,61 @@ export type MapPlaceMarker = {
   lng: number;
   title?: string;
   selected?: boolean;
+  /** 選填：Pin 上的文字（例如天數或站序）；有 label／color／variant 任一時改用 SVG Symbol 圓形 Pin */
+  label?: string;
+  /** 選填：Pin 主色（CSS 色碼） */
+  color?: string;
+  /** 選填：solid＝實心；outline＝白底描邊（預設 solid） */
+  variant?: "solid" | "outline";
+  /** 選填：覆寫 zIndex（未提供時沿用 selected 500／100） */
+  zIndex?: number;
 };
+
+/** 選填折線（直線依序連接，虛線樣式） */
+export type MapPolyline = {
+  id: string;
+  color: string;
+  path: Array<{ lat: number; lng: number }>;
+};
+
+/** 選填視野：單點置中＋縮放，或 fitBounds */
+export type MapFitTarget =
+  | { type: "point"; center: { lat: number; lng: number }; zoom: number }
+  | { type: "bounds"; bounds: { north: number; south: number; east: number; west: number } };
+
+function isStyledMarker(item: MapPlaceMarker): boolean {
+  return item.label != null || item.color != null || item.variant != null;
+}
+
+function styledMarkerSignature(item: MapPlaceMarker): string {
+  return isStyledMarker(item)
+    ? `${item.label ?? ""}|${item.color ?? ""}|${item.variant ?? ""}|${item.zIndex ?? ""}`
+    : "";
+}
+
+function styledMarkerIcon(g: typeof google.maps, item: MapPlaceMarker): google.maps.Symbol {
+  const color = item.color ?? "#5c5348";
+  const solid = item.variant !== "outline";
+  return {
+    path: g.SymbolPath.CIRCLE,
+    scale: 12,
+    fillColor: solid ? color : "#ffffff",
+    fillOpacity: 1,
+    strokeColor: solid ? "#ffffff" : color,
+    strokeWeight: solid ? 2 : 2.5,
+  };
+}
+
+function styledMarkerLabel(item: MapPlaceMarker): google.maps.MarkerLabel | undefined {
+  if (!item.label) return undefined;
+  const solid = item.variant !== "outline";
+  return {
+    text: item.label,
+    color: solid ? "#ffffff" : (item.color ?? "#5c5348"),
+    fontSize: "12px",
+    fontWeight: "600",
+  };
+}
 
 export type MapUserLocationPin = {
   lat: number;
@@ -51,6 +105,17 @@ type Props = {
   /** 點擊地圖空白區（不含 marker） */
   onMapClick?: () => void;
   onUserCenterChange?: (center: { lat: number; lng: number }) => void;
+  /** 選填：依序直線虛線（未傳時不建立任何折線） */
+  polylines?: MapPolyline[];
+  /** 選填：地圖手勢模式（僅建立地圖時套用；預設 greedy） */
+  gestureHandling?: "greedy" | "cooperative" | "none" | "auto";
+  /** 選填：物件參照改變時套用一次視野（未傳／null 時不調整視野） */
+  fitToMarkers?: MapFitTarget | null;
+  /**
+   * 選填：容器是否可見（例如所在分頁被 display:none 隱藏時傳 false）。
+   * 由 false 變 true 時觸發 resize，並補套隱藏期間延後的 fitToMarkers。未傳＝恆可見（行為不變）。
+   */
+  visible?: boolean;
 };
 
 export function GoogleMap({
@@ -65,6 +130,10 @@ export function GoogleMap({
   mapPadding,
   onMapClick,
   onUserCenterChange,
+  polylines,
+  gestureHandling = "greedy",
+  fitToMarkers,
+  visible,
 }: Props) {
   const { t: uiT } = useI18n();
 
@@ -77,10 +146,13 @@ export function GoogleMap({
   onMapReadyRef.current = onMapReady;
   const mapPaddingRef = useRef(mapPadding);
   mapPaddingRef.current = mapPadding;
+  const gestureHandlingRef = useRef(gestureHandling);
+  gestureHandlingRef.current = gestureHandling;
+  const polylineRecordsRef = useRef<google.maps.Polyline[]>([]);
   const mapRef = useRef<google.maps.Map | null>(null);
   const initStartedRef = useRef(false);
   const markerRecordsRef = useRef<
-    Array<{ key: string; marker: google.maps.Marker; selected: boolean }>
+    Array<{ key: string; marker: google.maps.Marker; selected: boolean; style: string }>
   >([]);
   const placeMarkersPropRef = useRef(placeMarkers);
   placeMarkersPropRef.current = placeMarkers;
@@ -93,6 +165,10 @@ export function GoogleMap({
   const [loadError, setLoadError] = useState<string | null>(() => getGoogleMapsBrowserKeyError());
   const [mapReady, setMapReady] = useState(false);
   const reportedErrorRef = useRef(false);
+  const isVisible = visible !== false;
+  /** 最近一次可見後是否已完成 resize（隱藏時設 false） */
+  const sizedWhileVisibleRef = useRef(isVisible);
+  const appliedFitRef = useRef<MapFitTarget | null>(null);
 
   const openUserLocationInfo = useCallback(() => {
     const map = mapRef.current;
@@ -166,7 +242,7 @@ export function GoogleMap({
           streetViewControl: false,
           mapTypeControl: false,
           keyboardShortcuts: false,
-          gestureHandling: "greedy",
+          gestureHandling: gestureHandlingRef.current,
           styles: [
             { featureType: "poi", stylers: [{ visibility: "off" }] },
             { featureType: "transit", stylers: [{ visibility: "off" }] },
@@ -330,7 +406,12 @@ export function GoogleMap({
     if (!g?.Marker) return;
     const map = mapRef.current;
     const existingByKey = new Map(markerRecordsRef.current.map((record) => [record.key, record]));
-    const next: Array<{ key: string; marker: google.maps.Marker; selected: boolean }> = [];
+    const next: Array<{
+      key: string;
+      marker: google.maps.Marker;
+      selected: boolean;
+      style: string;
+    }> = [];
     const seen = new Set<string>();
 
     try {
@@ -339,6 +420,8 @@ export function GoogleMap({
         if (seen.has(key)) continue;
         seen.add(key);
         const selected = Boolean(item.selected);
+        // 未帶 label／color／variant／zIndex 的 marker：style 為 ""，行為與既有完全相同。
+        const style = styledMarkerSignature(item);
         const found = existingByKey.get(key);
         if (found) {
           existingByKey.delete(key);
@@ -349,18 +432,28 @@ export function GoogleMap({
           if ((found.marker.getTitle() ?? "") !== (item.title ?? "")) found.marker.setTitle(item.title ?? "");
           if (found.selected !== selected) {
             found.marker.setAnimation(selected ? (g.Animation?.BOUNCE ?? null) : null);
-            found.marker.setZIndex(selected ? 500 : 100);
+            found.marker.setZIndex(item.zIndex ?? (selected ? 500 : 100));
             found.selected = selected;
+          }
+          if (found.style !== style) {
+            if (isStyledMarker(item)) {
+              found.marker.setIcon(styledMarkerIcon(g, item));
+              found.marker.setLabel(styledMarkerLabel(item) ?? null);
+            }
+            found.marker.setZIndex(item.zIndex ?? (selected ? 500 : 100));
+            found.style = style;
           }
           next.push(found);
           continue;
         }
+        const styled = isStyledMarker(item);
         const marker = new g.Marker({
           position: { lat: item.lat, lng: item.lng },
           map,
           title: item.title,
           animation: selected ? g.Animation?.BOUNCE : undefined,
-          zIndex: selected ? 500 : 100,
+          zIndex: item.zIndex ?? (selected ? 500 : 100),
+          ...(styled ? { icon: styledMarkerIcon(g, item), label: styledMarkerLabel(item) } : {}),
         });
         marker.addListener("click", () => {
           const index = placeMarkersPropRef.current.findIndex(
@@ -368,7 +461,7 @@ export function GoogleMap({
           );
           if (index >= 0) onPlaceMarkerClickRef.current?.(index);
         });
-        next.push({ key, marker, selected });
+        next.push({ key, marker, selected, style });
       }
       for (const leftover of existingByKey.values()) {
         try {
@@ -382,6 +475,111 @@ export function GoogleMap({
       console.warn(LOG, "建立地圖標記失敗", e);
     }
   }, [placeMarkers, mapReady]);
+
+  // 選填折線：未傳 polylines 且未曾建立時不做任何事（探索頁行為不變）。
+  useEffect(() => {
+    if (!mapRef.current || !mapReady) return;
+    if (!polylines && polylineRecordsRef.current.length === 0) return;
+    const g = window.google?.maps;
+    if (!g?.Polyline) return;
+    for (const line of polylineRecordsRef.current) {
+      try {
+        line.setMap(null);
+      } catch {
+        /* ignore */
+      }
+    }
+    polylineRecordsRef.current = [];
+    try {
+      for (const line of polylines ?? []) {
+        if (line.path.length < 2) continue;
+        polylineRecordsRef.current.push(
+          new g.Polyline({
+            map: mapRef.current,
+            path: line.path,
+            geodesic: false,
+            clickable: false,
+            strokeOpacity: 0,
+            zIndex: 10,
+            icons: [
+              {
+                icon: {
+                  path: "M 0,-1 0,1",
+                  strokeOpacity: 0.85,
+                  strokeColor: line.color,
+                  strokeWeight: 2.5,
+                  scale: 2.5,
+                },
+                offset: "0",
+                repeat: "12px",
+              },
+            ],
+          }),
+        );
+      }
+    } catch (e) {
+      console.warn(LOG, "建立地圖折線失敗", e);
+    }
+  }, [polylines, mapReady]);
+
+  useEffect(() => {
+    return () => {
+      for (const line of polylineRecordsRef.current) {
+        try {
+          line.setMap(null);
+        } catch {
+          /* ignore */
+        }
+      }
+      polylineRecordsRef.current = [];
+    };
+  }, []);
+
+  // 選填視野：fitToMarkers 物件參照改變時套用一次（未傳／null 時不調整，探索頁行為不變）。
+  // visible === false（容器被隱藏）時延後；再次可見時先 resize，等版面穩定（兩個 frame）後補套。
+  // 未傳 visible 時 isVisible 恆為 true、sizedWhileVisibleRef 恆為 true → 與原本同步套用完全相同。
+  useEffect(() => {
+    if (!isVisible) {
+      sizedWhileVisibleRef.current = false;
+      return;
+    }
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    const target = fitToMarkers;
+    const applyFit = () => {
+      if (!target || appliedFitRef.current === target) return;
+      appliedFitRef.current = target;
+      if (target.type === "point") {
+        map.setCenter(target.center);
+        map.setZoom(target.zoom);
+        return;
+      }
+      const { north, south, east, west } = target.bounds;
+      if (north === south && east === west) {
+        map.setCenter({ lat: north, lng: east });
+        map.setZoom(15);
+        return;
+      }
+      map.fitBounds({ north, south, east, west }, 56);
+    };
+    if (sizedWhileVisibleRef.current) {
+      applyFit();
+      return;
+    }
+    triggerMapResize(map);
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        sizedWhileVisibleRef.current = true;
+        triggerMapResize(map);
+        applyFit();
+      });
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+    };
+  }, [fitToMarkers, mapReady, isVisible]);
 
   if (loadError) {
     return (

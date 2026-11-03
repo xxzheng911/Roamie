@@ -199,7 +199,7 @@ function parseGpsPosition(
 
 type CapGeolocation = typeof import("@capacitor/geolocation").Geolocation;
 
-async function readCapacitorPosition(): Promise<{
+async function readCapacitorPosition(onPermissionGranted?: () => void): Promise<{
   result: DeviceLocationResult | null;
   permission: LocationPermissionState;
 }> {
@@ -222,6 +222,7 @@ async function readCapacitorPosition(): Promise<{
     if (permission !== "granted") {
       return { result: null, permission };
     }
+    onPermissionGranted?.();
 
     console.info("[LOCATION_REQUEST_START]", "platform=capacitor");
 
@@ -344,7 +345,9 @@ function fallbackResult(permission: LocationPermissionState, reason: string): De
   };
 }
 
-async function requestDeviceLocationInternal(): Promise<DeviceLocationResult> {
+async function requestDeviceLocationInternal(
+  onPermissionGranted?: () => void,
+): Promise<DeviceLocationResult> {
   registerLocationAppGate();
 
   const native = isNativeShell();
@@ -357,7 +360,7 @@ async function requestDeviceLocationInternal(): Promise<DeviceLocationResult> {
   }
 
   if (native) {
-    const { result: cap, permission: capPerm } = await readCapacitorPosition();
+    const { result: cap, permission: capPerm } = await readCapacitorPosition(onPermissionGranted);
     if (cap) return cap;
 
     return fallbackResult(
@@ -454,18 +457,45 @@ export async function requestDeviceLocation(
   }
 
   console.info("[LOCATION_INIT]", { reason: "request", force });
-  requestInFlight = requestDeviceLocationInternal()
-    .then((result) => {
-      if (!result.usedFallback) {
-        sessionLocation = result;
-        markHomeLocationBootstrapped();
+  // JS 端逾時：原生 Geolocation／app gate／權限請求不回應時，避免 requestInFlight 永遠卡住。
+  // Native 分兩段：權限確定前（含 app gate 8s+8s 與系統權限對話框）上限 120s → js_permission_timeout；
+  // 權限 granted 後重新計時 30s（getCurrentPosition 10s+8s=18s，留餘裕）→ js_timeout。
+  // Browser 內部 25s+30s=55s → 65s。逾時後晚到的結果直接忽略（不寫 sessionLocation）。
+  const native = isNativeShell();
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let settleTimeout!: (result: DeviceLocationResult) => void;
+  const timeout = new Promise<DeviceLocationResult>((resolve) => {
+    settleTimeout = resolve;
+  });
+  const armTimeout = (ms: number, reason: "js_timeout" | "js_permission_timeout") => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timedOut = true;
+      console.info("[LOCATION_REQUEST_FAILED]", `reason=${reason}`);
+      settleTimeout(fallbackResult("unavailable", reason));
+    }, ms);
+  };
+  armTimeout(native ? 120_000 : 65_000, native ? "js_permission_timeout" : "js_timeout");
+  const onPermissionGranted = native
+    ? () => {
+        if (!timedOut) armTimeout(30_000, "js_timeout");
       }
-      logLocationSuccess(result, force ? "request_force" : "request");
-      return result;
-    })
-    .finally(() => {
-      requestInFlight = null;
-    });
+    : undefined;
+  const internal = requestDeviceLocationInternal(onPermissionGranted).then((result) => {
+    if (timedOut) return result;
+    if (!result.usedFallback) {
+      sessionLocation = result;
+      markHomeLocationBootstrapped();
+    }
+    logLocationSuccess(result, force ? "request_force" : "request");
+    return result;
+  });
+  const pending: Promise<DeviceLocationResult> = Promise.race([internal, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+    if (requestInFlight === pending) requestInFlight = null;
+  });
+  requestInFlight = pending;
 
   return requestInFlight;
 }

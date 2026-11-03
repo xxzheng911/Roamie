@@ -6,8 +6,10 @@ import { toast } from "sonner";
 import { z } from "zod";
 import { PlaceDetailSheet, ExploreSubpageHeader } from "@/components/map/PlaceDetailSheet";
 import { useAppMainScroll } from "@/hooks/use-app-main-scroll";
+import { useDuoLayout } from "@/hooks/use-duo-layout";
 import { useIosInteractiveRoute } from "@/hooks/use-ios-interactive-route";
 import { useI18n } from "@/hooks/use-i18n";
+import { blockIfChatGenerationLocked } from "@/lib/ai/chat-generation-lock";
 import { requireAuthForAction } from "@/lib/auth-action";
 import { useAddToTrip } from "@/hooks/use-add-to-trip";
 import { useAccess } from "@/hooks/use-access";
@@ -110,6 +112,14 @@ function PlaceDetailPageContent() {
 
   useIosInteractiveRoute("place-detail");
   useAppMainScroll();
+
+  // iPhone Duo 展開雙頁（與我的頁 duoTwoPane 條件相同）：左頁標頭＋照片＋基本資訊＋收藏／導航，右頁推薦理由＋交通＋票券＋聊這個地點。
+  // 只在根節點追加 place-duo-* className；React 樹不變，開合時 PlaceDetailSheet 不 remount。
+  const duoLayout = useDuoLayout();
+  const duoTwoPane =
+    duoLayout.navPlacement === "right-rail" &&
+    duoLayout.tripLayout === "two-pane" &&
+    duoLayout.pane != null;
 
   useLayoutEffect(() => {
     document.documentElement.classList.add("place-route-active");
@@ -587,6 +597,7 @@ function PlaceDetailPageContent() {
 
   const handleOpenChat = () => {
     if (!place) return;
+    if (blockIfChatGenerationLocked(uiT("uiCoverage.chatGenerationLockedNotice"))) return;
     if (!requireAuthForAction("ai_chat", { placeId: place.id })) return;
     const distM =
       navigationOrigin && place.lat != null && place.lng != null
@@ -612,10 +623,16 @@ function PlaceDetailPageContent() {
     navigation.startNavigation();
   };
 
+  // 雙頁時追加的 className（單欄時為空字串，className 與原本完全相同）。
+  // 載入中／找不到／fetchError 只放在左頁（place-duo-single）；有內容時左右分頁（place-duo-root）。
+  const duoSingleClass = duoTwoPane ? " place-duo-single" : "";
+
   if (!place) {
     if (loading) {
       return (
-        <div className="place-detail-route flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-y-contain">
+        <div
+          className={`place-detail-route flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-y-contain${duoSingleClass}`}
+        >
           <ExploreSubpageHeader title={t("map.placeDetail")} onBack={handleBack} />
           <div className="flex flex-1 flex-col items-center justify-center gap-3 py-16">
             <Loader2 className="h-7 w-7 animate-spin text-clay" aria-hidden />
@@ -625,7 +642,9 @@ function PlaceDetailPageContent() {
       );
     }
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-4 px-8 py-20 text-center">
+      <div
+        className={`flex flex-1 flex-col items-center justify-center gap-4 px-8 py-20 text-center${duoSingleClass}`}
+      >
         <p className="text-sm text-muted-foreground">{uiT("productionUi.p4112e29c51")}</p>
         <button
           type="button"
@@ -638,11 +657,16 @@ function PlaceDetailPageContent() {
     );
   }
 
+  const fetchErrorOnly = Boolean(fetchError && usedFallback && !place.address && place.lat == null);
+  const duoRootClass = !duoTwoPane ? "" : fetchErrorOnly ? duoSingleClass : " place-duo-root";
+
   return (
-    <div className="place-detail-route flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-y-contain">
+    <div
+      className={`place-detail-route flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-y-contain${duoRootClass}`}
+    >
       <ExploreSubpageHeader title={t("map.placeDetail")} onBack={handleBack} />
 
-      {fetchError && usedFallback && !place.address && place.lat == null ? (
+      {fetchErrorOnly ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-4 px-8 py-16 text-center">
           <p className="text-sm text-muted-foreground">{uiT("productionUi.p4112e29c51")}</p>
           <button
@@ -685,6 +709,7 @@ function PlaceDetailPageContent() {
             tabelogExternalUrl={placeTabelogUrl}
             googleMapsExternalUrl={placeGoogleMapsUrl}
             ticketOffers={placeTicketOffers}
+            routeSplitLayout
           />
         </>
       )}

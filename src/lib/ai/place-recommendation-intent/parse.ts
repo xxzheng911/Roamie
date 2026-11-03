@@ -21,6 +21,7 @@ import type {
   PlaceRecommendationPrimaryType,
 } from "@/lib/ai/place-recommendation-intent/types";
 import { resolveDestinationAreaScope } from "@/lib/ai/destination-travel-profile";
+import { parseRequestedRecommendationCount } from "@/lib/ai/requested-recommendation-count";
 
 const PRIMARY_PATTERNS: Array<{
   type: PlaceRecommendationPrimaryType;
@@ -115,6 +116,22 @@ function detectContinuation(
   if (isMoreRecommendationResultsText(text)) return "more_results";
   if (hasActiveContext && hasSignals) return "refinement";
   return "new_request";
+}
+
+function detectLocalPreference(text: string): boolean {
+  return /在地|當地|当地|道地|地道|\blocal\b/i.test(text);
+}
+
+function detectPopularityPreference(
+  text: string,
+): PlaceRecommendationIntent["popularityPreference"] {
+  if (/冷門|冷门|小眾|小众|秘境|私房|人少|非觀光|非观光|隱藏版|隐藏版|hidden\s*gems?/i.test(text)) {
+    return "hidden_gem";
+  }
+  if (/熱門|热门|必去|必訪|必访|知名|著名|經典|经典|popular|must[-\s]?see/i.test(text)) {
+    return "popular";
+  }
+  return undefined;
 }
 
 function mapBudget(
@@ -254,6 +271,11 @@ export function parsePlaceRecommendationIntent(
     continuation,
     confidence,
   };
+  const popularityPreference = detectPopularityPreference(t);
+  if (popularityPreference) intent.popularityPreference = popularityPreference;
+  if (detectLocalPreference(t)) intent.localPreference = true;
+  const requestedCount = parseRequestedRecommendationCount(t);
+  if (requestedCount != null) intent.requestedCount = requestedCount;
 
   // Nightlife: izakaya alone may be restaurant + late_night
   if (/居酒屋/.test(t) && intent.primaryType === "nightlife" && !/酒吧|夜店|夜生活/.test(t)) {

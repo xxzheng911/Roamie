@@ -5,11 +5,14 @@ import { canonicalEditorialTheme } from "@/lib/ai/combination-theme-titles";
  * Never invents destination+category placeholder place names.
  */
 import {
+  isNonGeographicActivityTail,
   normalizeDestinationLabel,
   resolveDestinationFromText,
   splitKnownParentAreaLabel,
+  splitTrailingActivityTail,
 } from "@/lib/ai/trip-planning-context";
 import type { GeocodeDestinationFn } from "@/lib/ai/destination-geocode";
+import { parseNegatedDestinationSwitch } from "@/lib/ai/continue-recommendation-intent";
 import { lockDestinationCoordinatesFromGeocode } from "@/lib/ai/resolved-destination-scope";
 import type { Locale } from "@/lib/i18n/types";
 import type { TripLocation } from "@/lib/location/types";
@@ -279,7 +282,9 @@ function toDestinationAreaScope(candidate: DestinationAreaCandidate): Destinatio
  * Curated profile districts + provider-validated cache only.
  * Explicit city-tail areas (台中東區) are not curated — see resolveDestinationAreaScope.
  */
-function resolveCuratedOrCachedDestinationAreaScope(input: string): DestinationAreaScope | null {
+export function resolveCuratedOrCachedDestinationAreaScope(
+  input: string,
+): DestinationAreaScope | null {
   const compact = normalizeDestinationLabel(input).replace(/[\s,，、/／-]+/g, "");
   if (!compact) return null;
   const validated = validatedAreaScopes.get(compact);
@@ -348,7 +353,7 @@ const INVALID_DISTRICT_ONLY_FRAGMENT =
 const INVALID_GEOGRAPHIC_FRAGMENT =
   /^(?:附近|周邊|周边|市區|市区|當地|当地|這裡|这里|那裡|那里|完全不是|安靜一點|安静一点|熱鬧一點|热闹一点)$/;
 const INVALID_GEOGRAPHIC_SUBSTRING =
-  /(?:安靜|安静|熱鬧|热闹|便宜|高級|高级|不限時|不限时|更多|其他|還有|还有|一點|一点|一些|更好|插座|甜點|甜点)/;
+  /(?:安靜|安静|熱鬧|热闹|便宜|高級|高级|不限時|不限时|更多|其他|還有|还有|一點|一点|一些|更好|插座|甜點|甜点|吃|喝)/;
 const GEOGRAPHIC_WANT_RE =
   /(?:想找|找|想看)([\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}A-Za-z]{2,12})的/u;
 
@@ -365,8 +370,19 @@ function looksLikeGeographicLabel(label: string): boolean {
   );
 }
 
+/**
+ * Whole-input normalization, except that a sentence-final 「市」 the shared normalization would
+ * strip (and nothing else) stays part of the written place (「到二日市」「四日市」 never become
+ * 「二日」「四日」); mid-sentence 「市」 is already kept by the same normalization.
+ */
+function normalizeProvisionalInput(input: string): string {
+  const raw = (input ?? "").trim();
+  const normalized = normalizeDestinationLabel(raw);
+  return raw.endsWith("市") && normalized === raw.slice(0, -1) ? raw : normalized;
+}
+
 function extractRawGeographicLabel(input: string): string {
-  const normalized = normalizeDestinationLabel(input);
+  const normalized = normalizeProvisionalInput(input);
   const fromWant = normalized.match(GEOGRAPHIC_WANT_RE)?.[1]?.trim() ?? "";
   const rawLabel = (fromWant || normalized.split(AREA_QUERY_STOP)[0] || "").trim();
   return rawLabel
@@ -375,6 +391,44 @@ function extractRawGeographicLabel(input: string): string {
     .replace(/[的之]$/g, "")
     .replace(/(?:有|想找|找|想看)$/g, "")
     .replace(/[\s,，、/／-]+/g, "");
+}
+
+/**
+ * Sentence-initial (pronoun)?(想/要)?去／到／在 before a provisional place (same pronoun literals
+ * as cri). Only applied at index 0 of the provisional label (head of a split activity tail, or
+ * the whole label without one); the remainder must still be a clean ≥2-char place.
+ */
+const PROVISIONAL_LEADING_GO_RE = /^(?:我們|我们|那我|那就|我|那|就|還是|还是|先)?(?:想|要)?[去到在]/;
+
+/**
+ * 「去富良野玩」「到富良野玩」「在富良野玩」→「富良野」: drop a trailing activity tail (shared tpc
+ * split) and then the leading go-verb. No activity tail: a sentence-initial go-verb is dropped
+ * the same way (「到十日町」→「十日町」), otherwise raw unchanged. Without a clean place after
+ * the go-verb (「到處玩」「到處」→「處」) → null (never an empty label, never the raw phrase with
+ * its go-verb or tail; no guessed city).
+ */
+function splitProvisionalActivityTail(raw: string): string | null {
+  const split = splitTrailingActivityTail(raw);
+  if (split.kind === "none") {
+    if (!PROVISIONAL_LEADING_GO_RE.test(raw)) return raw;
+    return provisionalPlaceAfterGo(raw);
+  }
+  if (split.kind !== "split") return null;
+  return provisionalPlaceAfterGo(split.head);
+}
+
+/** Label after a sentence-initial go-verb (when present); null unless a clean ≥2-char place. */
+function provisionalPlaceAfterGo(label: string): string | null {
+  const place = label.replace(PROVISIONAL_LEADING_GO_RE, "").trim();
+  if (
+    place.length < 2 ||
+    !looksLikeGeographicLabel(place) ||
+    place.startsWith("去") ||
+    isNonGeographicActivityTail(place)
+  ) {
+    return null;
+  }
+  return place;
 }
 
 /**
@@ -392,8 +446,8 @@ export function extractProvisionalDestinationAreaCandidate(
   ) {
     return null;
   }
-  const areaCandidate = extractRawGeographicLabel(input);
-  if (!looksLikeGeographicLabel(areaCandidate)) return null;
+  const areaCandidate = splitProvisionalActivityTail(extractRawGeographicLabel(input));
+  if (areaCandidate === null || !looksLikeGeographicLabel(areaCandidate)) return null;
   return {
     rawLabel: areaCandidate,
     areaCandidate,
@@ -422,9 +476,11 @@ function areaTailAfterParent(afterCity: string): string {
   // 「高雄有安靜咖啡廳」is a city-wide query, not parentCity + area.
   if (/^有/.test(strippedPrefix)) return "";
   const rawFragment = strippedPrefix.split(AREA_QUERY_STOP)[0]?.trim() ?? "";
-  return rawFragment
+  const tail = rawFragment
     .replace(/[\s,，、/／-]+/g, "")
     .replace(/(?:有|想找|找|想看)$/g, "");
+  // 「金澤玩」「福岡玩兩天」: an activity tail is no area → city level.
+  return isNonGeographicActivityTail(tail) ? "" : tail;
 }
 
 /**
@@ -433,6 +489,8 @@ function areaTailAfterParent(afterCity: string): string {
  * This does not make the pair trusted.
  */
 function extractCityTailAreaCandidate(input: string): DestinationAreaCandidate | null {
+  // 「大阪不去了，換金澤」: the tail after a negated old destination is a switch, not its area.
+  if (parseNegatedDestinationSwitch(input)) return null;
   const normalized = normalizeDestinationLabel(input);
   const compactGeo = extractRawGeographicLabel(input);
   // Prefer a known parent PREFIX of the geographic phrase so 「台東池上」
@@ -501,7 +559,7 @@ function normalizedAdministrativeLabel(value: string | undefined): string {
   return stripAdministrativeSuffix(applyAreaLocaleAlias(value ?? ""));
 }
 
-function destinationAreaCandidateFromProvider(
+export function destinationAreaCandidateFromProvider(
   provisional: ProvisionalDestinationAreaCandidate,
   location: TripLocation | null,
 ): DestinationAreaCandidate | null {
