@@ -119,11 +119,29 @@ assert.doesNotMatch(`${client}\n${settings}`, /APPLE_PRIVATE_KEY|SUPABASE_SERVIC
 assert.match(apiUrl, /"\/api\/account\/delete"/);
 assert.match(client, /Authorization: `Bearer \$\{session\.access_token\}`/);
 assert.doesNotMatch(client, /targetUserId|userId:/);
-assert.match(settings, /確定要刪除帳號嗎？/);
-assert.match(settings, /此操作無法復原/);
-assert.match(settings, /不會自動取消你的 App Store 訂閱/);
-assert.match(settings, /保留我的帳號/);
-assert.match(settings, /永久刪除帳號/);
+// ef49b88（多語系上線）把設定頁文案搬到 src/lib/i18n/production-ui.ts，設定頁改用 uiT("productionUi.<id>")。
+// 這裡仍要求同一段繁中文案存在，並確認設定頁確實渲染對應的 key（不只是字典裡有字）。
+const productionUi = read("src/lib/i18n/production-ui.ts");
+const zhStart = productionUi.indexOf('"zh-TW": {');
+const zhEnd = productionUi.indexOf("\n  en: {", zhStart);
+assert.ok(zhStart >= 0 && zhEnd > zhStart, "production-ui.ts must keep a zh-TW section before en");
+const zhEntries = [...productionUi.slice(zhStart, zhEnd).matchAll(/(\w+):\s*"((?:[^"\\]|\\.)*)"/g)].map((m) => ({
+  key: m[1],
+  text: m[2],
+}));
+const assertSettingsRendersZh = (pattern) => {
+  const keys = zhEntries.filter((e) => pattern.test(e.text)).map((e) => e.key);
+  assert.ok(keys.length > 0, `zh-TW production UI copy missing: ${pattern}`);
+  assert.ok(
+    keys.some((k) => settings.includes(`uiT("productionUi.${k}")`)),
+    `settings page must render ${pattern} (one of productionUi.${keys.join("/")})`,
+  );
+};
+assertSettingsRendersZh(/^確定要刪除帳號嗎？$/);
+assertSettingsRendersZh(/^此操作無法復原/);
+assertSettingsRendersZh(/不會自動取消你的 App Store 訂閱/);
+assertSettingsRendersZh(/^保留我的帳號$/);
+assertSettingsRendersZh(/^永久刪除帳號$/);
 assert.match(settings, /canManageAppleSubscription/);
 assert.match(settings, /ACCOUNT_DELETION_UI_ACTION/);
 assert.match(settings, /stage: "clicked"/);

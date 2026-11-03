@@ -50,15 +50,21 @@ for(const tz of ['Asia/Tokyo','America/New_York','Pacific/Auckland']) {process.e
 if(oldTZ===undefined) delete process.env.TZ; else process.env.TZ=oldTZ;
 // Execute the actual Chat pending branch, not an imitation of its continuation dispatch.
 const chat=fs.readFileSync('src/routes/_app.chat.tsx','utf8');
-const start=chat.indexOf('    if (session.pendingQuestion?.type === "date_confirmation") {',chat.indexOf('  const send = async'));
-const end=chat.indexOf('    // Entry snapshot:',start);assert.ok(start>0&&end>start);
+// A2 換目的地閘門（6.2 step 4）把條件改成 `… === "date_confirmation" && turnSwitch.state === "NO_SWITCH"`，
+// 且之後插入大量程式，原本「到 // Entry snapshot: 為止」的切法會切進無關程式。改為取這個 if 區塊本身（括號配對），
+// 並在執行時代入 turnSwitch = NO_SWITCH（同一回合沒有換目的地）。
+const start=chat.indexOf('    if (session.pendingQuestion?.type === "date_confirmation"',chat.indexOf('  const send = async'));
+let end=-1;
+{let depth=0;for(let i=chat.indexOf('{',start);i<chat.length;i++){if(chat[i]==='{')depth++;else if(chat[i]==='}'&&--depth===0){end=i+1;break}}}
+assert.ok(start>0&&end>start);
+assert.match(chat.slice(start,chat.indexOf('{',start)),/turnSwitch\.state === "NO_SWITCH"|"date_confirmation"\)\s*$/,'date confirmation is consumed only when the turn is not a destination switch');
 const js=ts.transpile(chat.slice(start,end),{target:ts.ScriptTarget.ES2022});
 const run=new (Object.getPrototypeOf(async function(){}).constructor)('d',`with(d){${js}}`);
 for(const entry of ['direct','selection','persist','recommendation']) {
  let calls=0, saved, resumed;
  const current=prepareTripDateConfirmation(beginTripCreation(written,'advice_create','fixture-generation'),{entry,generationId:'fixture-generation',userText:'2'});
  const resume=async s=>{calls++;resumed=s;assert.equal(resolve(s).datesConfirmed,true)};
- await run({matchesDateGenerationAction,traceDateGenerationContinuation,session:current,trimmed:'use suggested dates',isCurrentTripDateSnapshot,consumeTripDateConfirmation,tripDateConfirmationCopy,locale:'en',msgsRef:{current:[]},setText:()=>{},setMsgs:()=>{},persistSession:s=>{saved=s;return s},pushDestinationPlaceRecommendationRef:{current:resume},persistGeneratedPlanRef:{current:resume},handleGenerateItinerary:resume,runDirectItineraryRef:{current:resume}});
+ await run({turnSwitch:{state:'NO_SWITCH'},matchesDateGenerationAction,traceDateGenerationContinuation,session:current,trimmed:'use suggested dates',isCurrentTripDateSnapshot,consumeTripDateConfirmation,tripDateConfirmationCopy,locale:'en',msgsRef:{current:[]},setText:()=>{},setMsgs:()=>{},persistSession:s=>{saved=s;return s},pushDestinationPlaceRecommendationRef:{current:resume},persistGeneratedPlanRef:{current:resume},handleGenerateItinerary:resume,runDirectItineraryRef:{current:resume}});
  assert.equal(calls,1);assert.equal(saved.pendingQuestion,undefined);assert.deepEqual(resumed.selectedPlaces,base.selectedPlaces);
 }
 // Real session serializer/restore retains provenance and pending continuation.

@@ -92,11 +92,17 @@ function pendingFor(text, categoryIntent = "cafe") {
 
 {
   const chatSource = readFileSync(new URL("../src/routes/_app.chat.tsx", import.meta.url), "utf8");
-  assert.match(
-    chatSource,
-    /pendingClarification:\s*buildPendingGeographicClarification/,
-    "clarification question must persist originating place intent",
+  // 工作區把 pendingClarification 改成依 clarificationPlan.kind 二選一（parent_city_scope 另用
+  // buildPendingParentScopeClarification）。仍要求：一般地理釐清走 buildPendingGeographicClarification，
+  // 且兩種 builder 都帶著原本的類別意圖與原句（originalUserText），才能在使用者回答後還原推薦。
+  const pendingBlock = chatSource.match(
+    /pendingClarification:\s*(?:clarificationPlan\.kind === "parent_city_scope"\s*\?\s*(buildPendingParentScopeClarification\(\{[\s\S]*?\}\))\s*:\s*)?(buildPendingGeographicClarification\(\{[\s\S]*?\}\))/,
   );
+  assert.ok(pendingBlock, "clarification question must persist originating place intent");
+  for (const call of pendingBlock.slice(1).filter(Boolean)) {
+    assert.match(call, /categoryIntent:/, "clarification builder must keep the category intent");
+    assert.match(call, /originalUserText: userText/, "clarification builder must keep the original user text");
+  }
   assert.match(
     chatSource,
     /restorePlaceIntentAfterGeographicClarification/,

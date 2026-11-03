@@ -41,7 +41,11 @@ function blockFrom(startMarker, from = 0) {
   throw new Error(`unbalanced block: ${startMarker}`);
 }
 const regenStart = chat.indexOf("// Regenerate itinerary: always open a NEW planning pipeline");
-const regenEnd = chat.indexOf("const tripSession = resolveTripAddPlaceChatSession(session, loadChatSession());", regenStart);
+// 換城市閘門（turnSwitchVerified）把下一段改成 `const tripSession = turnSwitchVerified ? null : resolveTripAddPlaceChatSession(...)`，
+// 因此結尾標記改為 regenerate 區塊後的第一個 `const tripSession =`（HEAD 與工作區皆適用）。
+const regenEnd = chat.indexOf("const tripSession = ", regenStart);
+assert.ok(regenStart >= 0 && regenEnd > regenStart, "regenerate block markers not found");
+assert.match(chat.slice(regenEnd, regenEnd + 200), /resolveTripAddPlaceChatSession\(session, loadChatSession\(\)\)/, "regenerate block must end right before the trip add-place branch");
 const REGEN_BLOCK = chat.slice(regenStart, regenEnd);
 const FAIL_BLOCK = blockFrom(
   "if (!prepared.ok) {",
@@ -142,6 +146,9 @@ await check("A2 production failure branch persists FAILED-equivalent state with 
     setGenerating: () => {}, setStreaming: () => {},
     context: selectionCtx, contextWithRequest: { ...selectionCtx, generationRequestId: "gen-first" },
     generationRequestId: "gen-first",
+    // 生成鎖：失敗分支先判斷是否仍在原對話，不在才通知（本情境是原對話）
+    activeSession: baseSession, isOriginalConversation: () => true,
+    notifyChatGenerationFailed: (id) => { throw new Error(`unexpected cross-conversation notify ${id}`); },
     lastFailureGenerationRequestIdRef: { current: null },
     setMsgs: (m) => firstMsgs.push(...(typeof m === "function" ? m([]) : m)),
     conversation: [{ role: "user", content: "幫我生成" }],
@@ -170,7 +177,7 @@ await check("C0 precondition: rebuilt cache maps id 1 to different places", () =
 async function tapRegenerate(session) {
   const captured = { runs: [], msgs: [], persisted: [], toasts: [] };
   await runProductionBlock(REGEN_BLOCK, {
-    trimmed: "重新生成", displayMessage: "重新生成", session, msgs: [...firstMsgs],
+    trimmed: "重新生成", displayMessage: "重新生成", session, msgs: [...firstMsgs], turnSwitchVerified: false,
     markShortcutEngaged: () => {}, toast: { message: (m) => captured.toasts.push(m) }, uiT: (k) => k,
     setMsgs: (m) => captured.msgs.push(m), setText: () => {}, scrollToUserMessage: () => {},
     resolveSelectedCombinationAuthority, logAiPipeline, chatRuntimeCopy, locale: "zh-TW",

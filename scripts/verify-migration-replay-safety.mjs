@@ -7,7 +7,8 @@ const files = readdirSync(migrationDirectory)
   .filter((file) => file.endsWith(".sql"))
   .sort();
 
-assert.equal(files.length, 32, "expected the complete 32-migration release chain");
+// 不寫死總數（每加一支 migration 就要改這裡容易漏）；改為下限＋必須存在的已知 migration 清單（見 requiredOrder）。
+assert.ok(files.length >= 33, `expected at least 33 migrations in the release chain, got ${files.length}`);
 
 const versions = files.map((file) => file.split("_", 1)[0]);
 assert.equal(new Set(versions).size, versions.length, "migration versions must be unique");
@@ -123,6 +124,7 @@ const requiredOrder = [
   ["20260913130000", "GRANT SELECT, INSERT, UPDATE ON TABLE public.profiles TO authenticated"],
   ["20260913150000", "CREATE TABLE IF NOT EXISTS public.revenuecat_subscription_states"],
   ["20260913160000", "CREATE OR REPLACE FUNCTION public.resolve_user_plus_entitlement"],
+  ["20261102100000", "CREATE OR REPLACE FUNCTION public.guard_trip_invite_client_write"],
 ];
 
 let previousIndex = -1;
@@ -150,6 +152,90 @@ for (const dependency of [
     securitySql.includes(dependency),
     `security remediation no longer exercises ${dependency}`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Trip Workspace V1 第 3 階段：20261102100000_trip_invite_hardening.sql 重放安全
+// ---------------------------------------------------------------------------
+const inviteHardening = "20261102100000_trip_invite_hardening.sql";
+assert.ok(files.includes(inviteHardening), `missing ${inviteHardening}`);
+{
+  const text = sql[inviteHardening];
+  const body = text.replace(/^\s*--.*$/gm, "");
+
+  for (const m of body.matchAll(/\bADD COLUMN\b(?!\s+IF NOT EXISTS)/gi)) {
+    assert.fail(`${inviteHardening}: ADD COLUMN without IF NOT EXISTS at offset ${m.index}`);
+  }
+  for (const m of body.matchAll(/\bCREATE\s+(?:UNIQUE\s+)?INDEX\b(?!\s+IF NOT EXISTS)/gi)) {
+    assert.fail(`${inviteHardening}: CREATE INDEX without IF NOT EXISTS at offset ${m.index}`);
+  }
+  for (const m of body.matchAll(/\bCREATE EXTENSION\b(?!\s+IF NOT EXISTS)/gi)) {
+    assert.fail(`${inviteHardening}: CREATE EXTENSION without IF NOT EXISTS at offset ${m.index}`);
+  }
+  // 自我檢查：下列迴圈確實掃到本檔的 trigger／CREATE FUNCTION（避免 regex 失效而空轉通過）
+  assert.equal([...body.matchAll(/\bCREATE TRIGGER\s+\w+/gi)].length, 1, `${inviteHardening}: expected 1 CREATE TRIGGER`);
+  assert.equal([...body.matchAll(/\bCREATE FUNCTION\s+[\w.]+\(/gi)].length, 3, `${inviteHardening}: expected 3 CREATE FUNCTION`);
+  for (const m of body.matchAll(/\bCREATE TRIGGER\s+(\w+)\s+[\s\S]*?\bON\s+([\w.]+)/gi)) {
+    const prefix = body.slice(0, m.index);
+    assert.match(
+      prefix,
+      new RegExp(`DROP TRIGGER IF EXISTS\\s+${m[1]}\\s+ON\\s+${m[2].replace(".", "\\.")}`, "i"),
+      `${inviteHardening}: CREATE TRIGGER ${m[1]} needs a prior DROP TRIGGER IF EXISTS`,
+    );
+  }
+  // CREATE FUNCTION（非 OR REPLACE）重放時會撞名，必須先 DROP FUNCTION IF EXISTS 同簽章
+  for (const m of body.matchAll(/\bCREATE FUNCTION\s+([\w.]+)\(([^)]*)\)/gi)) {
+    const argTypes = m[2]
+      .split(",")
+      .map((a) => a.trim().split(/\s+/).slice(1).join(" "))
+      .filter(Boolean)
+      .join(",\\s*");
+    const prefix = body.slice(0, m.index);
+    assert.match(
+      prefix,
+      new RegExp(`DROP FUNCTION IF EXISTS\\s+${m[1].replace(".", "\\.")}\\(\\s*${argTypes}\\s*\\)`, "i"),
+      `${inviteHardening}: CREATE FUNCTION ${m[1]}(${m[2]}) needs a prior DROP FUNCTION IF EXISTS with the same signature`,
+    );
+  }
+  // 撤銷舊 RPC 時該函式可能不存在（全新資料庫）：必須以 to_regprocedure 守門
+  assert.match(
+    body,
+    /to_regprocedure\('public\.get_trip_invite_by_token\(text\)'\) IS NOT NULL THEN\s*REVOKE ALL ON FUNCTION public\.get_trip_invite_by_token\(text\) FROM PUBLIC, anon, authenticated/,
+    `${inviteHardening}: get_trip_invite_by_token revoke must be guarded by to_regprocedure`,
+  );
+  // 不加入 realtime publication
+  assert.doesNotMatch(body, /supabase_realtime/i, `${inviteHardening}: must not touch supabase_realtime`);
+  // 每個 SECURITY DEFINER 都要固定 search_path
+  const definers = (body.match(/SECURITY DEFINER/g) ?? []).length;
+  const pinned = (body.match(/SECURITY DEFINER[\s\S]{0,120}?SET search_path/g) ?? []).length;
+  assert.ok(definers >= 4, `${inviteHardening}: expected >= 4 SECURITY DEFINER functions, got ${definers}`);
+  assert.equal(pinned, definers, `${inviteHardening}: every SECURITY DEFINER needs search_path`);
+  // gen_random_bytes 位於 extensions schema：用到的函式 search_path 必須包含 extensions
+  for (const m of body.matchAll(/CREATE (?:OR REPLACE )?FUNCTION\s+([\w.]+)\([\s\S]*?\$\$([\s\S]*?)\$\$/gi)) {
+    if (!/gen_random_bytes/.test(m[2])) continue;
+    const header = body.slice(m.index, m.index + m[0].indexOf("$$"));
+    assert.match(header, /SET search_path = [^\n]*\bextensions\b/, `${m[1]}: search_path must include extensions for gen_random_bytes`);
+  }
+  // 依賴的資料表／函式必須在更早的 migration 建立
+  const earlier = files.slice(0, files.indexOf(inviteHardening));
+  for (const dependency of [
+    "CREATE TABLE IF NOT EXISTS public.trip_invites",
+    "CREATE TABLE IF NOT EXISTS public.trip_members",
+    "FUNCTION public.is_trip_owner",
+    "CREATE TABLE IF NOT EXISTS public.profiles",
+  ]) {
+    assert.ok(
+      earlier.some((file) => sql[file].includes(dependency)),
+      `${inviteHardening}: dependency not created earlier: ${dependency}`,
+    );
+  }
+  // saved_trips 欄位：preview 讀取的欄位要在更早的 migration 存在
+  for (const column of ["custom_title", "is_title_customized", "custom_cover_image_url", "is_cover_customized", "cover_image_url", "cover_image", "payload", "trip_data"]) {
+    assert.ok(
+      earlier.some((file) => new RegExp(`\\b${column}\\b`).test(sql[file])),
+      `${inviteHardening}: saved_trips.${column} not defined by an earlier migration`,
+    );
+  }
 }
 
 console.log(`Migration replay safety static regression passed (${files.length} migrations).`);

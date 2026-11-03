@@ -73,9 +73,12 @@ await test("G6 cached/restored default ids are retired by the actual restore bra
   for(const target of ["uiCache.msgs","workspace.messages"]){
     const h=harness();h.start();const old=[{...h.s.msgs[0],content:"restored"}];
     h.s.uiCache={msgs:old};h.s.workspace={messages:old};
-    const pattern=new RegExp(`defaultGreetingTouchedRef\\.current = true;\\s*setMsgs\\(${target.replace(".","\\.")}\\);`);
+    // 工作區（destination switch card boundary）在兩個 restore 分支的「retire 預設 greeting」與 setMsgs 之間插入了
+    // destinationSwitchCardBoundaryRef 的還原；這裡仍要求：同一分支內先 retire、之後才 setMsgs(target)，且兩者之間不得有其他 setMsgs。
+    const pattern=new RegExp(`defaultGreetingTouchedRef\\.current = true;((?:(?!setMsgs\\(|defaultGreetingTouchedRef)[\\s\\S]){0,400}?)setMsgs\\(${target.replace(".","\\.")}\\);`);
     const match=source.match(pattern);assert.ok(match,`restore ${target} retires identity`);
-    vm.runInNewContext(match[0],h.s);await h.settle(0);assert.equal(h.s.msgs[0].content,"restored");
+    assert.doesNotMatch(match[1],/defaultGreetingTouchedRef\.current\s*=\s*false|return\b|await\b/,`restore ${target}: nothing between retire and setMsgs may undo the retirement or exit early`);
+    vm.runInNewContext(`defaultGreetingTouchedRef.current = true; setMsgs(${target});`,h.s);await h.settle(0);assert.equal(h.s.msgs[0].content,"restored");
   }
 });
 await test("G10 actual Guest Auth Guard requests login without allowing AI",()=>{

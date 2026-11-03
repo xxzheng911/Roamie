@@ -4,7 +4,7 @@ import {execFileSync} from 'node:child_process';import {pathToFileURL} from 'nod
 const root=process.cwd(),dir=fs.mkdtempSync(path.join(os.tmpdir(),'roamie-photo-stages-'));
 async function load(baseline){
  const outfile=path.join(dir,baseline?'old.mjs':'new.mjs');
- await build({entryPoints:['src/services/signed-place-photo.ts'],bundle:true,platform:'node',format:'esm',outfile,loader:{'.png':'dataurl','.jpg':'dataurl'},define:{'import.meta.env.VITE_APP_ORIGIN':'"https://roamie.tw"','import.meta.env.DEV':'false'},plugins:[{name:'controlled-auth',setup(b){
+ await build({entryPoints:['src/services/signed-place-photo.ts'],bundle:true,platform:'node',format:'esm',outfile,loader:{'.png':'dataurl','.jpg':'dataurl'},define:{'import.meta.env.VITE_APP_ORIGIN':'"https://roamie.tw"','import.meta.env.DEV':'false','import.meta.env.VITE_VERBOSE_LOG':'"1"','import.meta.env.VITE_DEBUG_DIAGNOSTICS':'"0"'},plugins:[{name:'controlled-auth',setup(b){
  b.onResolve({filter:/^@\/integrations\/supabase\/client$/},()=>({path:'auth',namespace:'mock'}));b.onLoad({filter:/.*/,namespace:'mock'},()=>({contents:'export const supabase={auth:{getSession:async()=>({data:{session:globalThis.photoSession}})}};',loader:'js'}));
  if(baseline)b.onLoad({filter:/[/\\]signed-place-photo\.ts$/},()=>({contents:execFileSync('git',['show','62fb6901:src/services/signed-place-photo.ts'],{encoding:'utf8'}),loader:'ts',resolveDir:path.join(root,'src/services')}));
  }}]});return import(pathToFileURL(outfile));
@@ -15,7 +15,7 @@ globalThis.photoSession={access_token:'fixture-auth-token'};
 const nativeFetch=globalThis.fetch;const originalInfo=console.info;const logs=[],allLogs=[];let attempts=[];let behavior='success';
 console.info=(tag,record)=>{if(tag==='[PLACE_PHOTO_SIGNING]'){logs.push(record);allLogs.push(record)}};
 globalThis.fetch=async(url,init)=>{
- assert.equal(url,'https://roamie.tw/api/place-photo/sign');assert.equal(init.method,'POST');assert.equal(init.headers.Authorization,'Bearer fixture-auth-token');assert.equal(init.headers['Content-Type'],'application/json');
+ assert.equal(url,'https://roamie.tw/api/place-photo/sign');assert.equal(init.method,'POST');assert.equal(init.headers.Authorization,globalThis.photoSession?'Bearer fixture-auth-token':undefined);assert.equal(init.headers['Content-Type'],'application/json');
  const body=JSON.parse(init.body);assert.equal(body.width,480);assert.ok(body.photo.startsWith('places/'));attempts.push(body.photo);
  if(behavior==='network')throw new TypeError('fixture network');
  if(behavior==='timeout')return new Promise((_,reject)=>init.signal.addEventListener('abort',()=>reject(new DOMException('aborted','AbortError'))));
@@ -43,7 +43,8 @@ try{
   else {assert.equal(result,null);assert.equal(last.fallbackReason,typeof mode==='number'?'http_'+mode:mode==='network'?'fetch_network_rejected':mode==='json'?'response_parse_exception':'invalid_signed_response')}
  }
  behavior='timeout';logs.length=0;assert.equal(await current.getSignedPlacePhotoUrl('places/fixture/photos/timeout',480),null);assert.equal(logs.at(-1).timeout,true);assert.equal(logs.at(-1).abort,true);assert.equal(logs.at(-1).networkReject,false);
- globalThis.photoSession=null;logs.length=0;attempts=[];assert.equal(await current.getSignedPlacePhotoUrl('places/fixture/photos/auth',480),null);assert.equal(attempts.length,0);assert.equal(logs.at(-1).fallbackReason,'auth_session_missing');
+ // 6e8406d（guest browsing）起：無 session 改走 guest 簽章（不帶 Authorization），不再回 auth_session_missing。
+ globalThis.photoSession=null;behavior='success';logs.length=0;attempts=[];const guest=await current.getSignedPlacePhotoUrl('places/fixture/photos/auth',480);assert.ok(guest?.startsWith('https://roamie.tw/api/place-photo?'));assert.equal(attempts.length,1);assert.equal(logs.at(-1).authPresent,false);assert.equal(logs.at(-1).signedUrlReturned,true);
  assert.equal(await current.getSignedPlacePhotoUrl('invalid',480),null);assert.equal(logs.at(-1).fallbackReason,'invalid_photo_metadata');
  for(const row of allLogs){const text=JSON.stringify(row);assert.ok(!text.includes('fixture-auth-token')&&!text.includes('fixture-signature')&&!text.includes('/api/place-photo?'))}
  originalInfo('PASS HEAD opaque-origin parser failure reproduced; production endpoint/method/body/bearer contract, parse, retry, HTTP 401/403/404/503, network, timeout/abort, malformed response, missing auth/metadata and safe diagnostics');

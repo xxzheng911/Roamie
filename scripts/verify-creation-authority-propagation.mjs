@@ -28,7 +28,21 @@ assert.equal(delivered.tripCreationAuthority.explicitCreate,true);
 assert.equal(shouldPersistGeneratedPlan({authority:delivered.tripCreationAuthority,generationId:delivered.generationId,styleReselect:true}),true);
 const preview=run({session:{},generationId:'preview'});release();assert.equal((await preview).tripCreationAuthority,undefined);
 const chat=fs.readFileSync('src/routes/_app.chat.tsx','utf8');const send=chat.slice(chat.indexOf('const send = async'),chat.indexOf('const handleGenerateItinerary = async'));
-assert.ok(send.indexOf('session = beginTripCreation(')<send.indexOf('isPlanningSelectionMode(session)'));
+// Planner 選點模式第 7 輪（#PL-FIX-T7，使用者裁定）在 send() 前段加入 `selectionConfirmedSwitch:` 換城市閘門，
+// 其中先呼叫 isPlanningSelectionMode(session)；該閘門只會「先問」或放行，不會生成行程。
+// 因此把這個閘門區塊排除後，仍要求 beginTripCreation 早於所有 selection 分支，且閘門內不得觸發生成。
+const switchGateAt=send.indexOf('selectionConfirmedSwitch: {');
+let sendWithoutSwitchGate=send;
+if(switchGateAt>=0){
+  let depth=0,end=-1;
+  for(let i=send.indexOf('{',switchGateAt);i<send.length;i++){if(send[i]==='{')depth++;else if(send[i]==='}'&&--depth===0){end=i+1;break}}
+  assert.ok(end>switchGateAt,'selectionConfirmedSwitch block must be balanced');
+  const gate=send.slice(switchGateAt,end);
+  assert.doesNotMatch(gate,/handleGenerateItinerary\(|runDirectItinerary(?:Ref\.current)?\(|beginTripCreation\(/,'selection switch gate must not generate or create trips');
+  sendWithoutSwitchGate=send.slice(0,switchGateAt)+send.slice(end);
+}
+assert.ok(sendWithoutSwitchGate.indexOf('session = beginTripCreation(')>=0);
+assert.ok(sendWithoutSwitchGate.indexOf('session = beginTripCreation(')<sendWithoutSwitchGate.indexOf('isPlanningSelectionMode(session)'));
 assert.match(chat,/renderDestinationReply\(summary, recommendations, payload, contextPatch, dayPlan, returnedAuthority, returnedGenerationId\)/);
 assert.match(chat,/if \(!newCreationHandoff && uiCache\?\.msgs\?\.length\)/);
 assert.match(chat,/if \(!newCreationHandoff && chatLifecycleEstablishedRef.current\)/);

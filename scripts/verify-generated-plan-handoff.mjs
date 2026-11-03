@@ -33,7 +33,16 @@ const dayPlan={days:2,items:Array.from({length:14},(_,i)=>({day:1+Math.floor(i/7
 const explicitDates=resolveSuggestedTripDates({days:2,userText:'2026/12/15'});
 const session={travelContext:{interests:[],startDate:explicitDates.startDate,endDate:explicitDates.endDate,dateProvenance:explicitDates},planningSessionId:'fixture',planVersion:2,currentDayPlan:dayPlan,phase:'recommend',tripStartDate:'2026-12-15',tripEndDate:'2026-12-16',recommendedPlaces:[{fixture:true}]};
 const messages=[];const loading=[];const errors=[];
+// 生成鎖（A2 第 6 項，src/lib/ai/chat-generation-lock.ts）：persist bridge 會 begin／end 同一 owner 的鎖。
+// 這裡以計數 stub 代入，並在每次 persist 結束後確認鎖已釋放（不得遺留）。
+const generationLocks=new Map();
+const lockStubs={
+ beginChatGenerationLock:owner=>{generationLocks.set(owner,(generationLocks.get(owner)??0)+1)},
+ endChatGenerationLock:owner=>{const n=(generationLocks.get(owner)??0)-1;if(n>0)generationLocks.set(owner,n);else generationLocks.delete(owner)},
+};
+const assertLocksReleased=()=>assert.deepEqual([...generationLocks.keys()],[],'generation lock must be released after persistence');
 const context={
+ ...lockStubs,
  pauseForTripDates:(s,m,c)=>Boolean(prepareTripDateConfirmation(s,c)),
  explicitCreateLoading:createExplicitCreateLoading(()=>{},()=>{}),
  planCorrelationToken,
@@ -56,9 +65,9 @@ const id=generatedPlanIdentity(session,'unused');
 await Promise.all([persist(session,messages,id),persist(session,messages,id)]);
 await persist(session,messages,id);
 assert.equal(saved,1);assert.equal(navigated,1);assert.deepEqual(loading,[true,false]);
-assert.equal(context.activeGenerationRequestIdRef.current,null);
+assert.equal(context.activeGenerationRequestIdRef.current,null);assertLocksReleased();
 fail=true;await persist(session,messages,'failed');await persist(session,messages,'failed');
-assert.equal(saved,1);assert.equal(navigated,1);assert.ok(errors.includes('save_failed'));
+assert.equal(saved,1);assert.equal(navigated,1);assert.ok(errors.includes('save_failed'));assertLocksReleased();
 fail=false;stale=true;context.sessionRef.current={planningSessionId:'new'};
 await persist(session,messages,'stale');assert.equal(saved,1);
 stale=false;context.sessionRef.current=session;
@@ -104,8 +113,27 @@ assert.ok(!bridge.getText(ast).includes('Capacitor'));assert.ok(!renderer.getTex
 // Execute the real persistence await, navigation await and original error handler.
 const persistenceTry=handler.body.statements.find(ts.isTryStatement);
 const savedStatement=persistenceTry.tryBlock.statements.find(n=>n.getText(ast).startsWith('const saved = await confirmSaveTrip'));
-const navigationStatement=persistenceTry.tryBlock.statements.find(n=>n.getText(ast).startsWith('const navigation = navigate'));
-const navigationAwait=persistenceTry.tryBlock.statements.find(n=>n.getText(ast)==='await Promise.resolve(navigation);');
+// 生成鎖 L1（使用者已不在原對話時改發完成提示）把導向包進 `if (isOriginalConversation(generationOriginSessionId)) { … } else { notifyChatGenerationDone(…) }`。
+// 這裡取原對話分支內的同一組導向敘述；並確認非原對話分支不直接導向、只發完成提示。
+const findNavigationList=(stmts)=>{
+ for(const n of stmts){
+  if(n.getText(ast).startsWith('const navigation = navigate'))return stmts;
+  if(ts.isIfStatement(n)&&n.expression.getText(ast)==='isOriginalConversation(generationOriginSessionId)'&&ts.isBlock(n.thenStatement)){
+   const inner=findNavigationList(n.thenStatement.statements);
+   if(inner){
+    const otherwise=n.elseStatement?.getText(ast)??'';
+    assert.match(otherwise,/notifyChatGenerationDone\(/,'detached completion must notify instead of navigating');
+    assert.doesNotMatch(otherwise.replace(/notifyChatGenerationDone\(\(\) => \{[\s\S]*?\}\);/g,''),/navigate\(/,'detached completion must not auto-navigate');
+    return inner;
+   }
+  }
+ }
+ return null;
+};
+const navigationList=findNavigationList(persistenceTry.tryBlock.statements);
+assert.ok(navigationList,'navigation statements not found in persistence try block');
+const navigationStatement=navigationList.find(n=>n.getText(ast).startsWith('const navigation = navigate'));
+const navigationAwait=navigationList.find(n=>n.getText(ast)==='await Promise.resolve(navigation);');
 let actualNav=0,actualErrors=0,saveReject=true;
 const persistenceContext={isCurrentTripDateSnapshot,sessionRef:{current:session},locale:'zh-TW',draftPayload:{dayPlan},cover:{},generationId:'fixture',lifecycleFailureCode:'save_failed',
  confirmSaveTrip:async(payload,source,options)=>{assert.equal(payload.dayPlan,dayPlan);assert.equal(options.generationId,'fixture');if(saveReject)throw Error('fixture save failure');return {id:'saved-fixture'}},

@@ -132,13 +132,28 @@ const protectedFiles = [
   "src/lib/place-navigation.functions.ts",
   "src/lib/recommendation.functions.ts",
 ];
+// 6e8406d（fix: add guest browsing and account action gates）起，公開唯讀的 Google 代理改用
+// allowGuestPublicRead：有 Bearer 時驗證使用者，無 Bearer 時以可信 IP 限流（行為由
+// verify-guest-browsing-authority／verify-guest-google-budget 鎖定）。這裡仍要求每個 server function
+// 都有守門 middleware：已登入專用（requireSupabaseAuth）或訪客公開讀（必須同時帶 requireGoogleProviderRate）。
 for (const file of protectedFiles) {
   const source = read(file);
   const count = (source.match(/createServerFn\(/g) ?? []).length;
   const guards = (
-    source.match(/\.middleware\(\[requireSupabaseAuth(?:, requireGoogleProviderRate)?\]\)/g) ?? []
+    source.match(
+      /\.middleware\(\[(?:requireSupabaseAuth(?:, requireGoogleProviderRate)?|allowGuestPublicRead, requireGoogleProviderRate)\]\)/g,
+    ) ?? []
   ).length;
-  assert.equal(guards, count, `${file}: every server function must be authenticated`);
+  assert.ok(count > 0, `${file}: expected server functions`);
+  assert.equal(guards, count, `${file}: every server function must be guarded (auth or rate-limited guest read)`);
+  if (source.includes("allowGuestPublicRead")) {
+    assert.match(source, /import \{ allowGuestPublicRead \} from "@\/lib\/public-read-auth"/, `${file}: allowGuestPublicRead must come from public-read-auth`);
+  }
+}
+{
+  const publicRead = read("src/lib/public-read-auth.ts");
+  assert.match(publicRead, /Unauthorized: Invalid token/, "invalid bearer must be rejected, not downgraded to guest");
+  assert.match(publicRead, /checkRateLimit\(`public-read:\$\{rateKey\}`/, "guest public read must be rate limited per trusted IP");
 }
 assert.match(read("src/lib/itinerary.functions.ts"), /\.middleware\(\[requireItineraryCredits\]\)/);
 assert.match(read("src/integrations/supabase/security-middleware.ts"), /credits_reserve/);

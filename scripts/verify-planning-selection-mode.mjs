@@ -151,6 +151,16 @@ const session = {
   tripDestination: { city: "台北" },
   updatedAt: new Date().toISOString(),
 };
+// A2 trusted scope (the caller's gate result). fetchPlanningSelectionRecommendations searches
+// only inside it; the selection's Client-saved destinationScope is never the search center.
+const trustedScopeFor = (destination, lat, lng) => ({
+  status: "trusted",
+  destination,
+  center: { lat, lng },
+  centerSource: "authority",
+});
+const TAIPEI_SCOPE = trustedScopeFor("台北", 25.04, 121.53);
+const HSINCHU_SCOPE = trustedScopeFor("新竹", 24.8138, 120.9675);
 const calls = [];
 const searchPlaces = async ({ data }) => {
   calls.push(data.categoryId);
@@ -163,11 +173,58 @@ const searchPlaces = async ({ data }) => {
   return { places: [], error: null };
 };
 
+// No / untrusted A2 scope: empty result and not a single searchPlaces call (no paid search).
+for (const badScope of [
+  undefined,
+  { status: "unavailable", reason: "destination_unverified" },
+  { status: "trusted", destination: "  ", center: { lat: 25.04, lng: 121.53 } },
+]) {
+  const blocked = await fetchPlanningSelectionRecommendations({
+    session,
+    searchPlaces,
+    locale: "zh-TW",
+    trustedScope: badScope,
+  });
+  assert.equal(blocked.places.length, 0, "untrusted scope returns no places");
+  assert.equal(blocked.session, session, "untrusted scope leaves the session untouched");
+}
+assert.equal(calls.length, 0, "untrusted scope never calls searchPlaces");
+
+// Search center / radius / name come only from trustedScope, never from destinationScope.
+const forgedScopeCalls = [];
+await fetchPlanningSelectionRecommendations({
+  session: {
+    ...session,
+    planningSelection: {
+      ...selection,
+      destinationScope: { name: "偽造城", lat: 10.5, lng: -40.25, radius: 999_999 },
+    },
+  },
+  searchPlaces: async ({ data }) => {
+    forgedScopeCalls.push(data);
+    return { places: [], error: null };
+  },
+  locale: "zh-TW",
+  trustedScope: TAIPEI_SCOPE,
+});
+assert(forgedScopeCalls.length > 0);
+for (const data of forgedScopeCalls) {
+  assert.equal(data.lat, 25.04, "lat from trustedScope");
+  assert.equal(data.lng, 121.53, "lng from trustedScope");
+  assert.equal(data.radius, 50_000, "fixed lane radius, never destinationScope.radius");
+  assert.equal(data.destinationName, "台北");
+  assert.equal(data.cacheDestination, "台北");
+  assert(data.query.startsWith("台北 "), "query prefixed with the trusted destination");
+  assert(!JSON.stringify(data).includes("偽造城"), "forged destinationScope name never searched");
+}
+
 const first = await fetchPlanningSelectionRecommendations({
   session,
   searchPlaces,
   locale: "zh-TW",
+  trustedScope: TAIPEI_SCOPE,
 });
+assert.equal(first.session.planningSelection.trustedDestination, "台北");
 assert.deepEqual(
   new Set(calls),
   new Set(["food", "art", "nature"]),
@@ -179,6 +236,12 @@ assert.deepEqual(
 );
 assert.equal(first.session.planningSelection.shownPlaceIds.length, 3);
 assert.equal(first.session.planningSelection.selectedPlaceIds.length, 0);
+
+// E4: a card this selection never recommended (e.g. another city's card) is rejected.
+const foreignCard = { ...basePlace("kyoto-1", "京都示意寺", "tourist_attraction"), address: "日本京都府" };
+const foreignToggle = togglePlanningSelectionPlace(first.session, foreignCard);
+assert.equal(foreignToggle, first.session, "foreign card does not join the selection");
+assert.equal(preparePlanningSelectionForGenerate(foreignToggle).requiredPlaces.length, 0);
 
 const selected = togglePlanningSelectionPlace(first.session, first.places[0]);
 assert.equal(selected.selectedPlaces.length, 1);
@@ -249,6 +312,7 @@ const second = await fetchPlanningSelectionRecommendations({
   session: selected,
   searchPlaces,
   locale: "zh-TW",
+  trustedScope: TAIPEI_SCOPE,
 });
 assert.equal(second.places.length, 0, "continuation excludes shown and selected places");
 assert.equal(selected.selectedPlaces.length, 1, "selection survives continuation");
@@ -260,6 +324,7 @@ const cafeCamping = createPlanningSelectionSession({
 const cafeCampingResult = await fetchPlanningSelectionRecommendations({
   session: { ...session, planningSelection: cafeCamping },
   locale: "zh-TW",
+  trustedScope: TAIPEI_SCOPE,
   searchPlaces: async ({ data }) =>
     data.categoryId === "cafe"
       ? {
@@ -280,6 +345,7 @@ assert.deepEqual(
 const cafeOnly = await fetchPlanningSelectionRecommendations({
   session: { ...session, planningSelection: cafeCamping },
   locale: "zh-TW",
+  trustedScope: TAIPEI_SCOPE,
   searchPlaces: async ({ data }) =>
     data.categoryId === "cafe"
       ? { places: [basePlace("cafe-only", "文青咖啡", "cafe")], error: null }
@@ -298,6 +364,7 @@ const hsinchuCamping = createPlanningSelectionSession({
 const hsinchuScoped = await fetchPlanningSelectionRecommendations({
   session: { ...session, planningSelection: hsinchuCamping },
   locale: "zh-TW",
+  trustedScope: HSINCHU_SCOPE,
   searchPlaces: async () => ({
     places: [
       { ...basePlace("hsinchu-camp", "尖石露營區", "campground"), address: "新竹縣尖石鄉" },
@@ -320,6 +387,7 @@ assert.equal(
 const cafeCampingExhausted = await fetchPlanningSelectionRecommendations({
   session: cafeOnly.session,
   locale: "zh-TW",
+  trustedScope: TAIPEI_SCOPE,
   searchPlaces: async ({ data }) =>
     data.categoryId === "cafe"
       ? { places: [basePlace("cafe-only", "文青咖啡", "cafe")], error: null }
@@ -364,12 +432,14 @@ const multiFirst = await fetchPlanningSelectionRecommendations({
   },
   searchPlaces: multiTurnSearch,
   locale: "zh-TW",
+  trustedScope: TAIPEI_SCOPE,
   limit: 4,
 });
 const multiSecond = await fetchPlanningSelectionRecommendations({
   session: multiFirst.session,
   searchPlaces: multiTurnSearch,
   locale: "zh-TW",
+  trustedScope: TAIPEI_SCOPE,
   limit: 4,
 });
 assert(
@@ -446,29 +516,59 @@ const placesFunctions = readFileSync(
 assert.match(placesFunctions, /PLANNING_SELECTION_PLACES_RAW/);
 assert.match(placesFunctions, /allowVerifiedCampingLodging/);
 
+const initialStart = chatRoute.indexOf("if (isPlanningSelectionMode(syncedHandoff))");
+assert(initialStart > 0, "E1 selection branch anchor found");
 const selectionInitialCredits = chatRoute.slice(
-  chatRoute.indexOf("if (isPlanningSelectionMode(syncedHandoff))"),
-  chatRoute.indexOf(
-    "const req = toRoamieRequest",
-    chatRoute.indexOf('metadata: { path: "planning_selection_initial" }'),
-  ),
+  initialStart,
+  chatRoute.indexOf("const req = toRoamieRequest", initialStart),
 );
+assert.match(selectionInitialCredits, /path: "planning_selection_initial"/);
 assert.match(selectionInitialCredits, /beginPlaceRecommendationCredits/);
 assert.match(selectionInitialCredits, /chatRuntimeCopy\("quotaPlaces", locale\)/);
 assert.match(selectionInitialCredits, /settleCreditsOperation\(creditsHandle, delivered\)/);
+// A2 gate → Credits → Places order; fetch receives the gate result.
+{
+  const gate = selectionInitialCredits.indexOf("await resolveTrustedRecommendationSearchScope(");
+  const credits = selectionInitialCredits.indexOf("await beginPlaceRecommendationCredits(");
+  const fetch = selectionInitialCredits.indexOf("await fetchPlanningSelectionRecommendations(");
+  assert(gate > 0 && gate < credits && credits < fetch, "E1: A2 gate before Credits before Places");
+  assert.match(selectionInitialCredits.slice(fetch), /trustedScope: selectionScope/);
+  assert.match(
+    selectionInitialCredits.slice(credits, fetch),
+    /destination: selectionScope\.destination/,
+    "E1 Credits metadata carries the trusted destination",
+  );
+}
 
+const continuationMatch = /!turnSwitchVerified &&\s*isPlanningSelectionMode\(session\) &&\s*isPlanningSelectionContinuation\(trimmed\)/.exec(
+  chatRoute,
+);
+assert(continuationMatch, "E2 selection continuation anchor found");
 const selectionContinuationCredits = chatRoute.slice(
-  chatRoute.indexOf("if (isPlanningSelectionMode(session) && isPlanningSelectionContinuation"),
-  chatRoute.indexOf(
-    "const legacyNearbyClarification",
-    chatRoute.indexOf("if (isPlanningSelectionMode(session) && isPlanningSelectionContinuation"),
-  ),
+  continuationMatch.index,
+  chatRoute.indexOf("const legacyNearbyClarification", continuationMatch.index),
 );
 assert.match(selectionContinuationCredits, /ensureSubscriptionHydratedForCredits/);
 assert.match(selectionContinuationCredits, /beginPlaceRecommendationCredits/);
 assert.match(selectionContinuationCredits, /chatRuntimeCopy\("quotaPlaces", locale\)/);
 assert.match(selectionContinuationCredits, /settleCreditsOperation\(creditsHandle, delivered\)/);
 assert.match(selectionContinuationCredits, /selectionRecommendationInFlightRef/);
+{
+  const gate = selectionContinuationCredits.indexOf("await resolveTrustedRecommendationSearchScope(");
+  const ask = selectionContinuationCredits.indexOf("setSelectionSwitchPending(");
+  const credits = selectionContinuationCredits.indexOf("await beginPlaceRecommendationCredits(");
+  const fetch = selectionContinuationCredits.indexOf("await fetchPlanningSelectionRecommendations(");
+  assert(
+    gate > 0 && gate < ask && ask < credits && credits < fetch,
+    "E2: A2 gate and switch question before Credits before Places",
+  );
+  assert.match(selectionContinuationCredits.slice(fetch), /trustedScope: turnScope/);
+  assert.match(
+    selectionContinuationCredits.slice(credits, fetch),
+    /destination: turnScope\.destination/,
+    "E2 Credits metadata carries the trusted destination",
+  );
+}
 
 const selectionGenerateCredits = chatRoute.slice(
   chatRoute.indexOf("const handleGenerateItinerary = async"),

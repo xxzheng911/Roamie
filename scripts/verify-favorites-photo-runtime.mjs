@@ -8,12 +8,12 @@ import { build } from "esbuild";
 const root = process.cwd();
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "roamie-favorites-photo-"));
 const mocks = {
-  "@/integrations/supabase/client": `export const supabase={auth:{getSession:async()=>({data:{session:{access_token:'fixture'}}})}};`,
+  "@/integrations/supabase/client": `export const supabase={auth:{getSession:async()=>({data:{session:{access_token:'fixture'}}})}};export const isSupabaseConfigured=()=>false;`,
   "@/lib/api-url": `export const resolveApiUrl=url=>new URL(url,window.location.origin).href;`,
   "@/lib/pie/places-gateway": `export const getPlaceDetailsServerFnViaGateway=async()=>{window.discoveryCalls++;throw Error('unexpected discovery')};`,
-  "@/services/unsplashService": `export const searchUnsplashImage=async()=>null;export const searchUnsplashWithQueries=async()=>null;`,
+  "@/services/unsplashService": `export const searchUnsplashImage=async()=>null;export const searchUnsplashWithQueries=async()=>null;export const searchUnsplashCoverQueries=async()=>null;`,
   "@/lib/google-maps-client": `export const buildPlacePhotoUrl=(photo,w)=>'/api/place-photo?photo='+encodeURIComponent(photo)+'&w='+w;`,
-  "@/lib/app-perf": `export const logPerfImageLoad=()=>{};`,
+  "@/lib/app-perf": `export const logPerfImageLoad=()=>{};export const logPerfProfileLoadSkip=()=>{};export const logPerfTravelPrefLoadSkip=()=>{};`,
   "@/hooks/use-in-viewport": `export const useInViewport=()=>true;`,
 };
 const entry = `import React from 'react';import {createRoot} from 'react-dom/client';
