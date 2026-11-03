@@ -11,7 +11,9 @@
 import { readFileSync, existsSync, realpathSync } from "node:fs";
 import { resolve, relative, isAbsolute, dirname, basename, sep } from "node:path";
 
-const ROLES = new Set(["frontend", "backend", "tester", "ops"]);
+const ROLES = new Set(["frontend", "backend", "tester", "ops", "video"]);
+// video（影片剪輯師）只在專案外的影片工作區工作。
+const VIDEO_DIR = canonical(resolve(process.env.HOME || "/", "Roamie-video"));
 
 function block(reason) {
   process.stderr.write(`[role-guard] ${reason}\n`);
@@ -109,6 +111,8 @@ function destructiveGit(cmd) {
 
 function bashNotAllowed(cmd, role) {
   if (/`|\$\(|<\(|>\(|\$'|\$"/.test(cmd)) return "不允許命令替換或 $'…' 引號。";
+  // video：追蹤 cd 後的工作目錄，影片工具只能在 ~/Roamie-video 內執行。
+  let cwd = canonical(resolve(input.cwd || root));
   for (const rawSeg of splitSegments(cmd)) {
     // Only redirects to /dev/null or between descriptors are allowed. Escaped
     // characters and quoted text are neutralised first so `\"` cannot hide a
@@ -123,6 +127,15 @@ function bashNotAllowed(cmd, role) {
     const t = tokens(rawSeg);
     if (!t.length) continue;
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t[0])) return "不允許在指令前設定環境變數。";
+    if (role === "video") {
+      if (t[0] === "cd") {
+        cwd = canonical(resolve(cwd, expandHome(t[1] ?? process.env.HOME ?? "/")));
+        continue;
+      }
+      const vwhy = videoCommandNotAllowed(t, cwd);
+      if (vwhy === null) continue;
+      if (vwhy) return vwhy;
+    }
     const why = commandNotAllowed(t, role);
     if (why) return why;
   }
@@ -179,11 +192,47 @@ function commandNotAllowed(t, role) {
   return `「${c}」不在允許清單。`;
 }
 
+function expandHome(p) {
+  return p === "~" ? process.env.HOME || "/" : p.startsWith("~/") ? resolve(process.env.HOME || "/", p.slice(2)) : p;
+}
+
+function inVideoDir(abs) {
+  return abs === VIDEO_DIR || abs.startsWith(VIDEO_DIR + sep);
+}
+
+// video 專用指令。回傳 null＝允許；字串＝拒絕理由；undefined＝交給一般唯讀清單判斷。
+function videoCommandNotAllowed(t, cwd) {
+  const [c, ...a] = t;
+  const at = (p) => canonical(resolve(cwd, expandHome(p)));
+  const args = a.filter((x) => !x.startsWith("-"));
+  // cp／mv／mkdir 只接受無害旗標，避免 -t／--target-directory 等把目的地藏在旗標裡。
+  if (["cp", "mv", "mkdir"].includes(c) && a.some((x) => x.startsWith("-") && !["-r", "-R", "-p", "-n"].includes(x)))
+    return `${c} 只允許 -r／-R／-p／-n 旗標。`;
+  if (c === "mkdir") return args.length && args.every((p) => inVideoDir(at(p))) ? null : "mkdir 只能建立 ~/Roamie-video 內的資料夾。";
+  if (c === "cp") return args.length >= 2 && inVideoDir(at(args[args.length - 1])) ? null : "cp 的目的地必須在 ~/Roamie-video 內。";
+  if (c === "mv") return args.length >= 2 && args.every((p) => inVideoDir(at(p))) ? null : "mv 只能在 ~/Roamie-video 內搬移。";
+  if (c === "xcrun") return a[0] === "simctl" && a[1] === "io" && a[3] === "recordVideo" && a.length >= 5 && inVideoDir(at(a[a.length - 1])) ? null : "xcrun 只允許 simctl io <裝置> recordVideo 存到 ~/Roamie-video。";
+  if (["npm", "npx", "node", "ffmpeg", "ffprobe"].includes(c)) {
+    if (!inVideoDir(cwd)) return `${c} 只能在 ~/Roamie-video 內執行（先 cd ~/Roamie-video）。`;
+    if (c === "npx" && a[0] && /^(vercel|wrangler|cap|netlify|firebase|supabase|gh)$/.test(a[0])) return "不允許部署或雲端工具。";
+    if (c === "npm" && ["publish", "deploy", "login", "adduser", "token"].includes(a[0])) return "不允許發布或登入。";
+    return null;
+  }
+  if (c === "git") return "影片剪輯師不使用 git。";
+  return undefined;
+}
+
 function isCheckScript(s) {
   return /^(\.\/)?scripts\/(verify|check|release-guard|supabase-env-check)[\w.-]*\.m?js$/.test(s ?? "");
 }
 
 function writeNotAllowed(abs, role) {
+  if (role === "video") {
+    if (inVideoDir(abs)) return null;
+    const scratch = input.scratchpad_dir ? canonical(resolve(input.scratchpad_dir)) : null;
+    if (scratch && (abs === scratch || abs.startsWith(scratch + sep))) return null;
+    return "影片剪輯師只能寫入 ~/Roamie-video 或 scratchpad。";
+  }
   const rel = relative(root, abs);
   const inRepo = rel && !rel.startsWith("..") && !isAbsolute(rel);
   if (!inRepo) {

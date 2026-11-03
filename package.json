@@ -1,7 +1,9 @@
 {
   "name": "tanstack_start_ts",
   "private": true,
-  "sideEffects": ["./src/lib/ios15-compat.ts"],
+  "sideEffects": [
+    "./src/lib/ios15-compat.ts"
+  ],
   "type": "module",
   "scripts": {
     "sync:env": "node scripts/sync-dev-vars.mjs --local-dev",
@@ -291,6 +293,7 @@
     "@capacitor/keyboard": "^7.0.1",
     "@capacitor/local-notifications": "^7.0.6",
     "@capacitor/preferences": "^7.0.4",
+    "@capacitor/share": "^7.0.4",
     "@capacitor/splash-screen": "^7.0.1",
     "@capacitor/status-bar": "^7.0.1",
     "@cloudflare/vite-plugin": "^1.25.5",
