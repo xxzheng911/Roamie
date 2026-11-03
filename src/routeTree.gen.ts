@@ -39,6 +39,7 @@ import { Route as AppPlaceRouteImport } from './routes/_app.place'
 import { Route as AppMapRouteImport } from './routes/_app.map'
 import { Route as AppDeveloperRouteImport } from './routes/_app.developer'
 import { Route as AppChatRouteImport } from './routes/_app.chat'
+import { Route as DotwellKnownAppleAppSiteAssociationRouteImport } from './routes/[.]well-known/apple-app-site-association'
 import { Route as AppSavedIndexRouteImport } from './routes/_app.saved.index'
 import { Route as ApiSubscriptionWebhookRouteImport } from './routes/api/subscription/webhook'
 import { Route as ApiSubscriptionSyncRouteImport } from './routes/api/subscription/sync'
@@ -47,6 +48,8 @@ import { Route as ApiAnalyticsEventsRouteImport } from './routes/api/analytics/e
 import { Route as ApiAdminDashboardRouteImport } from './routes/api/admin/dashboard'
 import { Route as ApiAccountDeleteRouteImport } from './routes/api/account/delete'
 import { Route as AppSavedTripIdRouteImport } from './routes/_app.saved.$tripId'
+import { Route as AppSavedTripIdPackingRouteImport } from './routes/_app.saved_.$tripId.packing'
+import { Route as AppSavedTripIdExpensesRouteImport } from './routes/_app.saved_.$tripId.expenses'
 
 const WelcomeRoute = WelcomeRouteImport.update({
   id: '/welcome',
@@ -197,6 +200,12 @@ const AppChatRoute = AppChatRouteImport.update({
   path: '/chat',
   getParentRoute: () => AppRoute,
 } as any)
+const DotwellKnownAppleAppSiteAssociationRoute =
+  DotwellKnownAppleAppSiteAssociationRouteImport.update({
+    id: '/.well-known/apple-app-site-association',
+    path: '/.well-known/apple-app-site-association',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const AppSavedIndexRoute = AppSavedIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -237,6 +246,16 @@ const AppSavedTripIdRoute = AppSavedTripIdRouteImport.update({
   path: '/$tripId',
   getParentRoute: () => AppSavedRoute,
 } as any)
+const AppSavedTripIdPackingRoute = AppSavedTripIdPackingRouteImport.update({
+  id: '/saved_/$tripId/packing',
+  path: '/saved/$tripId/packing',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppSavedTripIdExpensesRoute = AppSavedTripIdExpensesRouteImport.update({
+  id: '/saved_/$tripId/expenses',
+  path: '/saved/$tripId/expenses',
+  getParentRoute: () => AppRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
@@ -249,6 +268,7 @@ export interface FileRoutesByFullPath {
   '/travel-preference-test': typeof TravelPreferenceTestRoute
   '/trip': typeof TripRoute
   '/welcome': typeof WelcomeRoute
+  '/.well-known/apple-app-site-association': typeof DotwellKnownAppleAppSiteAssociationRoute
   '/chat': typeof AppChatRoute
   '/developer': typeof AppDeveloperRoute
   '/map': typeof AppMapRoute
@@ -276,6 +296,8 @@ export interface FileRoutesByFullPath {
   '/api/subscription/sync': typeof ApiSubscriptionSyncRoute
   '/api/subscription/webhook': typeof ApiSubscriptionWebhookRoute
   '/saved/': typeof AppSavedIndexRoute
+  '/saved/$tripId/expenses': typeof AppSavedTripIdExpensesRoute
+  '/saved/$tripId/packing': typeof AppSavedTripIdPackingRoute
 }
 export interface FileRoutesByTo {
   '/admin': typeof AdminRoute
@@ -287,6 +309,7 @@ export interface FileRoutesByTo {
   '/travel-preference-test': typeof TravelPreferenceTestRoute
   '/trip': typeof TripRoute
   '/welcome': typeof WelcomeRoute
+  '/.well-known/apple-app-site-association': typeof DotwellKnownAppleAppSiteAssociationRoute
   '/chat': typeof AppChatRoute
   '/developer': typeof AppDeveloperRoute
   '/map': typeof AppMapRoute
@@ -314,6 +337,8 @@ export interface FileRoutesByTo {
   '/api/subscription/sync': typeof ApiSubscriptionSyncRoute
   '/api/subscription/webhook': typeof ApiSubscriptionWebhookRoute
   '/saved': typeof AppSavedIndexRoute
+  '/saved/$tripId/expenses': typeof AppSavedTripIdExpensesRoute
+  '/saved/$tripId/packing': typeof AppSavedTripIdPackingRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -327,6 +352,7 @@ export interface FileRoutesById {
   '/travel-preference-test': typeof TravelPreferenceTestRoute
   '/trip': typeof TripRoute
   '/welcome': typeof WelcomeRoute
+  '/.well-known/apple-app-site-association': typeof DotwellKnownAppleAppSiteAssociationRoute
   '/_app/chat': typeof AppChatRoute
   '/_app/developer': typeof AppDeveloperRoute
   '/_app/map': typeof AppMapRoute
@@ -355,6 +381,8 @@ export interface FileRoutesById {
   '/api/subscription/sync': typeof ApiSubscriptionSyncRoute
   '/api/subscription/webhook': typeof ApiSubscriptionWebhookRoute
   '/_app/saved/': typeof AppSavedIndexRoute
+  '/_app/saved_/$tripId/expenses': typeof AppSavedTripIdExpensesRoute
+  '/_app/saved_/$tripId/packing': typeof AppSavedTripIdPackingRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -369,6 +397,7 @@ export interface FileRouteTypes {
     | '/travel-preference-test'
     | '/trip'
     | '/welcome'
+    | '/.well-known/apple-app-site-association'
     | '/chat'
     | '/developer'
     | '/map'
@@ -396,6 +425,8 @@ export interface FileRouteTypes {
     | '/api/subscription/sync'
     | '/api/subscription/webhook'
     | '/saved/'
+    | '/saved/$tripId/expenses'
+    | '/saved/$tripId/packing'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/admin'
@@ -407,6 +438,7 @@ export interface FileRouteTypes {
     | '/travel-preference-test'
     | '/trip'
     | '/welcome'
+    | '/.well-known/apple-app-site-association'
     | '/chat'
     | '/developer'
     | '/map'
@@ -434,6 +466,8 @@ export interface FileRouteTypes {
     | '/api/subscription/sync'
     | '/api/subscription/webhook'
     | '/saved'
+    | '/saved/$tripId/expenses'
+    | '/saved/$tripId/packing'
   id:
     | '__root__'
     | '/_app'
@@ -446,6 +480,7 @@ export interface FileRouteTypes {
     | '/travel-preference-test'
     | '/trip'
     | '/welcome'
+    | '/.well-known/apple-app-site-association'
     | '/_app/chat'
     | '/_app/developer'
     | '/_app/map'
@@ -474,6 +509,8 @@ export interface FileRouteTypes {
     | '/api/subscription/sync'
     | '/api/subscription/webhook'
     | '/_app/saved/'
+    | '/_app/saved_/$tripId/expenses'
+    | '/_app/saved_/$tripId/packing'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -487,6 +524,7 @@ export interface RootRouteChildren {
   TravelPreferenceTestRoute: typeof TravelPreferenceTestRoute
   TripRoute: typeof TripRoute
   WelcomeRoute: typeof WelcomeRoute
+  DotwellKnownAppleAppSiteAssociationRoute: typeof DotwellKnownAppleAppSiteAssociationRoute
   ApiChatRoute: typeof ApiChatRoute
   ApiGenerateItineraryRoute: typeof ApiGenerateItineraryRoute
   ApiGoogleRoute: typeof ApiGoogleRoute
@@ -714,6 +752,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppChatRouteImport
       parentRoute: typeof AppRoute
     }
+    '/.well-known/apple-app-site-association': {
+      id: '/.well-known/apple-app-site-association'
+      path: '/.well-known/apple-app-site-association'
+      fullPath: '/.well-known/apple-app-site-association'
+      preLoaderRoute: typeof DotwellKnownAppleAppSiteAssociationRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_app/saved/': {
       id: '/_app/saved/'
       path: '/'
@@ -770,6 +815,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSavedTripIdRouteImport
       parentRoute: typeof AppSavedRoute
     }
+    '/_app/saved_/$tripId/packing': {
+      id: '/_app/saved_/$tripId/packing'
+      path: '/saved/$tripId/packing'
+      fullPath: '/saved/$tripId/packing'
+      preLoaderRoute: typeof AppSavedTripIdPackingRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/saved_/$tripId/expenses': {
+      id: '/_app/saved_/$tripId/expenses'
+      path: '/saved/$tripId/expenses'
+      fullPath: '/saved/$tripId/expenses'
+      preLoaderRoute: typeof AppSavedTripIdExpensesRouteImport
+      parentRoute: typeof AppRoute
+    }
   }
 }
 
@@ -799,6 +858,8 @@ interface AppRouteChildren {
   AppSettingsRoute: typeof AppSettingsRoute
   AppTravelDraftsRoute: typeof AppTravelDraftsRoute
   AppIndexRoute: typeof AppIndexRoute
+  AppSavedTripIdExpensesRoute: typeof AppSavedTripIdExpensesRoute
+  AppSavedTripIdPackingRoute: typeof AppSavedTripIdPackingRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
@@ -813,6 +874,8 @@ const AppRouteChildren: AppRouteChildren = {
   AppSettingsRoute: AppSettingsRoute,
   AppTravelDraftsRoute: AppTravelDraftsRoute,
   AppIndexRoute: AppIndexRoute,
+  AppSavedTripIdExpensesRoute: AppSavedTripIdExpensesRoute,
+  AppSavedTripIdPackingRoute: AppSavedTripIdPackingRoute,
 }
 
 const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
@@ -850,6 +913,8 @@ const rootRouteChildren: RootRouteChildren = {
   TravelPreferenceTestRoute: TravelPreferenceTestRoute,
   TripRoute: TripRoute,
   WelcomeRoute: WelcomeRoute,
+  DotwellKnownAppleAppSiteAssociationRoute:
+    DotwellKnownAppleAppSiteAssociationRoute,
   ApiChatRoute: ApiChatRoute,
   ApiGenerateItineraryRoute: ApiGenerateItineraryRoute,
   ApiGoogleRoute: ApiGoogleRoute,

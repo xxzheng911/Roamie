@@ -3,7 +3,7 @@ import { createFileRoute, Link, useLocation, useNavigate } from "@tanstack/react
 import { Plus, Loader2, Trash2, Heart, Route as RouteIcon, Share2 } from "lucide-react";
 import { useAddToTrip } from "@/hooks/use-add-to-trip";
 import { tripPlaceFromSavedPlace } from "@/lib/trip/trip-place-input";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useI18n } from "@/hooks/use-i18n";
 import { readCachedAuthenticatedUserIdSync } from "@/lib/auth-session";
@@ -37,6 +37,8 @@ import { useAuth } from "@/hooks/use-auth";
 import { useSubscription } from "@/providers/SubscriptionProvider";
 import { recordAnalyticsEvent } from "@/lib/analytics/record";
 import { createLatestRequestGuard } from "@/lib/latest-request-guard";
+import { useDuoLayout } from "@/hooks/use-duo-layout";
+import { useDuoLaptop } from "@/hooks/use-duo-laptop";
 
 type SavedSearch = { tab?: string };
 
@@ -109,6 +111,18 @@ function Saved() {
   const routeStartedAtRef = useRef(Date.now());
   const requestGuardRef = useRef(createLatestRequestGuard());
   const search = Route.useSearch();
+  // iPhone Duo 展開雙欄（與 _app 設定 html.duo-two-pane 的條件相同）：行程在左頁、地點在右頁同時顯示。
+  // 其他裝置／狀態為 false，輸出與修改前相同；tab state 不受影響，回到單欄時仍是原本選的分頁。
+  const duoLayout = useDuoLayout();
+  const duoTwoPane =
+    duoLayout.navPlacement === "right-rail" &&
+    duoLayout.tripLayout === "two-pane" &&
+    duoLayout.pane != null;
+  // iPhone Duo 筆電半開（與 _app 設定 html.duo-laptop 的條件相同：雙欄優先）：沿用雙欄結構（標題列＋行程／地點兩區，
+  // 不顯示分頁列），以 CSS 改為上下排列：上半部標題＋行程、下半部地點，兩區各自捲動。tab state 不受影響。
+  const duoLaptop = useDuoLaptop();
+  const savedLaptop = duoLaptop.laptop && !duoTwoPane;
+  const savedSplit = duoTwoPane || savedLaptop;
   const [tab, setTab] = useState<Tab>(search.tab === "places" ? "places" : "trips");
   const cachedUserId = readCachedAuthenticatedUserIdSync();
   const initialTrips = cachedUserId ? readSavedTripsSnapshot() : [];
@@ -461,9 +475,140 @@ function Saved() {
     return () => cancelAnimationFrame(frame);
   }, [authLoading, authSession, loading, places.length, renderBranch, routeVisible, trips.length]);
 
+  // 筆電半開時在 <html> 標記 saved-laptop-active（styles.css 以此限定本頁浮層不跨摺痕）；其他狀態不加 class。
+  const savedLaptopActive = savedLaptop && routeVisible;
+  useLayoutEffect(() => {
+    if (!savedLaptopActive) return;
+    const root = document.documentElement;
+    root.classList.add("saved-laptop-active");
+    return () => {
+      root.classList.remove("saved-laptop-active");
+    };
+  }, [savedLaptopActive]);
+
+  const loadingNode = (
+    <div data-loading-owner="favorites-route" className="flex justify-center py-20">
+      <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+    </div>
+  );
+
+  const tripsNode =
+    trips.length === 0 ? (
+      <TripsEmptyState />
+    ) : (
+      <ul className="mt-6 space-y-3">
+        {trips.map((trip) => (
+          <li key={trip.id}>
+            <SavedTripCard
+              trip={trip}
+              shareSlot={
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setShareTarget({
+                      id: trip.id,
+                      title: resolveCoreTripTitle(trip),
+                      isOwner: trip.isOwner ?? true,
+                    });
+                  }}
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-card/95 text-muted-foreground shadow-soft hover:bg-secondary"
+                  aria-label={uiT("productionUi.pd50e0839b9")}
+                >
+                  <Share2 className="h-4 w-4" />
+                </button>
+              }
+              deleteSlot={
+                (trip.isOwner ?? true) ? (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setDeleteTarget({ id: trip.id, title: resolveCoreTripTitle(trip) });
+                    }}
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-card/95 text-muted-foreground shadow-soft hover:bg-secondary"
+                    aria-label={t("saved.deleteAria")}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                ) : null
+              }
+            />
+          </li>
+        ))}
+      </ul>
+    );
+
+  const placesNode =
+    places.length === 0 ? (
+      <PlacesEmptyState />
+    ) : (
+      <ul className="mt-6 space-y-3">
+        {places.map((p) => (
+          <li
+            key={p.id}
+            className="flex items-center gap-3 rounded-3xl border border-border bg-card p-3 shadow-soft"
+          >
+            <button
+              type="button"
+              onClick={() => void handleOpenSavedPlace(p)}
+              disabled={openingPlaceId === p.id}
+              className="flex min-w-0 flex-1 items-center gap-3 text-left"
+            >
+              <SavedPlaceCoverThumb
+                place={p}
+                className="h-16 w-16 shrink-0 overflow-hidden rounded-2xl bg-secondary"
+                alt={p.name}
+              />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-[15px] font-medium">{p.name}</p>
+                <p className="mt-0.5 truncate text-xs text-muted-foreground">{p.address || ""}</p>
+              </div>
+            </button>
+            <div className="flex shrink-0 flex-col gap-1">
+              <button
+                type="button"
+                onClick={() => openAddToTrip(tripPlaceFromSavedPlace(p), "favorites")}
+                className="flex h-9 w-9 items-center justify-center rounded-full bg-foreground text-background"
+                aria-label={t("chat.addToTrip")}
+              >
+                <Plus className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setRemovePlaceTarget(p)}
+                className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground hover:bg-secondary"
+                aria-label={t("saved.removeAria")}
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
+    );
+
+  // 根節點的子元素順序固定（標題列｜分頁列或 null｜內容｜三個對話框），
+  // 開合切換只替換「分頁列」與「內容」兩格，對話框不會 remount（開著的面板不關閉、不重新載入）。
   return (
-    <div className="px-5 pb-6 pt-3">
-      <div className="flex items-end justify-between">
+    <div
+      className={
+        duoTwoPane
+          ? "saved-duo-root pb-6 pt-3"
+          : savedLaptop
+            ? "saved-duo-root saved-laptop-root pb-6 pt-3"
+            : "px-5 pb-6 pt-3"
+      }
+    >
+      <div
+        className={
+          savedSplit
+            ? "saved-duo-header flex items-end justify-between"
+            : "flex items-end justify-between"
+        }
+      >
         <div>
           <h1 className="font-display text-2xl">{t("saved.title")}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -483,121 +628,46 @@ function Saved() {
         )}
       </div>
 
-      <div className="mt-4 flex gap-1 rounded-full border border-border bg-card p-1 text-sm">
-        {(["trips", "places"] as const).map((tabKey) => (
-          <button
-            key={tabKey}
-            type="button"
-            onClick={() => setTab(tabKey)}
-            className={`flex-1 rounded-full py-2 transition ${
-              tab === tabKey ? "bg-foreground text-background" : "text-muted-foreground"
-            }`}
-          >
-            {tabKey === "trips"
-              ? tt("saved.tabTrips", { count: trips.length })
-              : tt("saved.tabPlaces", { count: places.length })}
-          </button>
-        ))}
-      </div>
-
-      {loading ? (
-        <div data-loading-owner="favorites-route" className="flex justify-center py-20">
-          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-        </div>
-      ) : tab === "trips" ? (
-        trips.length === 0 ? (
-          <TripsEmptyState />
-        ) : (
-          <ul className="mt-6 space-y-3">
-            {trips.map((trip) => (
-              <li key={trip.id}>
-                <SavedTripCard
-                  trip={trip}
-                  shareSlot={
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        setShareTarget({
-                          id: trip.id,
-                          title: resolveCoreTripTitle(trip),
-                          isOwner: trip.isOwner ?? true,
-                        });
-                      }}
-                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-card/95 text-muted-foreground shadow-soft hover:bg-secondary"
-                      aria-label={uiT("productionUi.pd50e0839b9")}
-                    >
-                      <Share2 className="h-4 w-4" />
-                    </button>
-                  }
-                  deleteSlot={
-                    (trip.isOwner ?? true) ? (
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setDeleteTarget({ id: trip.id, title: resolveCoreTripTitle(trip) });
-                        }}
-                        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-card/95 text-muted-foreground shadow-soft hover:bg-secondary"
-                        aria-label={t("saved.deleteAria")}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    ) : null
-                  }
-                />
-              </li>
-            ))}
-          </ul>
-        )
-      ) : places.length === 0 ? (
-        <PlacesEmptyState />
-      ) : (
-        <ul className="mt-6 space-y-3">
-          {places.map((p) => (
-            <li
-              key={p.id}
-              className="flex items-center gap-3 rounded-3xl border border-border bg-card p-3 shadow-soft"
+      {savedSplit ? null : (
+        <div className="mt-4 flex gap-1 rounded-full border border-border bg-card p-1 text-sm">
+          {(["trips", "places"] as const).map((tabKey) => (
+            <button
+              key={tabKey}
+              type="button"
+              onClick={() => setTab(tabKey)}
+              className={`flex-1 rounded-full py-2 transition ${
+                tab === tabKey ? "bg-foreground text-background" : "text-muted-foreground"
+              }`}
             >
-              <button
-                type="button"
-                onClick={() => void handleOpenSavedPlace(p)}
-                disabled={openingPlaceId === p.id}
-                className="flex min-w-0 flex-1 items-center gap-3 text-left"
-              >
-                <SavedPlaceCoverThumb
-                  place={p}
-                  className="h-16 w-16 shrink-0 overflow-hidden rounded-2xl bg-secondary"
-                  alt={p.name}
-                />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-[15px] font-medium">{p.name}</p>
-                  <p className="mt-0.5 truncate text-xs text-muted-foreground">{p.address || ""}</p>
-                </div>
-              </button>
-              <div className="flex shrink-0 flex-col gap-1">
-                <button
-                  type="button"
-                  onClick={() => openAddToTrip(tripPlaceFromSavedPlace(p), "favorites")}
-                  className="flex h-9 w-9 items-center justify-center rounded-full bg-foreground text-background"
-                  aria-label={t("chat.addToTrip")}
-                >
-                  <Plus className="h-4 w-4" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setRemovePlaceTarget(p)}
-                  className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground hover:bg-secondary"
-                  aria-label={t("saved.removeAria")}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
-              </div>
-            </li>
+              {tabKey === "trips"
+                ? tt("saved.tabTrips", { count: trips.length })
+                : tt("saved.tabPlaces", { count: places.length })}
+            </button>
           ))}
-        </ul>
+        </div>
+      )}
+
+      {savedSplit ? (
+        <div className="saved-duo-panes">
+          <section className="min-w-0 px-5">
+            <h2 className="mt-4 text-sm font-medium text-muted-foreground">
+              {tt("saved.tabTrips", { count: trips.length })}
+            </h2>
+            {loading ? loadingNode : tripsNode}
+          </section>
+          <section className="min-w-0 px-5">
+            <h2 className="mt-4 text-sm font-medium text-muted-foreground">
+              {tt("saved.tabPlaces", { count: places.length })}
+            </h2>
+            {loading ? loadingNode : placesNode}
+          </section>
+        </div>
+      ) : loading ? (
+        loadingNode
+      ) : tab === "trips" ? (
+        tripsNode
+      ) : (
+        placesNode
       )}
 
       <TripDeleteConfirmDialog

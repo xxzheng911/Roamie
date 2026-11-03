@@ -50,6 +50,37 @@ export function consumeTripDetailViewState(tripId: string): TripDetailViewState 
   return state;
 }
 
+const WORKSPACE_SCROLL_KEY = "roamie:trip-workspace-scroll";
+
+/** Trip Workspace 各分頁（trip／overview／map）捲動位置；只保存最近一個行程。 */
+export type TripWorkspaceScrollTops = Partial<Record<string, number>>;
+
+export function saveTripWorkspaceScrollTops(tripId: string, tops: TripWorkspaceScrollTops): void {
+  if (typeof sessionStorage === "undefined") return;
+  try {
+    sessionStorage.setItem(WORKSPACE_SCROLL_KEY, JSON.stringify({ tripId, tops }));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function readTripWorkspaceScrollTops(tripId: string): TripWorkspaceScrollTops {
+  if (typeof sessionStorage === "undefined") return {};
+  try {
+    const raw = sessionStorage.getItem(WORKSPACE_SCROLL_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as { tripId?: string; tops?: TripWorkspaceScrollTops };
+    if (parsed?.tripId !== tripId || !parsed.tops || typeof parsed.tops !== "object") return {};
+    const out: TripWorkspaceScrollTops = {};
+    for (const [k, v] of Object.entries(parsed.tops)) {
+      if (typeof v === "number" && Number.isFinite(v) && v >= 0) out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 export function readTripDetailScrollTop(tripId: string): number | null {
   if (typeof sessionStorage === "undefined") return null;
   try {

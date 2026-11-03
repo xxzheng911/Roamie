@@ -1,6 +1,6 @@
 import { useI18n } from "@/hooks/use-i18n";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Copy, Loader2, Users } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Loader2, UserPlus, Users } from "lucide-react";
 import { toast } from "sonner";
 import {
   AlertDialog,
@@ -23,15 +23,19 @@ import {
   resolveCollaboratorDisplayName,
 } from "@/lib/trip/collab-member-display";
 import {
-  copyInviteToClipboard,
-  createTripInvite,
+  ensureTripInviteToken,
   getTripAccess,
+  isTripInviteCreating,
   listTripMembers,
+  peekTripInviteError,
+  peekTripInviteToken,
   removeTripMember,
+  retryTripInviteToken,
+  subscribeTripInviteState,
   type TripMemberRow,
 } from "@/lib/trip/trip-collab";
-import { COPY_MANUAL_HINT } from "@/lib/copy-to-clipboard";
-import { TRIP_INVITE_CREATE_FAILED_MESSAGE } from "@/lib/supabase-errors";
+import { getTripWorkspaceCopy } from "@/lib/i18n/trip-workspace-copy";
+import { TripInviteSheet } from "@/components/trip/TripInviteSheet";
 import { cn } from "@/lib/utils";
 
 type Props = {
@@ -39,7 +43,8 @@ type Props = {
   onOpenChange: (open: boolean) => void;
   tripId: string;
   tripTitle: string;
-  isOwner: boolean;
+  /** null＝權限尚未查回（視同非擁有者，不建立邀請連結） */
+  isOwner: boolean | null;
 };
 
 function memberDisplayName(member: TripMemberRow): string {
@@ -79,11 +84,34 @@ function MemberAvatar({ member, displayName }: { member: TripMemberRow; displayN
   );
 }
 
-export function TripSharePanel({ open, onOpenChange, tripId, isOwner: isOwnerProp }: Props) {
-  const { t: uiT } = useI18n();
+export function TripSharePanel({
+  open,
+  onOpenChange,
+  tripId,
+  tripTitle,
+  isOwner: isOwnerProp,
+}: Props) {
+  const { t: uiT, locale } = useI18n();
+  const workspaceCopy = getTripWorkspaceCopy(locale);
 
-  const [inviteToken, setInviteToken] = useState<string | null>(null);
-  const [copying, setCopying] = useState(false);
+  // 連結／失敗／建立中皆讀模組層狀態（與 TripInviteSheet 共用）
+  const inviteToken = useSyncExternalStore(
+    subscribeTripInviteState,
+    () => peekTripInviteToken(tripId),
+    () => peekTripInviteToken(tripId),
+  );
+  const [inviteSheetOpen, setInviteSheetOpen] = useState(false);
+  /** 建立邀請連結失敗（文案 key）；null＝無錯誤。按重試清除後重新建立 */
+  const inviteError = useSyncExternalStore(
+    subscribeTripInviteState,
+    () => peekTripInviteError(tripId),
+    () => peekTripInviteError(tripId),
+  );
+  const inviteCreating = useSyncExternalStore(
+    subscribeTripInviteState,
+    () => isTripInviteCreating(tripId),
+    () => isTripInviteCreating(tripId),
+  );
   const [loadingMembers, setLoadingMembers] = useState(false);
   const [collaborators, setCollaborators] = useState<TripMemberRow[]>([]);
   const [removeTarget, setRemoveTarget] = useState<TripMemberRow | null>(null);
@@ -153,29 +181,12 @@ export function TripSharePanel({ open, onOpenChange, tripId, isOwner: isOwnerPro
     };
   }, [open, tripId, refreshMembers]);
 
-  const ensureInviteToken = useCallback(async (): Promise<string> => {
-    if (inviteToken) return inviteToken;
-    const invite = await createTripInvite(tripId);
-    setInviteToken(invite.token);
-    return invite.token;
-  }, [inviteToken, tripId]);
-
-  const handleCopyLink = async () => {
-    setCopying(true);
-    try {
-      const token = await ensureInviteToken();
-      const result = await copyInviteToClipboard(token);
-      if (result === "copied") {
-        toast.success(uiT("productionUi.peac081dac9"));
-      } else {
-        toast.error(COPY_MANUAL_HINT);
-      }
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : TRIP_INVITE_CREATE_FAILED_MESSAGE);
-    } finally {
-      setCopying(false);
-    }
-  };
+  // 擁有者開啟面板時取得長期邀請連結（伺服端產生；同一行程只呼叫一次）供「邀請成員」使用；已失敗不自動重試
+  useEffect(() => {
+    if (!open || !resolvedIsOwner || inviteToken || !tripId || inviteError || inviteCreating)
+      return;
+    ensureTripInviteToken(tripId);
+  }, [open, resolvedIsOwner, inviteToken, tripId, inviteError, inviteCreating]);
 
   const handleMemberPress = useCallback(
     (member: TripMemberRow) => {
@@ -278,21 +289,51 @@ export function TripSharePanel({ open, onOpenChange, tripId, isOwner: isOwnerPro
           </div>
 
           {resolvedIsOwner ? (
-            <div className="mt-4 px-5">
+            <div className="mx-5 mt-4">
+              {!inviteToken && inviteError ? (
+                <div
+                  role="alert"
+                  className="mb-3 flex items-center justify-between gap-2 rounded-xl bg-destructive/10 px-3 py-2"
+                >
+                  <span className="min-w-0 text-xs text-destructive">
+                    {workspaceCopy[inviteError]}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => retryTripInviteToken(tripId)}
+                    className="shrink-0 rounded-full bg-background px-3 py-1 text-xs font-medium text-foreground"
+                  >
+                    {workspaceCopy.inviteRetry}
+                  </button>
+                </div>
+              ) : null}
               <button
                 type="button"
-                onClick={() => void handleCopyLink()}
-                disabled={copying}
-                className="flex w-full touch-manipulation items-center justify-center gap-2 rounded-full bg-primary py-3.5 text-sm font-medium text-primary-foreground transition active:scale-[0.99] disabled:opacity-60"
+                onClick={() => setInviteSheetOpen(true)}
+                disabled={!inviteToken}
+                className="flex w-full touch-manipulation items-center justify-center gap-2 rounded-full bg-primary py-3.5 text-sm font-medium text-primary-foreground transition active:scale-[0.99] disabled:opacity-50"
               >
-                {copying ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
+                {!inviteToken && !inviteError ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    {workspaceCopy.inviteLinkLoading}
+                  </>
                 ) : (
-                  <Copy className="h-4 w-4" />
+                  <>
+                    <UserPlus className="h-4 w-4" />
+                    {workspaceCopy.inviteMembers}
+                  </>
                 )}
-                {uiT("productionUi.peb3fc2c71f")}
               </button>
             </div>
+          ) : null}
+          {resolvedIsOwner ? (
+            <TripInviteSheet
+              open={inviteSheetOpen}
+              onOpenChange={setInviteSheetOpen}
+              tripId={tripId}
+              tripTitle={tripTitle}
+            />
           ) : null}
         </SheetContent>
       </Sheet>

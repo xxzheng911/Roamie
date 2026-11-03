@@ -6,19 +6,35 @@ import { waitForCapacitorBridge } from "@/lib/capacitor-bridge-ready";
 import { stashTripInviteToken } from "@/lib/trip/trip-collab";
 
 const TRIP_INVITE_HOST = "trip-invite";
+const TRIP_INVITE_PATH_PREFIX = "/trip-invite/";
+/** Universal Link 網域（含 www） */
+const TRIP_INVITE_WEB_HOSTS = new Set(["roamie.tw", "www.roamie.tw"]);
+
+function tokenFromInvitePath(pathname: string): string | null {
+  if (!pathname.startsWith(TRIP_INVITE_PATH_PREFIX)) return null;
+  const raw = pathname.slice(TRIP_INVITE_PATH_PREFIX.length).replace(/\/+$/, "");
+  if (!raw || raw.includes("/")) return null;
+  try {
+    return decodeURIComponent(raw).trim() || null;
+  } catch {
+    return null;
+  }
+}
 
 export function parseTripInviteTokenFromUrl(url: string): string | null {
   try {
     const parsed = new URL(url);
     if (parsed.protocol === `${APP_SCHEME}:` && parsed.hostname === TRIP_INVITE_HOST) {
-      const token = parsed.pathname.replace(/^\/+/, "").trim();
-      return token || null;
+      // 與 https 規則一致：只允許單一 token 段（可帶尾斜線／query），多段路徑一律拒絕。
+      return tokenFromInvitePath(`/trip-invite${parsed.pathname.startsWith("/") ? "" : "/"}${parsed.pathname}`);
+    }
+    if (parsed.protocol === "https:" && TRIP_INVITE_WEB_HOSTS.has(parsed.hostname.toLowerCase())) {
+      return tokenFromInvitePath(parsed.pathname);
     }
     if (typeof window !== "undefined") {
       const origin = window.location.origin;
-      if (parsed.origin === origin && parsed.pathname.startsWith("/trip-invite/")) {
-        const token = parsed.pathname.slice("/trip-invite/".length).replace(/\/+$/, "");
-        return token || null;
+      if (parsed.origin === origin) {
+        return tokenFromInvitePath(parsed.pathname);
       }
     }
     return null;

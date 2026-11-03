@@ -53,12 +53,13 @@ import {
   inferTripDatesForRange,
   resolveTripDateRangeChange,
   scheduledDateKeysFromSettings,
-  TRIP_UNASSIGNED_DATE,
   updateSingleDayDate,
 } from "@/lib/saved-trip/apply-trip-date-range";
 import { useDebouncedTripSave } from "@/lib/saved-trip/use-debounced-trip-save";
 import { cn } from "@/lib/utils";
 import type { StoredItinerary } from "@/lib/itinerary-storage";
+import type { WorkspaceView } from "@/lib/trip/workspace-view";
+import { WORKSPACE_PANE_STYLE } from "@/hooks/use-workspace-swipe";
 import { SAVED_TRIPS_CHANGED_EVENT, updateItinerary, updateTripMeta } from "@/lib/itinerary-storage";
 import { buildCustomCoverPatch, buildCustomTitlePatch } from "@/lib/saved-trip/display";
 import { applyTransitLegSyncToItems } from "@/lib/saved-trip/apply-transit-leg-sync";
@@ -102,7 +103,6 @@ import {
   groupStopsByDate,
   insertStopOnDate,
   legKeyForItem,
-  listTripDateKeys,
   moveStopAcrossDays,
   moveStopInDay,
   type CrossDayMovePosition,
@@ -116,7 +116,6 @@ import {
 import { tripPlaceToItineraryItem } from "@/lib/trip/trip-place-input";
 import { resolveTripTitle } from "@/lib/trip/trip-title";
 import { daysBetweenDates } from "@/lib/fetch-context";
-import { listTripDates } from "@/lib/outfit/group-by-date";
 import { resolveTripDestination } from "@/lib/outfit/trip-outfit-context";
 import { useTripOutfitSuggestion } from "@/hooks/use-trip-outfit-suggestion";
 import {
@@ -132,6 +131,7 @@ import { TripRemoveDayConfirmDialog } from "@/components/saved/TripRemoveDayConf
 import { TripAffiliateSection } from "@/components/trip/TripAffiliateSection";
 import { logAffiliateFactualEvidenceLifecycle } from "@/lib/affiliate/factual-evidence-lifecycle";
 import { useI18n } from "@/hooks/use-i18n";
+import { blockIfChatGenerationLocked } from "@/lib/ai/chat-generation-lock";
 import { geocodeTripLocationFromText } from "@/lib/location.functions";
 import { resolveTripStop } from "@/lib/trip-stop-search.functions";
 import { resolveTripStopCoords } from "@/lib/trip-stop-coords";
@@ -148,6 +148,7 @@ import {
   readTripDetailSelectedDay,
 } from "@/lib/trip/trip-detail-selected-day";
 import { openTripItineraryPlaceDetail } from "@/lib/trip/trip-itinerary-place-handoff";
+import { buildTripDayGroups, type TripDayGroup } from "@/lib/trip/trip-day-groups";
 
 function inferTripDates(
   items: RoamieItineraryItem[],
@@ -254,41 +255,18 @@ function initialOutfitFields(payload: RoamiePayloadV2): TripOutfitSuggestionFiel
   };
 }
 
-type DayGroup = {
-  dateKey: string;
-  dayNumber: number;
-  items: RoamieItineraryItem[];
-  isUnassigned?: boolean;
+/** Trip Workspace：workspaceContent 以函式傳入時取得的即時行程狀態（含本地編輯與 Realtime）。 */
+export type TripWorkspaceRenderContext = {
+  /** 與行程分頁相同的天數分組（buildTripDayGroups(items, settings)） */
+  dayGroups: TripDayGroup[];
+  /**
+   * 開啟地點詳情（與行程卡片相同的 openItineraryPlaceDetail）。
+   * dayIndex：Pin 所屬天（0-based；前一站與返回的 ?day= 都以此天為準）
+   */
+  openPlaceDetail: (item: RoamieItineraryItem, dayIndex: number) => void;
+  /** 選取行程分頁的某一天（dayGroups 索引；與點天數膠囊相同） */
+  selectDay: (dayIndex: number) => void;
 };
-
-function buildDayGroups(items: RoamieItineraryItem[], settings: TripPlanSettings): DayGroup[] {
-  const { start } = inferTripDates(items, settings);
-  const settingsDateKeys = scheduledDateKeysFromSettings(settings);
-  const dayCount = Math.max(
-    1,
-    settingsDateKeys.length ||
-      daysBetweenDates(settings.tripStartDate ?? start, settings.tripEndDate ?? start),
-    listTripDateKeys(items, start).filter((k) => k !== TRIP_UNASSIGNED_DATE).length,
-  );
-  const dateKeys =
-    settingsDateKeys.length > 0 ? settingsDateKeys : listTripDates(items, start, dayCount);
-  const groups = groupStopsByDate(items);
-  const scheduled: DayGroup[] = dateKeys.map((dateKey, i) => ({
-    dateKey,
-    dayNumber: i + 1,
-    items: groups.get(dateKey) ?? [],
-  }));
-  const unassigned = groups.get(TRIP_UNASSIGNED_DATE) ?? [];
-  if (unassigned.length > 0) {
-    scheduled.push({
-      dateKey: TRIP_UNASSIGNED_DATE,
-      dayNumber: 0,
-      items: unassigned,
-      isUnassigned: true,
-    });
-  }
-  return scheduled;
-}
 
 type Props = {
   stored: StoredItinerary;
@@ -298,6 +276,15 @@ type Props = {
   initialDay?: number;
   /** 忽略遠端 Realtime 回寫的時間窗（本地儲存後） */
   ignoreRealtimeUntilRef?: React.MutableRefObject<number>;
+  /** Trip Workspace：切換 bar，插在日期 header 之後、穿搭卡之前（選填） */
+  workspaceBar?: React.ReactNode;
+  /** Trip Workspace：目前分頁；非 "trip" 時以 CSS 隱藏（不卸載）行程內容（選填） */
+  workspaceView?: WorkspaceView;
+  /**
+   * Trip Workspace：非行程分頁的內容，渲染在行程內容原位置之後（選填）。
+   * 傳入函式時以目前行程狀態呼叫（render prop），供地圖等分頁讀取未存檔的本地編輯。
+   */
+  workspaceContent?: React.ReactNode | ((ctx: TripWorkspaceRenderContext) => React.ReactNode);
 };
 
 
@@ -307,8 +294,20 @@ function withTripRouteEnrichment(settings: TripPlanSettings, tripId: string): Tr
   return merged === settings.transitLegs ? settings : { ...settings, transitLegs: merged };
 }
 
-export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, initialDay, ignoreRealtimeUntilRef }: Props) {
+export function SavedTripItineraryEditor({
+  stored,
+  headerRight,
+  onStoredChange,
+  initialDay,
+  ignoreRealtimeUntilRef,
+  workspaceBar,
+  workspaceView,
+  workspaceContent,
+}: Props) {
   const { t: uiT } = useI18n();
+  // Trip Workspace：未傳 workspaceView 時以下兩值皆為 false／undefined，className 與 style 與修改前相同。
+  const hideTripPane = workspaceView != null && workspaceView !== "trip";
+  const tripPaneStyle = workspaceView != null ? WORKSPACE_PANE_STYLE : undefined;
 
   const navigate = useNavigate();
   const { locale } = useI18n();
@@ -463,7 +462,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
     setSavedOutfitFields(fields);
   }, []);
 
-  const dayGroups = useMemo(() => buildDayGroups(items, settings), [items, settings]);
+  const dayGroups = useMemo(() => buildTripDayGroups(items, settings), [items, settings]);
   const scheduledDayCount = useMemo(
     () => dayGroups.filter((d) => !d.isUnassigned).length,
     [dayGroups],
@@ -780,23 +779,33 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
   );
 
   const openItineraryPlaceDetail = useCallback(
-    (item: RoamieItineraryItem) => {
+    (item: RoamieItineraryItem, pinDayIndex?: number) => {
       const scrollEl = document.querySelector(".trip-detail-route");
-      const dayItems = (itemsRef.current ?? [])
-        .filter((entry) => (entry.dayIndex ?? 0) === safeDayIndex)
-        .sort((a, b) => (a.sortIndex ?? a.order ?? 0) - (b.sortIndex ?? b.order ?? 0));
-      const indexInDay = dayItems.findIndex(
-        (entry) =>
-          (entry.googlePlaceId && entry.googlePlaceId === item.googlePlaceId) ||
-          (entry.placeName === item.placeName && entry.time === item.time),
-      );
-      const previousItem = indexInDay > 0 ? dayItems[indexInDay - 1] : null;
+      let previousItem: RoamieItineraryItem | null;
+      if (pinDayIndex != null) {
+        // 地圖 Pin：前一站取自 Pin 所屬天的 group（與地圖站序相同）
+        const groupItems = dayGroups.find(
+          (g) => !g.isUnassigned && g.dayNumber === pinDayIndex + 1,
+        )?.items ?? [];
+        const indexInGroup = groupItems.indexOf(item);
+        previousItem = indexInGroup > 0 ? groupItems[indexInGroup - 1] : null;
+      } else {
+        const dayItems = (itemsRef.current ?? [])
+          .filter((entry) => (entry.dayIndex ?? 0) === safeDayIndex)
+          .sort((a, b) => (a.sortIndex ?? a.order ?? 0) - (b.sortIndex ?? b.order ?? 0));
+        const indexInDay = dayItems.findIndex(
+          (entry) =>
+            (entry.googlePlaceId && entry.googlePlaceId === item.googlePlaceId) ||
+            (entry.placeName === item.placeName && entry.time === item.time),
+        );
+        previousItem = indexInDay > 0 ? dayItems[indexInDay - 1] : null;
+      }
       const { navigateOptions } = openTripItineraryPlaceDetail(
         item,
         {
           tripId: stored.id,
           scrollTop: scrollEl instanceof HTMLElement ? scrollEl.scrollTop : 0,
-          activeDayIndex: safeDayIndex,
+          activeDayIndex: pinDayIndex ?? safeDayIndex,
           addMenuDayIndex,
           items: itemsRef.current,
           settings: settingsRef.current,
@@ -807,7 +816,12 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
       );
       void navigate(navigateOptions);
     },
-    [addMenuDayIndex, navigate, safeDayIndex, stored.id, tripTitle],
+    [addMenuDayIndex, dayGroups, navigate, safeDayIndex, stored.id, tripTitle],
+  );
+
+  const workspaceRenderContext = useMemo<TripWorkspaceRenderContext>(
+    () => ({ dayGroups, openPlaceDetail: openItineraryPlaceDetail, selectDay: scrollToDay }),
+    [dayGroups, openItineraryPlaceDetail, scrollToDay],
   );
 
   const applyDayArrivalRecalc = useCallback(
@@ -1923,7 +1937,9 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
 
       </header>
 
-      <div className="px-5 pt-3">
+        {workspaceBar}
+
+        <div className={hideTripPane ? "px-5 pt-3 hidden" : "px-5 pt-3"} style={tripPaneStyle}>
         <TripOutfitCard
           destination={
             itineraryDestinationDisplay(tripView.destination !== "尚未設定" ? tripView.destination : outfitDestination, locale, payload.destinationLocation)
@@ -1936,7 +1952,14 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
         />
       </div>
 
-      <div className="border-b border-border px-5 py-3">
+        <div
+          className={
+            hideTripPane
+              ? "border-b border-border px-5 py-3 hidden"
+              : "border-b border-border px-5 py-3"
+          }
+          style={tripPaneStyle}
+        >
         <div className="flex items-center gap-2">
           <div className="flex min-w-0 flex-1 gap-2 overflow-x-auto no-scrollbar">
             {dayGroups.map((d, i) => (
@@ -1965,7 +1988,10 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
         </div>
       </div>
 
-      <div className="px-5 py-5 pb-6">
+        <div
+          className={hideTripPane ? "px-5 py-5 pb-6 hidden" : "px-5 py-5 pb-6"}
+          style={tripPaneStyle}
+        >
         {activeDay ? (
           <>
             <div className="flex items-start justify-between gap-2">
@@ -2201,6 +2227,12 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
                       type="button"
                       onClick={() => {
                         if (!activeDay) return;
+                        if (
+                          blockIfChatGenerationLocked(
+                            uiT("uiCoverage.chatGenerationLockedNotice"),
+                          )
+                        )
+                          return;
                         const handoff = buildTripAddPlaceContext({
                           stored,
                           payload,
@@ -2284,6 +2316,10 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
           </div>
         ) : null}
       </div>
+
+        {typeof workspaceContent === "function"
+          ? workspaceContent(workspaceRenderContext)
+          : workspaceContent}
     </div>
 
       <SavedPlacesPickSheet
