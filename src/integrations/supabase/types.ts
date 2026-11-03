@@ -395,33 +395,39 @@ export type Database = {
       trip_invites: {
         Row: {
           created_at: string
-          expires_at: string
+          expires_at: string | null
           id: string
           invitee_email: string | null
           invitee_user_id: string | null
           inviter_id: string
+          is_link: boolean
+          revoked_at: string | null
           status: string
           token: string
           trip_id: string
         }
         Insert: {
           created_at?: string
-          expires_at?: string
+          expires_at?: string | null
           id?: string
           invitee_email?: string | null
           invitee_user_id?: string | null
           inviter_id: string
+          is_link?: boolean
+          revoked_at?: string | null
           status?: string
           token: string
           trip_id: string
         }
         Update: {
           created_at?: string
-          expires_at?: string
+          expires_at?: string | null
           id?: string
           invitee_email?: string | null
           invitee_user_id?: string | null
           inviter_id?: string
+          is_link?: boolean
+          revoked_at?: string | null
           status?: string
           token?: string
           trip_id?: string
@@ -460,6 +466,266 @@ export type Database = {
           user_id?: string
         }
         Relationships: []
+      }
+      trip_expenses: {
+        Row: {
+          amount_minor: number
+          client_request_id: string
+          created_at: string
+          created_by: string
+          currency: string
+          currency_exponent: number
+          deleted_at: string | null
+          id: string
+          kind: "expense" | "settlement"
+          note: string | null
+          spent_on: string
+          split_method: "equal" | "exact" | "percent"
+          title: string
+          trip_id: string
+          updated_at: string
+          updated_by: string
+          version: number
+        }
+        Insert: {
+          amount_minor: number
+          client_request_id: string
+          created_at?: string
+          created_by: string
+          currency: string
+          currency_exponent: number
+          deleted_at?: string | null
+          id?: string
+          kind: "expense" | "settlement"
+          note?: string | null
+          spent_on: string
+          split_method: "equal" | "exact" | "percent"
+          title: string
+          trip_id: string
+          updated_at?: string
+          updated_by: string
+          version?: number
+        }
+        Update: {
+          amount_minor?: number
+          client_request_id?: string
+          created_at?: string
+          created_by?: string
+          currency?: string
+          currency_exponent?: number
+          deleted_at?: string | null
+          id?: string
+          kind?: "expense" | "settlement"
+          note?: string | null
+          spent_on?: string
+          split_method?: "equal" | "exact" | "percent"
+          title?: string
+          trip_id?: string
+          updated_at?: string
+          updated_by?: string
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "trip_expenses_trip_id_fkey"
+            columns: ["trip_id"]
+            isOneToOne: false
+            referencedRelation: "saved_trips"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      trip_expense_payers: {
+        Row: {
+          amount_minor: number
+          expense_id: string
+          user_id: string
+        }
+        Insert: {
+          amount_minor: number
+          expense_id: string
+          user_id: string
+        }
+        Update: {
+          amount_minor?: number
+          expense_id?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "trip_expense_payers_expense_id_fkey"
+            columns: ["expense_id"]
+            isOneToOne: false
+            referencedRelation: "trip_expenses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      trip_expense_shares: {
+        Row: {
+          expense_id: string
+          percent_bp: number | null
+          share_minor: number
+          user_id: string
+        }
+        Insert: {
+          expense_id: string
+          percent_bp?: number | null
+          share_minor: number
+          user_id: string
+        }
+        Update: {
+          expense_id?: string
+          percent_bp?: number | null
+          share_minor?: number
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "trip_expense_shares_expense_id_fkey"
+            columns: ["expense_id"]
+            isOneToOne: false
+            referencedRelation: "trip_expenses"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      packing_categories: {
+        Row: {
+          created_at: string
+          default_key:
+            | "clothing"
+            | "toiletries"
+            | "electronics"
+            | "documents"
+            | "medicine"
+            | "other"
+            | null
+          deleted_at: string | null
+          icon_key: string
+          id: string
+          name: string | null
+          sort_index: number
+          trip_id: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          default_key?:
+            | "clothing"
+            | "toiletries"
+            | "electronics"
+            | "documents"
+            | "medicine"
+            | "other"
+            | null
+          deleted_at?: string | null
+          icon_key?: string
+          id?: string
+          name?: string | null
+          sort_index?: number
+          trip_id: string
+          updated_at?: string
+          user_id?: string
+        }
+        Update: {
+          created_at?: string
+          default_key?:
+            | "clothing"
+            | "toiletries"
+            | "electronics"
+            | "documents"
+            | "medicine"
+            | "other"
+            | null
+          deleted_at?: string | null
+          icon_key?: string
+          id?: string
+          name?: string | null
+          sort_index?: number
+          trip_id?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "packing_categories_trip_id_fkey"
+            columns: ["trip_id"]
+            isOneToOne: false
+            referencedRelation: "saved_trips"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      packing_items: {
+        Row: {
+          category_id: string
+          checked_at: string | null
+          client_request_id: string
+          created_at: string
+          deleted_at: string | null
+          id: string
+          is_checked: boolean
+          name: string
+          note: string | null
+          quantity: number
+          sort_index: number
+          trip_id: string
+          updated_at: string
+          user_id: string
+          version: number
+        }
+        Insert: {
+          category_id: string
+          checked_at?: string | null
+          client_request_id?: string
+          created_at?: string
+          deleted_at?: string | null
+          id?: string
+          is_checked?: boolean
+          name: string
+          note?: string | null
+          quantity?: number
+          sort_index?: number
+          trip_id: string
+          updated_at?: string
+          user_id?: string
+          version?: number
+        }
+        Update: {
+          category_id?: string
+          checked_at?: string | null
+          client_request_id?: string
+          created_at?: string
+          deleted_at?: string | null
+          id?: string
+          is_checked?: boolean
+          name?: string
+          note?: string | null
+          quantity?: number
+          sort_index?: number
+          trip_id?: string
+          updated_at?: string
+          user_id?: string
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "packing_items_category_id_fkey"
+            columns: ["category_id"]
+            isOneToOne: false
+            referencedRelation: "packing_categories"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "packing_items_trip_id_fkey"
+            columns: ["trip_id"]
+            isOneToOne: false
+            referencedRelation: "saved_trips"
+            referencedColumns: ["id"]
+          },
+        ]
       }
     }
     Views: {
@@ -569,6 +835,67 @@ export type Database = {
           token: string
           trip_id: string
         }
+      }
+      create_trip_invite: {
+        Args: { p_trip_id: string }
+        Returns: {
+          invite_id: string
+          invite_token: string
+        }[]
+      }
+      set_trip_invite_link_enabled: {
+        Args: { p_trip_id: string; p_enabled: boolean }
+        Returns: {
+          enabled: boolean
+          invite_id: string | null
+          invite_token: string | null
+        }[]
+      }
+      get_trip_invite_preview: {
+        Args: { invite_token: string }
+        Returns: {
+          state: "valid" | "full" | "revoked" | "expired" | "invalid"
+          trip_title: string | null
+          date_start: string | null
+          date_end: string | null
+          cover_url: string | null
+          inviter_display_name: string | null
+          member_count: number | null
+        }[]
+      }
+      upsert_trip_expense: {
+        Args: {
+          p_trip_id: string
+          p_expense: Json
+          p_expected_version: number | null
+        }
+        Returns: {
+          expense_id: string
+          expense_version: number
+          replayed: boolean
+        }[]
+      }
+      delete_trip_expense: {
+        Args: { p_expense_id: string; p_expected_version: number }
+        Returns: {
+          expense_id: string
+          expense_version: number
+        }[]
+      }
+      restore_trip_expense: {
+        Args: { p_expense_id: string }
+        Returns: {
+          expense_id: string
+          expense_version: number
+        }[]
+      }
+      ensure_my_packing_categories: {
+        Args: { p_trip_id: string }
+        Returns: Database["public"]["Tables"]["packing_categories"]["Row"][]
+      }
+      ensure_my_packing_other_category: {
+        Args: { p_trip_id: string }
+        Returns: Database["public"]["Tables"]["packing_categories"]["Row"]
       }
     }
     Enums: {
