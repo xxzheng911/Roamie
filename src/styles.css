@@ -1540,3 +1540,997 @@ html.plan-keyboard-open .plan-page-scroll {
 [data-sonner-toaster][data-y-position="top"] [data-sonner-toast] {
   max-width: min(100vw - 2rem, 24rem);
 }
+
+/*
+ * iPhone Duo（右側系統直欄）：以下規則只在 src/routes/_app.tsx 於 <html> 加上
+ * duo-rail（右側直欄）／duo-two-pane（展開雙欄，必同時有 duo-rail）時生效；其他裝置不會命中。
+ * 變數同樣只在上述 class 存在時由 _app 設定：
+ *   --app-rail-width        右側直欄寬度（max(56px, 右側安全區)）
+ *   --duo-fold-left-edge    摺痕左緣 x（px）
+ *   --duo-fold-right-edge   摺痕右緣 x（px）
+ * 雙欄時，聊天輸入列、置中對話框、底部面板、通知一律限制在左頁（左安全區～摺痕左緣）。
+ */
+
+/* 聊天輸入列（_app.chat.tsx 的 inline style：fixed、left/right 0、max-width 440px、置中） */
+html.duo-rail .messenger-chat-composer {
+  right: var(--app-rail-width) !important;
+  width: auto !important;
+}
+html.duo-rail.duo-two-pane .messenger-chat-composer {
+  left: var(--safe-area-left) !important;
+  right: calc(100vw - var(--duo-fold-left-edge)) !important;
+}
+/* 輸入列下方的底部安全區：手機版由底部導覽列遮住，直欄模式沒有導覽列，補同色底避免訊息內容透出 */
+html.duo-rail .messenger-chat-composer:not(.messenger-chat-composer--keyboard-open)::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  /* 高度取大值：超出畫面的部分不會顯示，避免依賴導覽列量測值 */
+  height: 100vh;
+  background: var(--background);
+  pointer-events: none;
+}
+/* 聊天頁整頁（標頭＋訊息列表）：雙欄時限制在左頁，與輸入列同一範圍；右頁露出 App 背景 */
+html.duo-rail.duo-two-pane .messenger-chat-root {
+  margin-left: var(--safe-area-left);
+  width: calc(var(--duo-fold-left-edge) - var(--safe-area-left));
+  max-width: calc(var(--duo-fold-left-edge) - var(--safe-area-left));
+}
+/*
+ * 聊天推薦右頁（ChatDuoRecommendationPane，只在雙欄時 portal 到 body）：
+ * 固定在右頁 [摺痕右緣, 直欄左緣]，上下尊重安全區；z-index 40 低於 dialog／sheet／drawer（z-50）與輸入列（45）。
+ */
+html.duo-rail.duo-two-pane .chat-duo-rec-pane {
+  position: fixed;
+  top: var(--duo-app-top);
+  bottom: var(--safe-area-bottom);
+  left: var(--duo-fold-right-edge);
+  right: var(--app-rail-width);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  background: var(--background);
+}
+html.duo-rail.duo-two-pane .chat-duo-rec-pane__scroll {
+  flex: 1 1 0%;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 1.25rem 1.25rem 1.5rem;
+}
+html.duo-rail.duo-two-pane .chat-duo-rec-pane [data-chat-place-cards] > article > div:first-child {
+  aspect-ratio: auto;
+  height: 132px;
+  min-height: 0;
+}
+/*
+ * iPhone Duo 完全展開直向（無直欄／雙欄；duo-device 只在原生 iOS 且有 hinge 時由 _app 加上）：
+ * 聊聊輸入列（含快捷按鍵列）覆寫 inline max-width 440px 改為滿版，背景不透明，避免露出後方地點卡。
+ * 半開橫向摺痕版型另有滿版規則（左右位置與內距），此處的 max-width／margin 與其相同、不衝突。
+ */
+html.duo-device.chat-route-active:not(.duo-rail) .messenger-chat-composer {
+  max-width: none !important;
+  margin-inline: 0 !important;
+}
+html.duo-device.chat-route-active:not(.duo-rail) .messenger-chat-composer,
+html.duo-device.chat-route-active:not(.duo-rail) .messenger-chat-composer .chat-composer {
+  background: var(--background);
+}
+
+/* 底部／頂部面板：vaul Drawer、Radix Sheet（side=bottom／top） */
+html.duo-rail [data-vaul-drawer][data-vaul-drawer-direction="bottom"],
+html.duo-rail [data-vaul-drawer][data-vaul-drawer-direction="top"],
+html.duo-rail [role="dialog"][class*="slide-in-from-bottom"],
+html.duo-rail [role="dialog"][class*="slide-in-from-top"] {
+  right: var(--app-rail-width) !important;
+}
+html.duo-rail.duo-two-pane [data-vaul-drawer][data-vaul-drawer-direction="bottom"],
+html.duo-rail.duo-two-pane [data-vaul-drawer][data-vaul-drawer-direction="top"],
+html.duo-rail.duo-two-pane [role="dialog"][class*="slide-in-from-bottom"],
+html.duo-rail.duo-two-pane [role="dialog"][class*="slide-in-from-top"] {
+  left: var(--safe-area-left) !important;
+  right: calc(100vw - var(--duo-fold-left-edge)) !important;
+}
+
+/* 側邊面板：Radix Sheet（side=right 貼直欄左緣、留在右頁；side=left 留在左頁） */
+html.duo-rail [role="dialog"][class*="slide-in-from-right"] {
+  right: var(--app-rail-width) !important;
+}
+html.duo-rail.duo-two-pane [role="dialog"][class*="slide-in-from-right"] {
+  max-width: calc(100vw - var(--duo-fold-right-edge) - var(--app-rail-width)) !important;
+}
+html.duo-rail.duo-two-pane [role="dialog"][class*="slide-in-from-left"] {
+  max-width: calc(var(--duo-fold-left-edge) - var(--safe-area-left)) !important;
+}
+
+/* 置中對話框：Radix Dialog／AlertDialog（left/top 50% ＋ translate -50%） */
+html.duo-rail [role="dialog"][class*="translate-y-[-50%]"],
+html.duo-rail [role="alertdialog"][class*="translate-y-[-50%]"] {
+  left: calc((100vw - var(--app-rail-width)) / 2) !important;
+  width: calc(100vw - var(--app-rail-width) - 2rem) !important;
+}
+html.duo-rail.duo-two-pane [role="dialog"][class*="translate-y-[-50%]"],
+html.duo-rail.duo-two-pane [role="alertdialog"][class*="translate-y-[-50%]"] {
+  left: calc((var(--safe-area-left) + var(--duo-fold-left-edge)) / 2) !important;
+  width: calc(var(--duo-fold-left-edge) - var(--safe-area-left) - 2rem) !important;
+}
+
+/* Sonner 通知（ol[data-sonner-toaster] 與其 li[data-sonner-toast]） */
+html.duo-rail [data-sonner-toaster] {
+  left: 1rem !important;
+  right: calc(var(--app-rail-width) + 1rem) !important;
+  width: auto !important;
+  transform: none !important;
+}
+html.duo-rail [data-sonner-toaster] [data-sonner-toast] {
+  left: 0 !important;
+  right: 0 !important;
+  width: 100% !important;
+  margin-inline: auto !important;
+}
+html.duo-rail.duo-two-pane [data-sonner-toaster] {
+  left: calc(var(--safe-area-left) + 1rem) !important;
+  right: calc(100vw - var(--duo-fold-left-edge) + 1rem) !important;
+}
+
+/*
+ * Duo 頂部留白：Duo 的頂部 safe-area inset 為 0，main 的 pt-[var(--safe-area-top)] 會讓內容貼到上緣。
+ * --duo-top-gap 為唯一調整點；實際頂部留白＝max(safe-area-top, --duo-top-gap)。
+ */
+html.duo-rail {
+  --duo-top-gap: 14px;
+  --duo-app-top: max(var(--safe-area-top), var(--duo-top-gap));
+  /* 探索頁雙欄：搜尋列（pt＋42px 列高＋間距）下緣，左頁面板由此開始 */
+  --duo-map-search-height: 3.75rem;
+  /* 探索頁雙欄：左頁（搜尋列＋面板）整體再往下的距離；右頁地圖仍滿版到上緣 */
+  --duo-map-left-extra-top: 1.25rem;
+}
+html.duo-rail main.app-scroll {
+  padding-top: var(--duo-app-top);
+}
+/*
+ * 探索頁：.map-page 以 -mt/h-calc(var(--safe-area-top)) 抵銷 main 頂部 padding（地圖滿版到上緣），
+ * 搜尋列 pt 亦用同一變數。只在 .map-page 範圍內把 --safe-area-top 換成 Duo 頂部留白，
+ * 使抵銷量與 main 新的 padding-top 一致，地圖仍滿版、搜尋列多出留白；鍵盤模式（map-keyboard-open）的高度公式同步一致。
+ */
+html.duo-rail .map-page {
+  --safe-area-top: var(--duo-app-top);
+}
+
+/*
+ * 探索頁雙欄：左頁（左安全區～摺痕左緣）＝搜尋列＋面板（清單／詳情／導航）；右頁（摺痕右緣～直欄左緣）＝地圖。
+ * 只改位置與尺寸，DOM 與元件不變（開合不 remount、不重載地圖、不觸發搜尋）。.map-page 左緣＝視窗左緣（MobileFrame fullBleed）。
+ */
+/* 地圖層移到右頁；z-index 高於面板層（z-40），讓溢出到左頁的搜尋列與下拉結果疊在面板之上 */
+html.duo-rail.duo-two-pane .map-page > .map-stage {
+  left: var(--duo-fold-right-edge);
+  overflow: visible;
+  z-index: 41;
+}
+/* 搜尋列外層（pointer-events-none）：從地圖層溢出到左頁 */
+html.duo-rail.duo-two-pane .map-page > .map-stage > .z-10 {
+  top: var(--duo-map-left-extra-top);
+  left: calc(var(--safe-area-left) - var(--duo-fold-right-edge));
+  right: auto;
+  width: calc(var(--duo-fold-left-edge) - var(--safe-area-left));
+}
+/* 面板層：左頁、搜尋列下方到底的全高欄位 */
+html.duo-rail.duo-two-pane .map-page > .map-sheet-layer {
+  top: calc(var(--safe-area-top) + var(--duo-map-search-height) + var(--duo-map-left-extra-top));
+  left: var(--safe-area-left);
+  right: auto;
+  width: calc(var(--duo-fold-left-edge) - var(--safe-area-left));
+}
+/* 面板固定全高（覆寫 inline 的拖曳／收合高度），清單在 collapse／peek 後仍完整顯示 */
+html.duo-rail.duo-two-pane .map-page [data-map-explore-sheet="true"] {
+  height: 100% !important;
+  max-height: none !important;
+  transition: none !important;
+}
+/* 拖曳把手：保留間距、隱藏橫條並停用指標事件（不會開始拖曳） */
+html.duo-rail.duo-two-pane .map-page [data-map-explore-sheet="true"] [data-sheet-drag-handle] {
+  pointer-events: none;
+  cursor: default;
+}
+html.duo-rail.duo-two-pane .map-page [data-map-explore-sheet="true"] [data-sheet-drag-handle] span {
+  visibility: hidden;
+}
+/* 探索頁 ErrorBoundary 畫面（MapErrorBoundary）：雙欄時置於左頁，不跨摺痕 */
+html.duo-rail.duo-two-pane.map-route-active main.app-scroll [class*="min-h-[calc(100dvh-4.25rem)]"] {
+  margin-left: var(--safe-area-left);
+  width: calc(var(--duo-fold-left-edge) - var(--safe-area-left));
+  max-width: calc(var(--duo-fold-left-edge) - var(--safe-area-left));
+}
+
+/*
+ * 收藏頁雙欄（_app.saved.index.tsx，saved-duo-* class 只在雙欄時輸出）：
+ * 標題列在左頁頂端；下方兩欄＝左頁行程清單（左安全區～摺痕左緣）、右頁地點清單（摺痕右緣～直欄左緣）。
+ * 仍由 main 整頁捲動（與單欄相同的捲動擁有者）。根節點左緣＝視窗左緣（MobileFrame fullBleed），右緣＝直欄左緣（main padding-right）。
+ */
+html.duo-rail.duo-two-pane .saved-duo-header {
+  margin-left: var(--safe-area-left);
+  width: calc(var(--duo-fold-left-edge) - var(--safe-area-left));
+  padding-inline: 1.25rem;
+}
+html.duo-rail.duo-two-pane .saved-duo-panes {
+  display: grid;
+  grid-template-columns: calc(var(--duo-fold-left-edge) - var(--safe-area-left)) minmax(0, 1fr);
+  column-gap: calc(var(--duo-fold-right-edge) - var(--duo-fold-left-edge));
+  align-items: start;
+  padding-left: var(--safe-area-left);
+}
+
+/*
+ * 我的頁雙欄（_app.profile.tsx，profile-duo-* class 只在雙欄時輸出）：
+ * 不加包裹層（React 樹不變，開合時 Sheet 不 remount），以 float 分欄：
+ * .profile-duo-left（個人卡、Plus 區塊）浮動在左頁 [safe-left, 摺痕左緣]；
+ * 其餘子元素以 margin-left 排在右頁 [摺痕右緣, 直欄左緣]，各保留 1.25rem 內距（同單欄 px-5）。
+ * 仍由 .profile-page 整頁捲動（scroll container 為 BFC，會包住 float；最後的 spacer clear 兩欄）。
+ */
+html.duo-rail.duo-two-pane .profile-duo-root {
+  display: block;
+  padding-left: var(--safe-area-left);
+  padding-right: 0;
+}
+html.duo-rail.duo-two-pane .profile-duo-root > .profile-duo-left {
+  float: left;
+  clear: left;
+  margin-left: 1.25rem;
+  width: calc(var(--duo-fold-left-edge) - var(--safe-area-left) - 2.5rem);
+}
+html.duo-rail.duo-two-pane .profile-duo-root > :not(.profile-duo-left) {
+  margin-left: calc(var(--duo-fold-right-edge) - var(--safe-area-left) + 1.25rem);
+  width: calc(100% - (var(--duo-fold-right-edge) - var(--safe-area-left) + 1.25rem) - 1.25rem);
+}
+html.duo-rail.duo-two-pane .profile-duo-root > .profile-duo-right-first {
+  margin-top: 1.5rem;
+}
+html.duo-rail.duo-two-pane .profile-duo-root > .profile-duo-clear {
+  clear: both;
+}
+
+/*
+ * 首頁雙欄（_app.index.tsx，home-duo-* class 只在雙欄時輸出）：
+ * 不加包裹層（React 樹不變，開合不 remount、effect 不重跑），以 float 分欄：
+ * .home-duo-left（標題列、聊天卡、心情區、附近地點、進階規劃連結）浮動在左頁 [safe-left, 摺痕左緣]；
+ * 其餘子元素（行程卡、天氣、出門準備、Plus 個人化）以 margin-left 排在右頁 [摺痕右緣, 直欄左緣]，
+ * 各保留 1.25rem 內距；右頁第一張卡頂端對齊左頁標題列。
+ * 仍由 main 整頁捲動；根節點 overflow-x-hidden 為 BFC，高度包住兩欄。
+ */
+html.duo-rail.duo-two-pane .home-duo-root {
+  padding-left: var(--safe-area-left);
+  padding-right: 0;
+}
+html.duo-rail.duo-two-pane .home-duo-root > .home-duo-left {
+  float: left;
+  clear: left;
+  margin-left: 1.25rem;
+  width: calc(var(--duo-fold-left-edge) - var(--safe-area-left) - 2.5rem);
+}
+html.duo-rail.duo-two-pane .home-duo-root > :not(.home-duo-left) {
+  margin-left: calc(var(--duo-fold-right-edge) - var(--safe-area-left) + 1.25rem);
+  width: calc(100% - (var(--duo-fold-right-edge) - var(--safe-area-left) + 1.25rem) - 1.25rem);
+}
+html.duo-rail.duo-two-pane .home-duo-root > .home-duo-left + :not(.home-duo-left) {
+  margin-top: 0;
+}
+/* 左頁橫向捲動列（心情 chips、附近卡片）：剛好填滿左頁 [safe-left, 摺痕左緣]，首尾留 1.25rem，不跨摺痕 */
+html.duo-rail.duo-two-pane .home-duo-root > .home-duo-left .app-bleed-x {
+  margin-left: -1.25rem;
+  margin-right: -1.25rem;
+}
+html.duo-rail.duo-two-pane .home-duo-root > .home-duo-left .app-h-scroll-track,
+html.duo-rail.duo-two-pane .home-duo-root > .home-duo-left .home-nearby-cards {
+  padding-left: 1.25rem;
+  padding-right: 1.25rem;
+}
+html.duo-rail.duo-two-pane .home-duo-root > .home-duo-left .home-nearby-card-item--last {
+  margin-right: 1.25rem;
+}
+
+/*
+ * iPhone Duo 展開雙頁＋行程詳情：_app 以 inline style 把內容外層改為橫向（左欄行程｜摺痕間隔｜右欄地圖），
+ * 但上方 html.trip-detail-route-active main.app-scroll > div 以 !important 鎖成直向，會蓋掉 inline style，
+ * 地圖被排到行程下方。只在 duo-two-pane 時改回橫向；其他裝置維持原規則。
+ */
+html.duo-rail.duo-two-pane.trip-detail-route-active main.app-scroll > div {
+  flex-direction: row !important;
+}
+
+/*
+ * iPhone Duo 筆電半開（橫向摺痕）：以下規則只在 src/routes/_app.tsx 於 <html> 加上 duo-laptop 時生效
+ * （雙頁 duo-two-pane 優先，兩者不會同時存在）；其他裝置與既有 Duo 模式不會命中。變數同樣只在此時設定：
+ *   --duo-hinge-top      摺痕上緣 y（px）
+ *   --duo-hinge-bottom   摺痕下緣 y（px）
+ * 摺痕區（上緣～下緣）不放任何可點擊元素。
+ * 放在地點詳情雙頁區塊之前：verify-place-detail-duo-layout 以該區塊為檔案最後一段做檢查。
+ *
+ * 行程詳情（TripDetailScreen）：上半部看、下半部操作。
+ *   - 捲動容器 .trip-detail-route（同一個節點）固定在 [摺痕下緣, 底部導覽上緣]，行程標題、日期分頁、景點卡在此捲動。
+ *   - 地圖分頁節點（.trip-duo-laptop-map，與單欄同一個節點，只換 className）固定在 [螢幕頂端, 摺痕上緣]。
+ *     兩者都不經 portal、不換 DOM 位置，開合／轉向不會重新掛載地圖或行程內容。
+ *   - 祖先皆無 transform／filter，position: fixed 以 viewport（＝WKWebView）為基準；
+ *     地圖節點的分頁滑動 transform 在此停用，避免 fixed 跟著位移。
+ *   - 更正（取代上兩點中地圖的部分）：iOS WebKit 的捲動容器會裁切其內的 fixed 子孫，地圖改為
+ *     .trip-detail-route 之外的兄弟 host 節點（.trip-duo-laptop-map，TripDetailScreen 以 portal 渲染地圖）；
+ *     捲動容器仍不換 DOM 位置、行程內容不重新掛載；地圖在 laptop↔單欄切換時重新掛載一次。
+ *     host 沒有分頁滑動 transform，transform: none 僅作保險。
+ */
+html.duo-laptop.trip-detail-route-active .trip-detail-route {
+  position: fixed;
+  top: var(--duo-hinge-bottom);
+  bottom: var(--app-nav-total-height);
+  left: 0;
+  right: var(--app-rail-width, 0px);
+  width: auto;
+  height: auto;
+  flex: none;
+}
+/* 封面：限制高度（保留返回、分享、刪除、更換封面按鈕），讓標題與日期分頁進入下半部首屏 */
+html.duo-laptop.trip-detail-route-active .trip-detail-cover > div {
+  aspect-ratio: auto;
+  height: 144px;
+}
+html.duo-laptop.trip-detail-route-active .trip-detail-cover > div > [class*="aspect-[3/2]"] {
+  aspect-ratio: auto;
+  height: 100%;
+}
+html.duo-laptop.trip-detail-route-active .trip-duo-laptop-map {
+  position: fixed;
+  top: 0;
+  left: var(--safe-area-left);
+  right: calc(var(--app-rail-width, 0px) + var(--safe-area-right));
+  height: var(--duo-hinge-top);
+  display: flex;
+  flex-direction: column;
+  padding-top: var(--duo-app-top, var(--safe-area-top));
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--background);
+  transform: none !important;
+}
+/* 地圖（TripWorkspaceMap layout="pane"）：填滿上半部剩餘高度，不撐過摺痕 */
+html.duo-laptop.trip-detail-route-active .trip-duo-laptop-map [class*="min-h-[320px]"] {
+  min-height: 160px;
+}
+
+/*
+ * 行程詳情的浮層：不跨摺痕。
+ *   置中對話框：改為置中於下半部，高度不超過下半部（超出時內部捲動）。
+ *   底部面板：高度不超過下半部；頂部面板：高度不超過上半部。
+ *   側邊面板：從摺痕下緣開始，只佔下半部。
+ *   通知（Sonner，top-center）位於上半部頂端，不跨摺痕，不另處理。
+ */
+html.duo-laptop.trip-detail-route-active [role="dialog"][class*="translate-y-[-50%]"],
+html.duo-laptop.trip-detail-route-active [role="alertdialog"][class*="translate-y-[-50%]"] {
+  top: calc((var(--duo-hinge-bottom) + 100dvh - var(--safe-area-bottom)) / 2) !important;
+  max-height: calc(100dvh - var(--duo-hinge-bottom) - var(--safe-area-bottom) - 1rem) !important;
+  overflow-y: auto !important;
+}
+html.duo-laptop.trip-detail-route-active [data-vaul-drawer][data-vaul-drawer-direction="bottom"],
+html.duo-laptop.trip-detail-route-active [role="dialog"][class*="slide-in-from-bottom"] {
+  max-height: calc(100dvh - var(--duo-hinge-bottom)) !important;
+  overflow-y: auto !important;
+}
+html.duo-laptop.trip-detail-route-active [data-vaul-drawer][data-vaul-drawer-direction="top"],
+html.duo-laptop.trip-detail-route-active [role="dialog"][class*="slide-in-from-top"] {
+  max-height: var(--duo-hinge-top) !important;
+  overflow-y: auto !important;
+}
+html.duo-laptop.trip-detail-route-active [role="dialog"][class*="slide-in-from-right"],
+html.duo-laptop.trip-detail-route-active [role="dialog"][class*="slide-in-from-left"] {
+  top: var(--duo-hinge-bottom) !important;
+  bottom: 0 !important;
+  height: auto !important;
+  overflow-y: auto !important;
+}
+
+/*
+ * #DT1：iPhone Duo 上下版型（筆電半開 duo-laptop／直向攤平 duo-flat-portrait）＋行程詳情改為一頁式，
+ * 取代上方筆電行程頁的上下分頁（上方規則保留，以下同選擇器、較後出現者覆寫）：
+ *   - TripDetailScreen 不再輸出 .trip-duo-laptop-map；地圖回到分頁內（與一般 iPhone 相同）。
+ *   - 捲動容器 .trip-detail-route 回到一般排版（取消 fixed 定位）；封面回到 3:2（取消 144px 限高）。
+ *   - 封面延伸到螢幕頂端：只在此兩種版型＋行程詳情取消 main 頂部內距（捲動容器由視窗頂端開始）。
+ *   - 返回／分享／刪除（封面左上、右上）下移到狀態列下方；「更換封面照片」維持封面右下。
+ *   - 切換列（行程｜總覽｜地圖）吸頂於狀態列下方；其上方由 .trip-duo-status-backdrop（TripDetailScreen
+ *     一律輸出、預設 display:none，只在此兩種版型顯示；位於切換列之前、與其同一父層）吸頂遮住捲過狀態列的內容。
+ *     底板以負 margin 不佔版面，靜止時位於切換列後方（z-index 低於切換列）。
+ *   - 浮層：沿用上方筆電規則（不跨摺痕）；Radix 浮層 portal 到 body，不在捲動容器內，不受裁切。
+ *   - 狀態列高度：直欄時為 --duo-app-top，否則為 --safe-area-top（與 main 原本的 padding-top 同源）。
+ */
+html.duo-laptop.trip-detail-route-active,
+html.duo-flat-portrait.trip-detail-route-active {
+  --trip-duo-top: var(--duo-app-top, var(--safe-area-top));
+}
+html.duo-laptop.trip-detail-route-active main.app-scroll,
+html.duo-flat-portrait.trip-detail-route-active main.app-scroll {
+  padding-top: 0;
+}
+html.duo-laptop.trip-detail-route-active .trip-detail-route {
+  position: static;
+  width: 100%;
+  flex: 1 1 0%;
+}
+html.duo-laptop.trip-detail-route-active .trip-detail-cover > div,
+html.duo-laptop.trip-detail-route-active .trip-detail-cover > div > [class*="aspect-[3/2]"] {
+  aspect-ratio: 3 / 2;
+  height: auto;
+}
+html.duo-laptop.trip-detail-route-active .trip-detail-cover > div > div.top-3,
+html.duo-flat-portrait.trip-detail-route-active .trip-detail-cover > div > div.top-3 {
+  top: calc(var(--trip-duo-top) + 0.75rem);
+}
+html.duo-laptop.trip-detail-route-active .trip-detail-root > .sticky.top-0,
+html.duo-flat-portrait.trip-detail-route-active .trip-detail-root > .sticky.top-0 {
+  top: var(--trip-duo-top);
+}
+.trip-duo-status-backdrop {
+  display: none;
+}
+html.duo-laptop.trip-detail-route-active .trip-detail-root > .trip-duo-status-backdrop,
+html.duo-flat-portrait.trip-detail-route-active .trip-detail-root > .trip-duo-status-backdrop {
+  display: block;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  height: var(--trip-duo-top);
+  margin-bottom: calc(-1 * var(--trip-duo-top));
+  background: var(--background);
+  pointer-events: none;
+}
+
+/*
+ * 筆電半開＋聊聊（/chat；_app.chat.tsx 不改，只靠 CSS）：上半部＝標頭＋訊息列表（含地點卡）；下半部＝快捷按鍵列＋輸入列。
+ *   - 訊息列表（捲動容器 .messenger-chat-messages）以 margin-bottom 讓出 [摺痕上緣, 螢幕底]，列表下緣＝摺痕上緣。
+ *     .messenger-chat-root 底部＝視窗底部（main 在 /chat 為 pb-0、外框 h-[100dvh]），因此讓出量＝100dvh − 摺痕上緣。
+ *     inline 的 paddingBottom（輸入列＋導覽高度）在此不需要（輸入列不再蓋住列表），改為一般內距；
+ *     chat-turn-scroll 以 computed paddingBottom 計算可用高度，同步正確。
+ *   - .messenger-chat-root／.messenger-chat-body 尺寸不變，輸入列（inline fixed，bottom＝底部導覽上緣）仍在其範圍內；
+ *     輸入列不在任何 overflow 捲動容器之內（訊息列表是它的兄弟，不是祖先），位置沿用既有 inline，停在下半部底端。
+ *   - 鍵盤開啟（html.chat-keyboard-open）時本規則不生效：完全回到既有行為（輸入列貼鍵盤、列表全高＋inline 補白）。
+ */
+html.duo-laptop.chat-route-active:not(.chat-keyboard-open) .messenger-chat-messages {
+  margin-bottom: calc(100dvh - var(--duo-hinge-top));
+  padding-bottom: 1.25rem !important;
+}
+/*
+ * 筆電聊聊第 2 版（設計稿 LapChatRec）：
+ *   - 上半部訊息列只留文字＋「✦ 推薦 · N」標籤（ChatMessageList 筆電時與雙頁相同，卡片不在訊息列）。
+ *   - 下半部推薦區（ChatDuoRecommendationPane variant="laptop"，portal 到 body；祖先只有 body／html，
+ *     不在任何捲動容器或 transform 祖先內）：fixed 在 [摺痕下緣, 輸入列上緣]。
+ *     輸入列上緣＝底部導覽高度（與輸入列 inline bottom 同源）＋輸入列高度（元件以 ResizeObserver 量測，
+ *     寫入 --chat-laptop-composer-height；量到前以 7.5rem 估計）。空間不足時整區裁切，不溢出到輸入列。
+ *     z-index 40：低於輸入列（45）與 dialog／sheet（50）。
+ *   - 卡片橫向滑動；照片壓低為 96px；卡片內容不刪減，超出時卡片本身內捲。
+ *     RoamieResponseView 自帶的「✦ 推薦」小標由推薦區標題取代（隱藏重複的那一個）。
+ *   - 鍵盤開啟時推薦區隱藏（等同被鍵盤蓋住，且不疊在列表上），收起後恢復；DOM 不卸載、捲動位置保留。
+ *   - 輸入列（快捷按鍵列＋輸入框）拉滿下半部寬度，左右 20px 邊距（覆寫 inline max-width 440px）。
+ */
+html.duo-laptop.chat-route-active .messenger-chat-composer {
+  left: var(--safe-area-left) !important;
+  right: var(--app-rail-width, var(--safe-area-right)) !important;
+  width: auto !important;
+  max-width: none !important;
+  margin-inline: 0 !important;
+}
+html.duo-laptop.chat-route-active .messenger-chat-composer .chat-composer {
+  padding-left: 1.25rem;
+  padding-right: 1.25rem;
+}
+/*
+ * 推薦區下緣＝輸入列上緣：輸入列 inline bottom 為底部導覽實測高度（含 1px border-t）。
+ * 底部導覽存在（無 --app-rail-width）時補 1px；直欄時 --app-rail-width ≥ 56px，補 0。
+ * padding-top 以可用高度為上限，空間不足時不溢出 box。
+ */
+html.duo-laptop.chat-route-active .chat-laptop-rec {
+  --chat-laptop-rec-bottom: calc(
+    var(--app-nav-total-height) + (1px - min(1px, var(--app-rail-width, 0px))) +
+      var(--chat-laptop-composer-height, 7.5rem)
+  );
+  position: fixed;
+  top: var(--duo-hinge-bottom);
+  bottom: var(--chat-laptop-rec-bottom);
+  left: var(--safe-area-left);
+  right: var(--app-rail-width, var(--safe-area-right));
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-top: clamp(0px, calc(100dvh - var(--duo-hinge-bottom) - var(--chat-laptop-rec-bottom)), 0.75rem);
+  overflow: hidden;
+  background: var(--background);
+}
+html.duo-laptop.chat-route-active.chat-keyboard-open .chat-laptop-rec {
+  visibility: hidden;
+}
+html.duo-laptop.chat-route-active .chat-laptop-rec__scroll {
+  flex: 1 1 0%;
+  min-height: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 0 1.25rem 0.75rem;
+}
+html.duo-laptop.chat-route-active .chat-laptop-rec__scroll > * {
+  height: 100%;
+}
+html.duo-laptop.chat-route-active .chat-laptop-rec [data-chat-place-cards] {
+  display: flex;
+  gap: 0.75rem;
+  width: max-content;
+  height: 100%;
+}
+html.duo-laptop.chat-route-active .chat-laptop-rec [data-chat-place-cards] > p {
+  display: none;
+}
+html.duo-laptop.chat-route-active .chat-laptop-rec [data-chat-place-cards] > article {
+  flex: 0 0 auto;
+  width: 16.5rem;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+}
+html.duo-laptop.chat-route-active .chat-laptop-rec [data-chat-place-cards] > article > div:first-child {
+  aspect-ratio: auto;
+  height: 96px;
+  min-height: 0;
+}
+
+/*
+ * 筆電半開＋探索（/map）：上半部＝地圖（含地圖上既有控制）；下半部＝搜尋列＋面板（分類膠囊、地點清單、地點詳情、導航）。
+ * 只改位置與尺寸，DOM 與元件不變（姿勢切換不 remount 地圖、不觸發搜尋）。全部為 .map-page 內的 absolute，沒有 fixed。
+ * .map-page 上緣＝視窗上緣（-mt 抵銷 main 頂部 padding），下緣＝底部導覽上緣（main 的 pb）。
+ *   - 地圖層：[頂端, 摺痕上緣]；overflow 可見、z-index 高於面板層（z-40），讓搜尋列與下拉結果溢出到下半部並疊在面板上。
+ *   - 搜尋列外層：從摺痕下緣開始（抵銷搜尋列自身的 safe-area-top 內距）。
+ *   - 面板層：搜尋列下方到底部導覽上緣；面板固定填滿（覆寫 inline 拖曳／收合高度），拖曳把手停用，同雙欄。
+ *   - 搜尋列聚焦（html.map-keyboard-open，鍵盤會蓋住下半部）：搜尋列回到地圖頂端（既有手機位置），
+ *     輸入框與下拉結果顯示在上半部、不被鍵盤遮住；失焦後回到下半部。
+ *   - 規則限定 /map（html.map-route-active，由 _app.tsx 設定）。
+ *   - 面板以 absolute inset 0 填滿面板層、height: auto（不用 100%）：離開筆電時 height 由 auto 回到 inline px，
+ *     auto 不可補間，inline transition（0.48s）不會啟動 → 不從內容高度閃回；一般拖曳／snap 轉場不受影響。
+ *   - 下半部很矮（摺痕下方 < 280px，最低 200px）時：面板本身可整體捲動（.map-page 內沒有 fixed 元素），
+ *     清單區至少 8rem；停用的拖曳把手與分類標題區收合為 0（以 clamp 依下半部高度切換，一般高度不變），
+ *     讓分類膠囊留在可視範圍。清單捲到底時捲動延續到面板（面板本身 contain，不再往外傳）。
+ *
+ * #H3-1 更新（取代上方「地圖層 z-index 高於面板層」與「搜尋列聚焦回到地圖頂端」兩點）：
+ *   - 直向攤平（html.duo-flat-portrait，_app 在 fullyOpen＋直向＋非雙欄＋非筆電時設定，同樣設定 --duo-hinge-*）
+ *     探索頁套用與筆電完全相同的規則（每條規則兩個 selector 並列）。
+ *   - 下半部「整塊」＝搜尋列（地圖層內的 .z-10）＋面板層（.map-sheet-layer）＋面板層 ::before 的搜尋列底板
+ *     （cream、上緣圓角，位於面板層正上方、高度＝搜尋列區）。地圖層不建立 stacking context
+ *     （z-index auto，並取消基底 .map-stage 的 isolation／translateZ(0)；地圖畫布自身仍為 isolate 的 z-0），
+ *     地圖畫布（z-0）＜面板層（z-40）＜搜尋列外層（z-41）。面板層 pointer-events 開啟並鋪 cream，
+ *     避免點到底下的地圖、面板圓角後方露出地圖。
+ *   - 鍵盤展開（map-keyboard-open）：整塊上移到 [視窗頂端, 摺痕上緣]：搜尋列外層 top 0、面板層
+ *     [搜尋列下緣, 摺痕上緣]（bottom＝鎖定的頁高 − 摺痕上緣，與 map-keyboard-open 的 .map-page 高度同源）、
+ *     底板加高涵蓋頂部安全區並加上緣陰影。搜尋列與面板層位移量相同（摺痕下緣 − 頂部安全區），同時移動。
+ *     地圖不卸載（只被蓋住）。
+ *   - 動畫：只在 html.duo-map-kb-anim（map-search-keyboard.ts 於鍵盤開合當下加上、約 0.4s 後移除；
+ *     prefers-reduced-motion 時不加）存在時對 top／bottom／底板 height 做 0.25s transition。
+ *     姿勢切換、進出地點詳情時沒有此 class，直接切換（不會從舊位置滑動）。
+ *   - 鍵盤展開且有搜尋建議（MapExploreSearchResults 為搜尋列外層的第 2 個子元素）：建議清單高度上限改為
+ *     上半部剩餘高度（內部捲動），面板內容 visibility hidden（DOM 保留、捲動位置保留），整塊只顯示搜尋列＋建議。
+ *     未輸入文字時沒有建議，整塊顯示搜尋列＋原本的推薦清單（既有邏輯）。
+ *   - 地點詳情一頁式（html.duo-map-detail-page，_app.map.tsx 只在筆電／直向攤平且 sheetMode＝detail 時設定）：
+ *     面板層佔滿 .map-page，面板（唯一捲動容器）整頁捲動（內層 body 不再自行捲動），搜尋列隱藏，
+ *     面板頂端讓出頂部安全區；返回清單時 class 移除，回到 ①。導航預覽維持下半部面板。
+ *
+ * #H3-2 更新：
+ *   - 地圖層取消基底 .map-stage 的 padding-top（手機版預留給搜尋列），地圖延伸到螢幕頂端、狀態列疊在地圖上。
+ *   - 鍵盤展開時整塊下緣＝--duo-map-kb-edge＝鍵盤上緣（筆電與直向攤平相同；#H3-3 起筆電不再上限於摺痕上緣，
+ *     面板延伸蓋過鉸鏈區，被鍵盤蓋住的卡片靠面板捲動查看）。
+ *     --duo-map-keyboard-top 由 map-search-keyboard.ts 依 Capacitor Keyboard 事件寫入（相對 .map-page 上緣）；
+ *     未取得時退回 --duo-hinge-top（摺痕／中線，與 #H3-1 相同）。搜尋建議高度上限同步改用此下緣。
+ *   - 頂端不露底：內容外層（main > div，appContentWrapperClass 鎖定時 overflow hidden、起點在 main 的 padding-top 下方）
+ *     會裁掉 .map-page 的 -mt；這兩種姿勢下改為 overflow visible，由 main（padding box 含 padding-top）裁切。
+ */
+html.duo-laptop.map-route-active .map-page,
+html.duo-flat-portrait.map-route-active .map-page {
+  --duo-laptop-map-search-height: 3.625rem;
+  --duo-map-kb-edge: var(--duo-map-keyboard-top, var(--duo-hinge-top));
+}
+html.duo-laptop.map-route-active main.app-scroll > div,
+html.duo-flat-portrait.map-route-active main.app-scroll > div {
+  overflow: visible;
+}
+html.duo-laptop.map-route-active .map-page > .map-stage,
+html.duo-flat-portrait.map-route-active .map-page > .map-stage {
+  bottom: auto;
+  height: var(--duo-hinge-top);
+  padding-top: 0;
+  overflow: visible;
+  z-index: auto;
+  isolation: auto;
+  transform: none;
+}
+html.duo-laptop.map-route-active .map-page > .map-stage > .z-10,
+html.duo-flat-portrait.map-route-active .map-page > .map-stage > .z-10 {
+  top: calc(var(--duo-hinge-bottom) - var(--safe-area-top));
+  bottom: auto;
+  z-index: 41;
+}
+html.duo-laptop.map-route-active.map-keyboard-open .map-page > .map-stage > .z-10,
+html.duo-flat-portrait.map-route-active.map-keyboard-open .map-page > .map-stage > .z-10 {
+  top: 0;
+}
+html.duo-laptop.map-route-active .map-page > .map-sheet-layer,
+html.duo-flat-portrait.map-route-active .map-page > .map-sheet-layer {
+  top: calc(var(--duo-hinge-bottom) + var(--duo-laptop-map-search-height));
+  pointer-events: auto;
+  background-color: var(--cream);
+}
+html.duo-laptop.map-route-active.map-keyboard-open .map-page > .map-sheet-layer,
+html.duo-flat-portrait.map-route-active.map-keyboard-open .map-page > .map-sheet-layer {
+  top: calc(var(--safe-area-top) + var(--duo-laptop-map-search-height));
+  bottom: calc(
+    var(--map-layout-height, 100dvh) + var(--safe-area-top) - var(--duo-map-kb-edge)
+  );
+}
+html.duo-laptop.map-route-active .map-page > .map-sheet-layer::before,
+html.duo-flat-portrait.map-route-active .map-page > .map-sheet-layer::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  height: var(--duo-laptop-map-search-height);
+  border-radius: 1.5rem 1.5rem 0 0;
+  background-color: var(--cream);
+  box-shadow: 0 -12px 28px -14px rgb(0 0 0 / 0);
+  pointer-events: auto;
+}
+html.duo-laptop.map-route-active.map-keyboard-open .map-page > .map-sheet-layer::before,
+html.duo-flat-portrait.map-route-active.map-keyboard-open .map-page > .map-sheet-layer::before {
+  height: calc(var(--safe-area-top) + var(--duo-laptop-map-search-height));
+  box-shadow: 0 -12px 28px -14px rgb(0 0 0 / 0.28);
+}
+html.duo-laptop.map-route-active.duo-map-kb-anim .map-page > .map-stage > .z-10,
+html.duo-flat-portrait.map-route-active.duo-map-kb-anim .map-page > .map-stage > .z-10 {
+  transition: top 0.25s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+html.duo-laptop.map-route-active.duo-map-kb-anim .map-page > .map-sheet-layer,
+html.duo-flat-portrait.map-route-active.duo-map-kb-anim .map-page > .map-sheet-layer {
+  transition:
+    top 0.25s cubic-bezier(0.25, 0.8, 0.25, 1),
+    bottom 0.25s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+html.duo-laptop.map-route-active.duo-map-kb-anim .map-page > .map-sheet-layer::before,
+html.duo-flat-portrait.map-route-active.duo-map-kb-anim .map-page > .map-sheet-layer::before {
+  transition:
+    height 0.25s cubic-bezier(0.25, 0.8, 0.25, 1),
+    box-shadow 0.25s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+html.duo-laptop.map-route-active.map-keyboard-open .map-page > .map-stage > .z-10 > div > div:nth-child(2),
+html.duo-laptop.map-route-active.map-keyboard-open .map-page > .map-stage > .z-10 > div > div:nth-child(2) > ul,
+html.duo-flat-portrait.map-route-active.map-keyboard-open .map-page > .map-stage > .z-10 > div > div:nth-child(2),
+html.duo-flat-portrait.map-route-active.map-keyboard-open .map-page > .map-stage > .z-10 > div > div:nth-child(2) > ul {
+  max-height: max(
+    6rem,
+    calc(var(--duo-map-kb-edge) - var(--safe-area-top) - 4rem)
+  );
+}
+html.duo-laptop.map-route-active.map-keyboard-open .map-page:has(> .map-stage > .z-10 > div > div:nth-child(2)) > .map-sheet-layer [data-map-explore-sheet="true"],
+html.duo-flat-portrait.map-route-active.map-keyboard-open .map-page:has(> .map-stage > .z-10 > div > div:nth-child(2)) > .map-sheet-layer [data-map-explore-sheet="true"] {
+  visibility: hidden;
+}
+html.duo-laptop.map-route-active .map-page [data-map-explore-sheet="true"],
+html.duo-flat-portrait.map-route-active .map-page [data-map-explore-sheet="true"] {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: auto !important;
+  max-height: none !important;
+  transition: none !important;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+}
+html.duo-laptop.map-route-active .map-page [data-map-explore-sheet="true"] [data-sheet-body-scroll],
+html.duo-flat-portrait.map-route-active .map-page [data-map-explore-sheet="true"] [data-sheet-body-scroll] {
+  min-height: 8rem;
+  overscroll-behavior-y: auto;
+}
+/* #H3-3：鍵盤展開時取消清單區最低高度，面板本身不產生多餘可捲距離（只保留清單一層捲動） */
+html.duo-laptop.map-route-active.map-keyboard-open .map-page [data-map-explore-sheet="true"] [data-sheet-body-scroll],
+html.duo-flat-portrait.map-route-active.map-keyboard-open .map-page [data-map-explore-sheet="true"] [data-sheet-body-scroll] {
+  min-height: 0;
+}
+html.duo-laptop.map-route-active .map-page [data-map-explore-sheet="true"] [data-sheet-drag-handle],
+html.duo-flat-portrait.map-route-active .map-page [data-map-explore-sheet="true"] [data-sheet-drag-handle] {
+  pointer-events: none;
+  cursor: default;
+}
+html.duo-laptop.map-route-active .map-page [data-map-explore-sheet="true"] [data-sheet-drag-handle],
+html.duo-laptop.map-route-active .map-page [data-map-explore-sheet="true"] > div:first-child > div:last-child > div.px-5.pb-2:first-child,
+html.duo-flat-portrait.map-route-active .map-page [data-map-explore-sheet="true"] [data-sheet-drag-handle],
+html.duo-flat-portrait.map-route-active .map-page [data-map-explore-sheet="true"] > div:first-child > div:last-child > div.px-5.pb-2:first-child {
+  max-height: clamp(0px, (100dvh - var(--duo-hinge-bottom) - 17.5rem) * 1000, 40rem);
+  overflow: hidden;
+}
+html.duo-laptop.map-route-active .map-page [data-map-explore-sheet="true"] [data-sheet-drag-handle] span,
+html.duo-flat-portrait.map-route-active .map-page [data-map-explore-sheet="true"] [data-sheet-drag-handle] span {
+  visibility: hidden;
+}
+/* 地點詳情一頁式（html.duo-map-detail-page） */
+html.duo-laptop.map-route-active.duo-map-detail-page .map-page > .map-sheet-layer,
+html.duo-flat-portrait.map-route-active.duo-map-detail-page .map-page > .map-sheet-layer {
+  top: 0;
+  bottom: 0;
+}
+html.duo-laptop.map-route-active.duo-map-detail-page .map-page > .map-sheet-layer::before,
+html.duo-flat-portrait.map-route-active.duo-map-detail-page .map-page > .map-sheet-layer::before {
+  display: none;
+}
+html.duo-laptop.map-route-active.duo-map-detail-page .map-page > .map-stage > .z-10,
+html.duo-flat-portrait.map-route-active.duo-map-detail-page .map-page > .map-stage > .z-10 {
+  visibility: hidden;
+}
+html.duo-laptop.map-route-active.duo-map-detail-page .map-page [data-map-explore-sheet="true"],
+html.duo-flat-portrait.map-route-active.duo-map-detail-page .map-page [data-map-explore-sheet="true"] {
+  padding-top: var(--safe-area-top);
+  border-top-width: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+html.duo-laptop.map-route-active.duo-map-detail-page .map-page [data-map-explore-sheet="true"] [data-sheet-drag-handle],
+html.duo-flat-portrait.map-route-active.duo-map-detail-page .map-page [data-map-explore-sheet="true"] [data-sheet-drag-handle] {
+  max-height: 0;
+}
+html.duo-laptop.map-route-active.duo-map-detail-page .map-page [data-map-explore-sheet="true"] [data-sheet-body-scroll],
+html.duo-flat-portrait.map-route-active.duo-map-detail-page .map-page [data-map-explore-sheet="true"] [data-sheet-body-scroll] {
+  flex: none;
+  min-height: 0;
+  overflow: visible;
+}
+
+/*
+ * 筆電半開＋聊聊／探索的浮層：不跨摺痕（與行程詳情相同）。
+ *   置中對話框（例如清除對話確認）改為置中於下半部；底部面板高度不超過下半部；頂部面板不超過上半部；
+ *   側邊面板只佔下半部。探索頁面板本身（role="dialog"）沒有這些 class，不受影響。
+ */
+html.duo-laptop.chat-route-active [role="dialog"][class*="translate-y-[-50%]"],
+html.duo-laptop.chat-route-active [role="alertdialog"][class*="translate-y-[-50%]"],
+html.duo-laptop.map-route-active [role="dialog"][class*="translate-y-[-50%]"],
+html.duo-laptop.map-route-active [role="alertdialog"][class*="translate-y-[-50%]"] {
+  top: calc((var(--duo-hinge-bottom) + 100dvh - var(--safe-area-bottom)) / 2) !important;
+  max-height: calc(100dvh - var(--duo-hinge-bottom) - var(--safe-area-bottom) - 1rem) !important;
+  overflow-y: auto !important;
+}
+html.duo-laptop.chat-route-active [data-vaul-drawer][data-vaul-drawer-direction="bottom"],
+html.duo-laptop.chat-route-active [role="dialog"][class*="slide-in-from-bottom"],
+html.duo-laptop.map-route-active [data-vaul-drawer][data-vaul-drawer-direction="bottom"],
+html.duo-laptop.map-route-active [role="dialog"][class*="slide-in-from-bottom"] {
+  max-height: calc(100dvh - var(--duo-hinge-bottom)) !important;
+  overflow-y: auto !important;
+}
+html.duo-laptop.chat-route-active [data-vaul-drawer][data-vaul-drawer-direction="top"],
+html.duo-laptop.chat-route-active [role="dialog"][class*="slide-in-from-top"],
+html.duo-laptop.map-route-active [data-vaul-drawer][data-vaul-drawer-direction="top"],
+html.duo-laptop.map-route-active [role="dialog"][class*="slide-in-from-top"] {
+  max-height: var(--duo-hinge-top) !important;
+  overflow-y: auto !important;
+}
+html.duo-laptop.chat-route-active [role="dialog"][class*="slide-in-from-right"],
+html.duo-laptop.chat-route-active [role="dialog"][class*="slide-in-from-left"],
+html.duo-laptop.map-route-active [role="dialog"][class*="slide-in-from-right"],
+html.duo-laptop.map-route-active [role="dialog"][class*="slide-in-from-left"] {
+  top: var(--duo-hinge-bottom) !important;
+  bottom: 0 !important;
+  height: auto !important;
+  overflow-y: auto !important;
+}
+
+/*
+ * 筆電半開＋收藏（/saved，_app.saved.index.tsx）：沿用雙欄結構（標題列＋.saved-duo-panes 內行程／地點兩個 section，無分頁列），
+ * saved-laptop-root 只在筆電時輸出；<html> 的 saved-laptop-active 由頁面在筆電時加上。
+ *   - 仍由 main.app-scroll 承載（/saved 不鎖 main）；根節點高度＝main 內容高度（100dvh − main 上內距 − 底部導覽），
+ *     main 本身沒有可捲動量。根節點不捲動（overflow hidden），沒有 fixed 子孫。
+ *   - 上半部：標題列（不捲動）＋行程 section（捲動容器），下緣＝摺痕上緣；
+ *     摺痕帶為空的 grid 列；下半部：地點 section（捲動容器），[摺痕下緣, 底部導覽上緣]。
+ *   - main 上內距：直欄時為 --duo-app-top，否則為 --safe-area-top（與 main 的 padding-top 同源）。
+ */
+html.duo-laptop .saved-laptop-root {
+  display: flex;
+  flex-direction: column;
+  height: calc(100dvh - var(--duo-app-top, var(--safe-area-top)) - var(--app-nav-total-height));
+  padding-bottom: 0;
+  overflow: hidden;
+}
+html.duo-laptop .saved-laptop-root > .saved-duo-header {
+  flex: none;
+  padding-inline: 1.25rem;
+}
+html.duo-laptop .saved-laptop-root > .saved-duo-panes {
+  flex: 1 1 0%;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows:
+    minmax(0, 1fr)
+    calc(var(--duo-hinge-bottom) - var(--duo-hinge-top))
+    calc(100dvh - var(--app-nav-total-height) - var(--duo-hinge-bottom));
+}
+html.duo-laptop .saved-laptop-root > .saved-duo-panes > section {
+  grid-column: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 1rem;
+}
+html.duo-laptop .saved-laptop-root > .saved-duo-panes > section:first-child {
+  grid-row: 1;
+}
+html.duo-laptop .saved-laptop-root > .saved-duo-panes > section:last-child {
+  grid-row: 3;
+}
+/*
+ * 收藏筆電第 2 輪：
+ *   - 下半部下緣＝底部導覽上緣（導覽實測高度含 1px border-t，與聊聊推薦區同一補法）：底部導覽存在時再讓出 1px，直欄時補 0。
+ *   - 下半部「還沒有收藏地點」提示卡縮小上下留白與間距，整張卡（含按鈕）放進 [摺痕下緣, 導覽上緣]；有地點時列表不受影響。
+ */
+html.duo-laptop .saved-laptop-root {
+  height: calc(
+    100dvh - var(--duo-app-top, var(--safe-area-top)) - var(--app-nav-total-height) -
+      (1px - min(1px, var(--app-rail-width, 0px)))
+  );
+}
+html.duo-laptop .saved-laptop-root > .saved-duo-panes {
+  grid-template-rows:
+    minmax(0, 1fr)
+    calc(var(--duo-hinge-bottom) - var(--duo-hinge-top))
+    calc(
+      100dvh - var(--app-nav-total-height) - (1px - min(1px, var(--app-rail-width, 0px))) -
+        var(--duo-hinge-bottom)
+    );
+}
+html.duo-laptop .saved-laptop-root > .saved-duo-panes > section:last-child > .border-dashed {
+  margin-top: 0.75rem;
+  padding-top: 1.25rem;
+  padding-bottom: 1.25rem;
+  gap: 0.75rem;
+}
+
+/*
+ * 筆電半開＋收藏／首頁／我的的浮層：不跨摺痕（與聊聊／探索相同；以頁面加在 <html> 的 *-laptop-active 限定路由）。
+ */
+html.duo-laptop.saved-laptop-active [role="dialog"][class*="translate-y-[-50%]"],
+html.duo-laptop.saved-laptop-active [role="alertdialog"][class*="translate-y-[-50%]"],
+html.duo-laptop.home-laptop-active [role="dialog"][class*="translate-y-[-50%]"],
+html.duo-laptop.home-laptop-active [role="alertdialog"][class*="translate-y-[-50%]"],
+html.duo-laptop.profile-laptop-active [role="dialog"][class*="translate-y-[-50%]"],
+html.duo-laptop.profile-laptop-active [role="alertdialog"][class*="translate-y-[-50%]"] {
+  top: calc((var(--duo-hinge-bottom) + 100dvh - var(--safe-area-bottom)) / 2) !important;
+  max-height: calc(100dvh - var(--duo-hinge-bottom) - var(--safe-area-bottom) - 1rem) !important;
+  overflow-y: auto !important;
+}
+html.duo-laptop.saved-laptop-active [data-vaul-drawer][data-vaul-drawer-direction="bottom"],
+html.duo-laptop.saved-laptop-active [role="dialog"][class*="slide-in-from-bottom"],
+html.duo-laptop.home-laptop-active [data-vaul-drawer][data-vaul-drawer-direction="bottom"],
+html.duo-laptop.home-laptop-active [role="dialog"][class*="slide-in-from-bottom"],
+html.duo-laptop.profile-laptop-active [data-vaul-drawer][data-vaul-drawer-direction="bottom"],
+html.duo-laptop.profile-laptop-active [role="dialog"][class*="slide-in-from-bottom"] {
+  max-height: calc(100dvh - var(--duo-hinge-bottom)) !important;
+  overflow-y: auto !important;
+}
+html.duo-laptop.saved-laptop-active [data-vaul-drawer][data-vaul-drawer-direction="top"],
+html.duo-laptop.saved-laptop-active [role="dialog"][class*="slide-in-from-top"],
+html.duo-laptop.home-laptop-active [data-vaul-drawer][data-vaul-drawer-direction="top"],
+html.duo-laptop.home-laptop-active [role="dialog"][class*="slide-in-from-top"],
+html.duo-laptop.profile-laptop-active [data-vaul-drawer][data-vaul-drawer-direction="top"],
+html.duo-laptop.profile-laptop-active [role="dialog"][class*="slide-in-from-top"] {
+  max-height: var(--duo-hinge-top) !important;
+  overflow-y: auto !important;
+}
+html.duo-laptop.saved-laptop-active [role="dialog"][class*="slide-in-from-right"],
+html.duo-laptop.saved-laptop-active [role="dialog"][class*="slide-in-from-left"],
+html.duo-laptop.home-laptop-active [role="dialog"][class*="slide-in-from-right"],
+html.duo-laptop.home-laptop-active [role="dialog"][class*="slide-in-from-left"],
+html.duo-laptop.profile-laptop-active [role="dialog"][class*="slide-in-from-right"],
+html.duo-laptop.profile-laptop-active [role="dialog"][class*="slide-in-from-left"] {
+  top: var(--duo-hinge-bottom) !important;
+  bottom: 0 !important;
+  height: auto !important;
+  overflow-y: auto !important;
+}
+/*
+ * 我的頁裁切編輯器（SharedImageCropEditor，唯一使用 h-[92dvh] 的底部 Sheet）：不受上方「底部面板不超過下半部」限制，
+ * 維持手機原本的全高呈現（max-height 回到元件自身的 92dvh、overflow 回到預設 visible）。頭像來源 Sheet 不受影響。
+ */
+html.duo-laptop.profile-laptop-active [role="dialog"][class*="slide-in-from-bottom"][class*="h-[92dvh]"] {
+  max-height: 92dvh !important;
+  overflow-y: visible !important;
+}
+
+/*
+ * 地點詳情頁雙頁（_app.place.tsx，place-duo-* class 只在雙頁時輸出；探索頁的 PlaceDetailSheet 不受影響）：
+ * 載入中／找不到／fetchError（.place-duo-single）只放在左頁 [safe-left, 摺痕左緣]，不跨摺痕。
+ * 有內容時（.place-duo-root）左右欄不共用 grid 列，各自獨立排列：
+ *   根節點（仍是唯一的捲動容器）改為 position: relative 的 block；PlaceDetailSheet 的根節點與資訊區塊以 display: contents 攤平。
+ *   左頁：標頭、fallback 提示、Hero、基本資訊與連結（.place-split-left-top）、收藏＋導航（.place-split-left-bottom）
+ *         以一般 block 流排列，寬度限制在 [safe-left, 摺痕左緣]。
+ *   右頁：推薦理由＋交通＋票券（.place-split-right）絕對定位在 [摺痕右緣, 直欄左緣]，頂端對齊標頭；
+ *         聊這個地點（.place-split-right-bottom）以 CSS anchor positioning 緊接在右欄下方，不受左欄高度影響。
+ * 絕對定位的右欄在捲動容器內隨內容捲動，其 border box（含底部 padding）計入可捲動範圍，右欄較長時也能捲到底。
+ * 根節點左緣＝視窗左緣（MobileFrame fullBleed），右緣＝直欄左緣。
+ */
+html.duo-rail.duo-two-pane .place-duo-single {
+  margin-left: var(--safe-area-left);
+  width: calc(var(--duo-fold-left-edge) - var(--safe-area-left));
+  max-width: calc(var(--duo-fold-left-edge) - var(--safe-area-left));
+}
+html.duo-rail.duo-two-pane .place-duo-root {
+  position: relative;
+  display: block;
+  padding-left: var(--safe-area-left);
+}
+/* 標頭（ExploreSubpageHeader）與 fallback／更新中提示（p 保留原本 mx-5） */
+html.duo-rail.duo-two-pane .place-duo-root > :first-child {
+  width: calc(var(--duo-fold-left-edge) - var(--safe-area-left));
+}
+html.duo-rail.duo-two-pane .place-duo-root > p {
+  width: calc(var(--duo-fold-left-edge) - var(--safe-area-left) - 2.5rem);
+}
+/* PlaceDetailSheet 根節點（最後一個子元素）與資訊區塊（Hero 的下一個兄弟）攤平 */
+html.duo-rail.duo-two-pane .place-duo-root > div:last-child,
+html.duo-rail.duo-two-pane .place-duo-root [data-place-detail-hero] + div {
+  display: contents;
+}
+/* Hero：高度限制約 200pt（寬高比 16:10 的高度若更小則取之），只在雙頁生效 */
+html.duo-rail.duo-two-pane .place-duo-root [data-place-detail-hero] {
+  width: calc(var(--duo-fold-left-edge) - var(--safe-area-left) - 2.5rem);
+  aspect-ratio: auto;
+  height: min(200px, calc((var(--duo-fold-left-edge) - var(--safe-area-left) - 2.5rem) * 10 / 16));
+}
+html.duo-rail.duo-two-pane .place-duo-root .place-split-left-top {
+  display: block;
+  width: calc(var(--duo-fold-left-edge) - var(--safe-area-left));
+  padding: 1rem 1.25rem 0;
+}
+html.duo-rail.duo-two-pane .place-duo-root .place-split-left-bottom {
+  display: block;
+  width: calc(var(--duo-fold-left-edge) - var(--safe-area-left));
+  padding: 0 1.25rem 1.5rem;
+}
+/* 右欄：containing block 為根節點 padding box（左緣＝視窗左緣），隨捲動容器內容一起捲動 */
+html.duo-rail.duo-two-pane .place-duo-root .place-split-right {
+  display: block;
+  position: absolute;
+  top: 0;
+  left: var(--duo-fold-right-edge);
+  right: 0;
+  padding: 0 1.25rem;
+  anchor-name: --place-split-right;
+}
+/* 右頁第一張卡（推薦理由）頂端對齊左頁標頭 */
+html.duo-rail.duo-two-pane .place-duo-root .place-split-right > :first-child {
+  margin-top: 0;
+}
+/*
+ * 聊這個地點：緊接右欄底部（anchor positioning），寬度與右欄相同；
+ * 底部 padding 含 --place-detail-scroll-bottom（絕對定位元素不套用捲動容器的 padding-bottom），確保可捲到底並留間距。
+ */
+html.duo-rail.duo-two-pane .place-duo-root .place-split-right-bottom {
+  display: block;
+  position: absolute;
+  position-anchor: --place-split-right;
+  top: anchor(bottom);
+  left: anchor(left);
+  width: anchor-size(width);
+  padding: 1rem 1.25rem calc(1.5rem + var(--place-detail-scroll-bottom));
+}
+html.duo-rail.duo-two-pane .place-duo-root .place-split-right-bottom > :first-child {
+  margin-top: 0;
+}

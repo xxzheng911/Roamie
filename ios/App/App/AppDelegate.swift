@@ -441,6 +441,7 @@ class PortraitBridgeViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(SubscriptionManagementPlugin())
         bridge?.registerPluginInstance(SecureAppleSignInPlugin())
         bridge?.registerPluginInstance(OpenExternalUrlPlugin())
+        bridge?.registerPluginInstance(DuoHingePlugin())
         if let bridge = bridge {
             let startURL = bridge.config.appStartServerURL
             let indexPath = bridge.config.appStartFileURL.path
