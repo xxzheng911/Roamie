@@ -36,6 +36,9 @@ import { spawn, execFileSync } from "node:child_process";
 const root = process.cwd();
 const read = (p) => fs.readFileSync(path.join(root, p), "utf8");
 const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+// #TS-BASE：功能 commit（943a047…）之前的基準 commit。功能已 commit 進 HEAD 後，「工作區 diff」與「HEAD 版＝改動前」都失效，
+//   S3／S6 與 Part B 的「改動前（下文沿用 HEAD 稱呼）」版本一律取自此基準（日後基準前移時只改這一行）。
+const PRE_FEATURE_BASE = "aa2db59";
 const failures = [];
 const check = (name, fn) => {
   try {
@@ -228,7 +231,9 @@ check("S2 styles.css 最後一個規則仍屬地點詳情 Duo（.place-duo-root�
 });
 
 check("S3 RoamieResponseView diff 只新增 hideSummary（預設 false），三處條件只多 !hideSummary &&", () => {
-  const diff = git("diff", "-U0", "--", "src/components/RoamieResponseView.tsx");
+  // #TS-BASE：原為 `git diff -U0`（工作區 vs index），功能 commit 後為空；改為工作區 vs 功能 commit 前基準。
+  //   diff 為空時 removed＝[] 與預期三行不符 → 失敗，不會空洞通過。
+  const diff = git("diff", "-U0", PRE_FEATURE_BASE, "--", "src/components/RoamieResponseView.tsx");
   const lines = diff.split("\n").filter((l) => /^[+-]/.test(l) && !/^(\+\+\+|---)/.test(l));
   const removed = lines.filter((l) => l.startsWith("-")).map((l) => l.slice(1));
   const added = lines.filter((l) => l.startsWith("+")).map((l) => l.slice(1));
@@ -284,8 +289,8 @@ if (fs.existsSync(baselineFile)) {
         .map((l) => l.trim().split(/\s+/))
         .map(([h, p]) => [p, h]),
     );
-    assert.equal(sha(git("show", "HEAD:src/components/chat/ChatMessageList.tsx")), base["src/components/chat/ChatMessageList.tsx"]);
-    assert.equal(sha(git("show", "HEAD:src/components/RoamieResponseView.tsx")), base["src/components/RoamieResponseView.tsx"]);
+    assert.equal(sha(git("show", PRE_FEATURE_BASE + ":src/components/chat/ChatMessageList.tsx")), base["src/components/chat/ChatMessageList.tsx"]);
+    assert.equal(sha(git("show", PRE_FEATURE_BASE + ":src/components/RoamieResponseView.tsx")), base["src/components/RoamieResponseView.tsx"]);
     assert.equal(base["src/routes/_app.chat.tsx"], CHAT_TSX_PRE_LOCK_SHA256, "baseline 的 _app.chat.tsx sha 不是 #L1 改動前版本");
     assert.equal(assertChatTsxOnlyLockChanges(), sha(read("src/routes/_app.chat.tsx")), "授權段落比對讀到的 _app.chat.tsx 與本腳本不同");
   });
@@ -442,8 +447,9 @@ export function setDuoLayout(v){cur=v;subs.forEach(f=>f());}
 export function useDuoLayout(){window.__duoHookCalls=(window.__duoHookCalls||0)+1;return useSyncExternalStore(cb=>{subs.add(cb);return()=>subs.delete(cb)},()=>cur,()=>cur);}`,
     "fixture:cur-list": mutate("list", read("src/components/chat/ChatMessageList.tsx")),
     "@/components/chat/ChatDuoRecommendationPane": mutate("pane", read("src/components/chat/ChatDuoRecommendationPane.tsx")),
-    "fixture:head-list": git("show", "HEAD:src/components/chat/ChatMessageList.tsx"),
-    "fixture:head-rrv": git("show", "HEAD:src/components/RoamieResponseView.tsx"),
+    // #TS-BASE：「HEAD 版」＝改動前版本，改取自 PRE_FEATURE_BASE（功能 commit 後 HEAD＝目前版，比對會空洞通過）
+    "fixture:head-list": git("show", PRE_FEATURE_BASE + ":src/components/chat/ChatMessageList.tsx"),
+    "fixture:head-rrv": git("show", PRE_FEATURE_BASE + ":src/components/RoamieResponseView.tsx"),
   };
   const mockDir = {
     "fixture:cur-list": path.join(root, "src/components/chat"),

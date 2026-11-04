@@ -53,6 +53,9 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => fs.readFileSync(path.join(root, p), "utf8");
+// #TS-BASE：功能 commit（943a047…）之前的基準 commit。功能已 commit 進 HEAD 後，A2「相對 HEAD 只新增」會因 diff 為空而失效，
+//   改以此基準比對（日後基準前移時只改這一行）。
+const PRE_FEATURE_BASE = "aa2db59";
 const styles = read("src/styles.css");
 const failures = [];
 const infos = [];
@@ -257,8 +260,9 @@ await check("A2 新規則：逐字列舉、筆電區塊內（聊聊／探索之�
     assert.equal(depthAt[shpRegionStart + m.index + m[0].indexOf("{")], 0, "規則在 @layer 內：" + m[1].trim().slice(0, 80));
   const rules = [...nc.matchAll(/([^{}]+)\{[^{}]*\}/g)];
   assert.match(rules[rules.length - 1][1], /\.place-duo-root/);
-  const numstat = execFileSync("git", ["diff", "--numstat", "HEAD", "--", "src/styles.css"], { cwd: root, encoding: "utf8" }).trim();
-  assert.equal(numstat.split(/\s+/)[1], "0", "styles.css 有刪除行：" + numstat);
+  // #TS-BASE：「只新增」對功能 commit 前基準比對（工作區 vs PRE_FEATURE_BASE）；numstat 為空時 [1] 為 undefined → 失敗
+  const numstat = execFileSync("git", ["diff", "--numstat", PRE_FEATURE_BASE, "--", "src/styles.css"], { cwd: root, encoding: "utf8" }).trim();
+  assert.equal(numstat.split(/\s+/)[1], "0", `styles.css 相對 ${PRE_FEATURE_BASE} 有刪除行：` + numstat);
 });
 
 const appSrc = read("src/routes/_app.tsx");
@@ -304,6 +308,8 @@ const TOP = 455.5;
 const BOTTOM = 495.5;
 // 直欄寬＝max(RIGHT_RAIL_MIN_WIDTH_PX, safe-right)；本 harness safe-right＝0（A4 檢查常數仍為 56）
 const RAIL = 56;
+// #TS-P1：P1 Free fixture 用的長顯示名稱（在 669 寬的個人卡內換成兩行）
+const LONG_DISPLAY_NAME = "旅人小安・京都大阪奈良神戶和歌山滋賀慢遊散步紀錄本";
 const abs = (p) => path.join(root, p).replace(/\\/g, "/");
 
 const cnt = `const C=(k)=>{const c=(window.__counts||(window.__counts={}));c[k]=(c[k]||0)+1;};const CFG=()=>window.__cfg||{};`;
@@ -406,7 +412,7 @@ export async function getPreferences(){C('getPreferences');return window.__cfg&&
   "@/lib/profile-storage": `export * from '${abs("src/lib/profile-storage.ts")}';
 ${cnt}
 export async function getUserProfile(){C('getUserProfile');const on=!!(window.__cfg&&window.__cfg.onboarded);
- return {displayName:'旅人小安',bio:'',avatarUrl:null,coverImageUrl:null,travelStyle:on?'城市慢遊探索家':'',language:'zh-TW',notificationsEnabled:true,authProvider:null,
+ return {displayName:(window.__cfg&&window.__cfg.displayName)||'旅人小安',bio:'',avatarUrl:null,coverImageUrl:null,travelStyle:on?'城市慢遊探索家':'',language:'zh-TW',notificationsEnabled:true,authProvider:null,
   prefs:on?{onboarded:true,pace:'slow',vibe:'quiet',budgetMode:'balanced',interests:['咖啡']}:{onboarded:false},personalityType:on?'城市慢遊探索家':'',personalitySummary:'',personalityImpression:on?'你偏好步調緩慢、有質感的城市散步。':''};}
 export async function saveUserProfile(){C('saveUserProfile');}
 export async function syncTravelPreferenceProfileFields(){C('syncTravelPreferenceProfileFields');}`,
@@ -594,6 +600,21 @@ async function run() {
     );
   } catch (e) {
     info("無法取得 HEAD 版頁面（" + String(e.message).slice(0, 80) + "），N1 改用結構斷言");
+  }
+  // #TS-PE2 預期差異：使用者要求移除「我的」底部版本號（<p …font-mono…>{ROAMIE_BUILD_DEBUG}</p> 與其 import）。
+  //   比對基準＝HEAD 版去掉「恰好這一段」；其餘 DOM 仍逐字比對。HEAD 若已無此段或出現多次即 FAIL（基準需重新檢視），
+  //   工作區若仍引用版本號亦 FAIL（需求未達成）。
+  if (headSources) {
+    const profileKey = path.join(root, "src/routes/_app.profile.tsx");
+    const VERSION_P = /\n[ \t]*<p className="mt-2 text-center font-mono text-\[10px\] text-muted-foreground\/70">\s*\{ROAMIE_BUILD_DEBUG\}\s*<\/p>/g;
+    const VERSION_IMPORT = /\nimport \{ ROAMIE_BUILD_DEBUG \} from "@\/lib\/app-bundle-version";/g;
+    await check("V0 預期差異基準：HEAD 版「我的」恰有 1 段版本號＋1 個 import；工作區已移除（不再引用 ROAMIE_BUILD_DEBUG）", () => {
+      const headProfile = headSources[profileKey];
+      assert.equal(headProfile.match(VERSION_P)?.length ?? 0, 1, "HEAD 版本號段落數");
+      assert.equal(headProfile.match(VERSION_IMPORT)?.length ?? 0, 1, "HEAD 版本號 import 數");
+      assert.doesNotMatch(read("src/routes/_app.profile.tsx"), /ROAMIE_BUILD_DEBUG/, "工作區仍引用版本號");
+      headSources[profileKey] = headProfile.replace(VERSION_P, "").replace(VERSION_IMPORT, "");
+    });
   }
 
   const bundle = async (variant) => {
@@ -952,7 +973,11 @@ window.fetch=async function(input,init){const url=typeof input==='string'?input:
       assert.equal(m.fiber, ref.fiber, "React fiber 樹與對照姿勢不同");
       assert.deepEqual(m.bodyKids, ref.bodyKids, "body 子節點不同（不得有 portal 容器）");
       assert.deepEqual(m.vScrollers, ref.vScrollers, "垂直捲動容器與對照姿勢不同");
-      assert.equal(m.vScrollers.length, 1, "垂直捲動容器數：" + m.vScrollers.join(" | "));
+      assert.equal(
+        m.vScrollers.length,
+        1,
+        "垂直捲動容器數：" + m.vScrollers.join(" | ") + `（捲動容器 scrollHeight/clientHeight：筆電 ${m.sc.sh}/${m.sc.ch}、對照 ${ref.sc.sh}/${ref.sc.ch}）`,
+      );
       assert.ok(m.vScrollers[0].includes("." + P.scroller.split(".").pop()), "捲動容器應為 " + P.scroller + "：" + m.vScrollers[0]);
       assert.ok(m.sc.sh > m.sc.ch, "內容應超過一屏而可捲動：" + JSON.stringify(m.sc));
       assert.deepEqual(fixedNames(m), fixedNames(ref), "fixed 元素集合與對照姿勢不同");
@@ -1020,7 +1045,11 @@ window.fetch=async function(input,init){const url=typeof input==='string'?input:
     // StrictMode（開發模式）：骨架停留為既有行為，仍需 DOM／fiber／捲動結構與手機相同
     await runOnePage("home", LAPTOPS[0], { latestTrip: true, places: 2 }, "StrictMode，有最近行程", false);
     for (const L of LAPTOPS)
-      for (const plus of [false, true]) await runOnePage("profile", L, { plus, onboarded: plus }, plus ? "Plus＋步調/氛圍/預算" : "Free", false);
+      // #TS-P1：移除個人頁底部版本號後，Free 版內容（919px）已不超過 laptopRail 一屏（937px），P1「必須有 1 個可捲動容器、
+      //   全部元素可達」的前提失效。斷言不放寬，改加長 Free fixture：旅行風格／同伴摘要／步調卡皆限 Plus（onboarded 對 Free 高度無影響），
+      //   Free 唯一由資料決定高度的是顯示名稱，故用會換成兩行的長顯示名稱，讓內容仍超過一屏。
+      for (const plus of [false, true])
+        await runOnePage("profile", L, plus ? { plus, onboarded: true } : { plus, onboarded: false, displayName: LONG_DISPLAY_NAME }, plus ? "Plus＋步調/氛圍/預算" : "Free＋長顯示名稱（兩行）", false);
     await viewport(W, H);
 
     // ─────────── E：浮層 ───────────

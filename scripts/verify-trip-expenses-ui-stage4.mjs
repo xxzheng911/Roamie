@@ -449,6 +449,78 @@ function row({ title, amount, currency = "TWD", exp = 2, date = "2026-11-21", me
   };
 }
 
+// ── R21 標題列吸頂蓋住狀態列（#TS-UX3）：與 verify-trip-packing-stage5.mjs R14 同一份量測 ──
+// 套用真實 Tailwind 產出（dist/client/assets/styles-*.css，含 html.duo-rail 規則），main 加上 _app.tsx 的
+// pt-[var(--safe-area-top)]，以 --safe-area-top／html.duo-rail 模擬 iPhone 狀態列與 Duo；同一個 header 換回舊 className
+// （sticky top-0 … bg-background/95 backdrop-blur、無 inline style）量測，比對幾何。
+const HEADER_OLD_CLASS = "sticky top-0 z-20 flex items-center gap-2 border-b border-border bg-background/95 px-3 py-2.5 backdrop-blur";
+const HEADER_CASES = [{ safe: "0px" }, { safe: "47px" }, { safe: "59px" }, { safe: "0px", duo: true }, { safe: "47px", duo: true }];
+const HEADER_EXPECT_PAD = [0, 47, 59, 14, 47];
+function headerGeoCss() {
+  const cssDir = path.join(root, "dist/client/assets");
+  const f = fs.existsSync(cssDir) ? fs.readdirSync(cssDir).find((x) => /^styles-.*\.css$/.test(x)) : null;
+  const css = f ? fs.readFileSync(path.join(cssDir, f), "utf8").replace(/@import\s*(?:url\()?\s*(?:"[^"]*"|'[^']*'|[^)"';]*)\s*\)?[^;]*;/g, "") : "";
+  const need = [".sticky{", ".top-0{", ".z-20{", ".py-2\\.5{", ".border-b{", ".backdrop-blur{", ".pt-\\[var\\(--safe-area-top\\)\\]", "html.duo-rail main.app-scroll", "--duo-app-top:"];
+  return { css, source: f ? "dist/client/assets/" + f : null, missing: need.filter((n) => !css.includes(n)) };
+}
+const HEADER_GEO_FN = String.raw`async function(css,oldCls,cases){
+  const st=document.createElement('style');st.id='hdr-geo-css';st.textContent=css;document.head.appendChild(st);
+  const html=document.documentElement;const main=document.querySelector('main.app-scroll');const PT='pt-[var(--safe-area-top)]';main.classList.add(PT);
+  const h=document.querySelector('#root header');const t=h.querySelector('h1');
+  const frame=function(){return new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(r);});});};
+  const alpha=function(c){c=String(c);if(c==='transparent')return 0;let m=c.match(/\/\s*([\d.]+)(%?)\s*\)$/);if(m)return m[2]?parseFloat(m[1])/100:parseFloat(m[1]);m=c.match(/^rgba\((?:[^,]+,){3}\s*([\d.]+)\)$/);return m?parseFloat(m[1]):1;};
+  const measure=async function(){const out={};for(const s of [0,400]){main.scrollTop=s;await frame();
+    const mr=main.getBoundingClientRect();const hr=h.getBoundingClientRect();const tr=t.getBoundingClientRect();const pad=parseFloat(getComputedStyle(main).paddingTop);const nx=h.nextElementSibling;
+    const ys=pad>0?[1,Math.floor(pad/2),Math.max(1,Math.ceil(pad)-1)]:[];const cs=getComputedStyle(h);
+    out[s]={scrollTop:main.scrollTop,pad:pad,hTop:hr.top-mr.top,hBottom:hr.bottom-mr.top,titleTop:tr.top-mr.top,nextTop:nx?nx.getBoundingClientRect().top-mr.top+main.scrollTop:null,
+      covered:ys.map(function(y){const e=document.elementFromPoint(mr.left+mr.width/2,mr.top+y);return !!e&&h.contains(e);}),bg:cs.backgroundColor,bgAlpha:alpha(cs.backgroundColor),position:cs.position};}
+    main.scrollTop=0;await frame();return out;};
+  const res=[];
+  for(const c of cases){html.style.setProperty('--safe-area-top',c.safe);html.classList.toggle('duo-rail',!!c.duo);await frame();
+    const now=await measure();const oc=h.className;const os=h.getAttribute('style');h.className=oldCls;h.removeAttribute('style');const old=await measure();h.className=oc;if(os!=null)h.setAttribute('style',os);
+    res.push({c:c,now:now,old:old,scrollMax:main.scrollHeight-main.clientHeight,style:os});}
+  html.style.removeProperty('--safe-area-top');html.classList.remove('duo-rail');main.classList.remove(PT);st.remove();return res;}`;
+async function headerGeoChecks(tag, page, res, cssInfo) {
+  const r1 = (x) => Math.round(x * 10) / 10;
+  info(`${tag} CSS：${cssInfo.source ?? "（無 dist CSS）"}${cssInfo.missing.length ? "；缺少 " + cssInfo.missing.join(" ") : ""}`);
+  for (const x of res) {
+    const pick = (m) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k, { hTop: r1(v.hTop), hBottom: r1(v.hBottom), title: r1(v.titleTop), next: v.nextTop == null ? null : r1(v.nextTop), covered: v.covered, bg: v.bg }]));
+    info(`${tag} ${JSON.stringify(x.c)} pad=${x.now[0].pad} scrollMax=${x.scrollMax} 新：${JSON.stringify(pick(x.now))} 舊：${JSON.stringify(pick(x.old))}`);
+  }
+  await check(`${tag} ${page}標題列：量測前提（真實 CSS 可用、position sticky、可捲動 ≥ 400px、main 上內距＝0／47／59／Duo 14／Duo 47）`, () => {
+    assert.deepEqual(cssInfo.missing, [], "缺少真實 CSS");
+    res.forEach((x, i) => {
+      assert.equal(x.now[0].position, "sticky");
+      assert.ok(x.scrollMax >= 400, "內容不足以捲動 400px：" + x.scrollMax);
+      assert.equal(x.now[400].scrollTop, 400);
+      assert.equal(x.now[0].pad, HEADER_EXPECT_PAD[i], JSON.stringify(x.c));
+    });
+  });
+  const web = res[0];
+  await check(`${tag} ${page}網頁版（safe-area 0、非 Duo）：捲動前後 header 上下緣、標題文字、下一個區塊位置與修改前完全相同`, () => {
+    for (const s of [0, 400]) {
+      for (const k of ["hTop", "hBottom", "titleTop", "nextTop"]) assert.ok(Math.abs(web.now[s][k] - web.old[s][k]) < 0.5, `scroll ${s} ${k}：新 ${web.now[s][k]} 舊 ${web.old[s][k]}`);
+    }
+  });
+  for (let i = 1; i < res.length; i++) {
+    const x = res[i];
+    const pad = HEADER_EXPECT_PAD[i];
+    const label = (x.c.duo ? "Duo（--duo-app-top）" : "iPhone") + " safe-area-top " + x.c.safe;
+    await check(`${tag} ${page}${label}：未捲動時標題文字／header 下緣／下一個區塊位置與修改前相同、header 背景延伸到頂端；捲動 400px 後 header 貼齊捲動容器頂端、標題文字不動、狀態列區（0～${pad}px）全被不透明 header 蓋住（修改前會露出內容）`, () => {
+      const n0 = x.now[0], n4 = x.now[400], o0 = x.old[0], o4 = x.old[400];
+      assert.ok(Math.abs(n0.titleTop - o0.titleTop) < 0.5, `標題位置改變：新 ${n0.titleTop} 舊 ${o0.titleTop}`);
+      assert.ok(Math.abs(n0.hBottom - o0.hBottom) < 0.5, `header 下緣改變：新 ${n0.hBottom} 舊 ${o0.hBottom}`);
+      assert.ok(Math.abs(n0.nextTop - o0.nextTop) < 0.5, `下一個區塊位置改變：新 ${n0.nextTop} 舊 ${o0.nextTop}`);
+      assert.ok(Math.abs(n0.hTop) < 0.5, "未捲動時 header 未延伸到頂端：" + n0.hTop);
+      assert.ok(Math.abs(n4.hTop) < 0.5, "捲動後 header 未貼齊捲動容器頂端：" + n4.hTop);
+      assert.ok(Math.abs(n4.titleTop - n0.titleTop) < 0.5, `捲動後標題文字移動：${n0.titleTop} → ${n4.titleTop}`);
+      assert.ok(n4.covered.length > 0 && n4.covered.every(Boolean), "狀態列區有點未被 header 蓋住：" + JSON.stringify(n4.covered));
+      assert.equal(n4.bgAlpha, 1, "header 背景非不透明：" + n4.bg);
+      assert.ok(o4.covered.some((c) => !c), "敏感度：舊 className 捲動後應會露出狀態列區內容，實得 " + JSON.stringify(o4.covered));
+    });
+  }
+}
+
 if (!chromeBin) {
   failures.push("R 無可用 Chrome");
   console.log("FAIL R 無可用 Chrome，未執行瀏覽器 render");
@@ -699,6 +771,63 @@ async function runBrowser() {
         assert.equal(u2.length, 2);
         assert.match(u2[1].p_expense.client_request_id, UUID_V4);
         assert.notEqual(u2[1].p_expense.client_request_id, lastCrid);
+      });
+    }
+
+    // ═══ R3p 「誰先付款」頭像：選中外框（ring-2）不被 overflow 裁切；間距不變（#TS-PACK）═══
+    // 套用真實 Tailwind 產出（dist/client/assets/styles-*.css；沒有時用等值的最小規則），量測 render 後的幾何。
+    {
+      const cssDir = path.join(root, "dist/client/assets");
+      const distCss = fs.existsSync(cssDir) ? fs.readdirSync(cssDir).find((f) => /^styles-.*\.css$/.test(f)) : null;
+      // 去掉 @import（Google Fonts），避免外部請求（R19）
+      let css = distCss ? fs.readFileSync(path.join(cssDir, distCss), "utf8").replace(/@import\s*(?:url\()?\s*(?:"[^"]*"|'[^']*'|[^)"';]*)\s*\)?[^;]*;/g, "") : "";
+      const needed = [".py-1{", ".mt-1{", ".mt-2{", ".pb-1{", ".px-1{", ".-mx-1{", ".ring-2{", ".overflow-x-auto{"];
+      const cssSource = distCss && needed.every((n) => css.includes(n)) ? "dist/client/assets/" + distCss : "fallback";
+      if (cssSource === "fallback") {
+        css = ".flex{display:flex}.flex-col{flex-direction:column}.items-center{align-items:center}.shrink-0{flex-shrink:0}.gap-1{gap:.25rem}.gap-2{gap:.5rem}" +
+          ".overflow-x-auto{overflow-x:auto}.-mx-1{margin-inline:-.25rem}.mt-1{margin-top:.25rem}.mt-2{margin-top:.5rem}.mt-5{margin-top:1.25rem}" +
+          ".px-1{padding-inline:.25rem}.py-1{padding-block:.25rem}.pb-1{padding-bottom:.25rem}.p-0\\.5{padding:.125rem}.w-16{width:4rem}.h-10{height:2.5rem}.w-10{width:2.5rem}" +
+          ".ring-2{box-shadow:0 0 0 2px var(--rc,currentcolor)}.ring-transparent{--rc:transparent}";
+      }
+      info("R3p 使用 CSS：" + cssSource);
+      await mount({ rows: [] });
+      await openAdd();
+      const geo = await evaluate(`(function(css,label){
+        const st=document.createElement('style');st.id='r3p-css';st.textContent=css;document.head.appendChild(st);
+        const g=Array.prototype.slice.call(document.querySelectorAll('[role=dialog] [role=radiogroup]')).find(function(x){return x.getAttribute('aria-label')===label;});
+        if(!g){st.remove();return {missing:true};}
+        const fs=g.closest('fieldset');const lg=fs&&fs.querySelector('legend');
+        const measure=function(){const gr=g.getBoundingClientRect();const cs=getComputedStyle(g);
+          const act=g.querySelector('button[aria-checked=true] > span');const ar=act?act.getBoundingClientRect():null;
+          const first=g.querySelector('button[role=radio] > span').getBoundingClientRect();
+          const next=fs.nextElementSibling;
+          return {cls:g.className,overflowX:cs.overflowX,overflowY:cs.overflowY,padTop:cs.paddingTop,padBottom:cs.paddingBottom,
+            activeRing:act?/\\bring-2\\b/.test(act.className):null,activeCount:g.querySelectorAll('button[aria-checked=true]').length,
+            ringTopGap:ar?(ar.top-2)-gr.top:null,ringBottomGap:ar?gr.bottom-(ar.bottom+2):null,ringLeftGap:(first.left-2)-gr.left,
+            legendToAvatar:ar&&lg?ar.top-lg.getBoundingClientRect().bottom:null,fieldsetH:fs.getBoundingClientRect().height,
+            groupH:gr.height,nextTop:next?next.getBoundingClientRect().top-fs.getBoundingClientRect().top:null};};
+        const now=measure();
+        const orig=g.className;g.className=orig.replace(/\\bmt-1\\b/,'mt-2').replace(/\\bpy-1\\b/,'pb-1');const old=measure();g.className=orig;
+        st.remove();return {now:now,old:old};})(${JSON.stringify(css)},${JSON.stringify(Z.payerLabel)})`);
+      info("R3p 量測：" + JSON.stringify(geo));
+      await check("R3p 誰先付款頭像列：選中頭像 ring-2 外框上下左右都在捲動容器 padding 內（不被裁切）；與舊 className（mt-2 pb-1）相比標題到頭像距離與整體高度不變", () => {
+        assert.ok(!geo.missing, "找不到「誰先付款」radiogroup");
+        const { now, old } = geo;
+        assert.match(now.cls, /\boverflow-x-auto\b/);
+        assert.equal(now.overflowX, "auto");
+        assert.notEqual(now.overflowY, "visible", "overflow-x:auto 會讓 y 方向也裁切（前提）");
+        assert.equal(now.activeCount, 1, "新增時應預設選中一位付款人");
+        assert.equal(now.activeRing, true, "選中頭像應有 ring-2");
+        assert.equal(now.padTop, "4px");
+        assert.equal(now.padBottom, "4px");
+        assert.ok(now.ringTopGap >= 0, "ring 頂端被裁切 " + now.ringTopGap + "px");
+        assert.ok(now.ringBottomGap >= 0, "ring 底端被裁切 " + now.ringBottomGap + "px");
+        assert.ok(now.ringLeftGap >= 0, "第一個頭像 ring 左側被裁切 " + now.ringLeftGap + "px");
+        // 敏感度：舊 className 下確實會裁切（證明本斷言能抓到原 bug）
+        assert.ok(old.ringTopGap < 0, "舊 className 應會裁切頂端，實得 " + old.ringTopGap);
+        assert.equal(Math.round(now.legendToAvatar), Math.round(old.legendToAvatar), "標題到頭像距離改變");
+        assert.equal(Math.round(now.fieldsetH), Math.round(old.fieldsetH), "fieldset 高度改變");
+        assert.equal(Math.round(now.nextTop ?? 0), Math.round(old.nextTop ?? 0), "下方元素位置改變");
       });
     }
 
@@ -1931,6 +2060,18 @@ async function runBrowser() {
         }
         assert.ok(s.text.includes(COPY.en.tabExpenses) && s.text.includes(COPY.en.deletedUser), s.text);
       });
+    }
+
+    // ═══ R21 標題列吸頂蓋住狀態列（#TS-UX3）═══
+    {
+      const rows = Array.from({ length: 24 }, (_, i) =>
+        row({ title: "項目" + i, amount: 1000 + i, date: `2026-11-${String(1 + (i % 20)).padStart(2, "0")}`, payers: [[A, 1000 + i]], shares: [[A, 1000 + i]] }),
+      );
+      await mount({ rows });
+      const cssInfo = headerGeoCss();
+      const res = await evaluate(`(${HEADER_GEO_FN})(${JSON.stringify(cssInfo.css)},${JSON.stringify(HEADER_OLD_CLASS)},${JSON.stringify(HEADER_CASES)})`);
+      await headerGeoChecks("R21", "共同記帳", res, cssInfo);
+      await ev("unmountAll");
     }
 
     // ═══ R20 TripDetailScreen 捲動還原 ═══

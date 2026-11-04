@@ -20,7 +20,7 @@
 //   L1G（#L1-T2）地圖詳情「聊這個地點」在行程生成鎖住時不帶入聊聊（附未鎖對照）
 //   - @tanstack/react-router／@tanstack/react-start、supabase、use-i18n（真實 translate）、use-access／use-avatar／use-add-to-trip
 //
-// 「修改前」對照（非 Duo 回歸）：BEFORE build＝HEAD 版 _app.map.tsx 與 map-search-keyboard.ts（git show，整檔差異皆屬本任務）、
+// 「修改前」對照（非 Duo 回歸）：BEFORE build＝aa2db59（PRE_FEATURE_BASE，原為 HEAD）版 _app.map.tsx 與 map-search-keyboard.ts（git show，整檔差異皆屬本任務）、
 //   map-visible-padding.ts 移除 duo-flat-portrait 判斷；CSS 移除含 duo-flat-portrait／duo-map-kb-anim／duo-map-detail-page 的規則。
 //
 // 執行：node scripts/verify-duo-explore-keyboard-flat.mjs（不讀 .env、不連網；瀏覽器只連 127.0.0.1）
@@ -38,6 +38,9 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => fs.readFileSync(path.join(root, p), "utf8");
 const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+// #TS-BASE：功能 commit（943a047…）之前的基準 commit。A4「既有行只增不刪」與 B0 的 BEFORE build 以此為「修改前」
+//   （功能已 commit 進 HEAD，HEAD 不再是修改前；日後基準前移時只改這一行）。
+const PRE_FEATURE_BASE = "aa2db59";
 const failures = [];
 const infos = [];
 async function check(name, fn) {
@@ -142,10 +145,13 @@ await check("A3 新規則位置：@layer 外（深度 0）、在探索段落或 
   assert.ok(top.filter((r) => r.open > placeStart).every((r) => /place-duo/.test(r.sel)), "地點詳情雙頁區塊後有其他規則");
 });
 
+// #TS-BASE：原本以 session scratchpad 的 c1-styles-before.css 快照（工作區修改前）為準；該快照不在版本控制中、session 結束即消失，
+//   且功能已 commit 進 HEAD。改以功能 commit 前基準 PRE_FEATURE_BASE 的 styles.css 為「修改前」：其每一行（依序）都必須仍在
+//   目前檔案中（子序列），任何刪除／改寫既有行都會失敗；另外要求目前檔案確實比基準多出行（避免基準＝目前時空洞通過）。
+//   若舊快照仍存在，額外以快照檢查一次（較新的中間狀態，鑑別力不低於原斷言）。
 const SNAP = "/private/tmp/claude-501/-Users-shuo-Roamie-clean/d9b631dd-21d6-4a75-977d-bd61a9060b39/scratchpad/c1-styles-before.css";
-await check("A4 原始快照 c1-styles-before.css 的既有行只增不刪（快照行序列為目前檔案的子序列）", () => {
-  assert.ok(fs.existsSync(SNAP), "快照不存在：" + SNAP);
-  const before = fs.readFileSync(SNAP, "utf8").split("\n");
+const missingLines = (beforeText) => {
+  const before = beforeText.split("\n");
   const cur = styles.split("\n");
   let j = 0;
   const missing = [];
@@ -155,7 +161,17 @@ await check("A4 原始快照 c1-styles-before.css 的既有行只增不刪（快
     if (k === cur.length) missing.push(i + 1 + ": " + before[i]);
     else j = k + 1;
   }
-  assert.deepEqual(missing.slice(0, 5), [], "快照行被刪除或改動（共 " + missing.length + " 行）");
+  return missing;
+};
+await check(`A4 ${PRE_FEATURE_BASE} 版 styles.css 的既有行只增不刪（基準行序列為目前檔案的子序列）`, () => {
+  const baseText = git("show", PRE_FEATURE_BASE + ":src/styles.css");
+  assert.ok(styles.split("\n").length > baseText.split("\n").length, `目前 styles.css 未比 ${PRE_FEATURE_BASE} 多出任何行`);
+  const missing = missingLines(baseText);
+  assert.deepEqual(missing.slice(0, 5), [], `${PRE_FEATURE_BASE} 的既有行被刪除或改動（共 ${missing.length} 行）`);
+  if (fs.existsSync(SNAP)) {
+    const snapMissing = missingLines(fs.readFileSync(SNAP, "utf8"));
+    assert.deepEqual(snapMissing.slice(0, 5), [], "快照行被刪除或改動（共 " + snapMissing.length + " 行）");
+  } else info("A4：舊快照 c1-styles-before.css 不存在，只以 " + PRE_FEATURE_BASE + " 為基準");
 });
 
 await check("A5 .map-stage 取消 isolation／translateZ 只在 html.duo-laptop／html.duo-flat-portrait＋map-route-active 下生效", () => {
@@ -436,9 +452,12 @@ export function triggerMapResize(){window.__map.resizes++;}`,
   };
   const mockDir = {};
 
-  // HEAD 版（BEFORE build）
-  const headMap = git("show", "HEAD:src/routes/_app.map.tsx");
-  const headKb = git("show", "HEAD:src/lib/map-search-keyboard.ts");
+  // 修改前版（BEFORE build）。#TS-BASE：原為 HEAD 版；功能 commit 後 HEAD＝目前版，BEFORE 會與 cur 相同而使 B0 失去意義，
+  //   改用功能 commit 前基準 PRE_FEATURE_BASE。
+  const headMap = git("show", PRE_FEATURE_BASE + ":src/routes/_app.map.tsx");
+  const headKb = git("show", PRE_FEATURE_BASE + ":src/lib/map-search-keyboard.ts");
+  assert.notEqual(headMap, read("src/routes/_app.map.tsx"), `BEFORE _app.map.tsx 與目前相同（${PRE_FEATURE_BASE} 不是修改前版本？）`);
+  assert.notEqual(headKb, read("src/lib/map-search-keyboard.ts"), `BEFORE map-search-keyboard.ts 與目前相同（${PRE_FEATURE_BASE} 不是修改前版本？）`);
   const padCur = read("src/lib/map-visible-padding.ts");
   const padBefore = padCur.replace(/\(cl\.contains\("duo-laptop"\) \|\| cl\.contains\("duo-flat-portrait"\)\)/, 'cl.contains("duo-laptop")');
   assert.notEqual(padBefore, padCur, "BEFORE padding 改寫失敗");

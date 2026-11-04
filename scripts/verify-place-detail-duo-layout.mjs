@@ -6,6 +6,7 @@
 //   A3 PlaceDetailSheet diff（忽略空白）只新增 SplitGroup／routeSplitLayout，其他行未改動；
 //      SplitGroup 停用時只輸出 children（Fragment）。
 //   A4 探索頁（_app.map.tsx）沒有傳 routeSplitLayout，_app.map.tsx 本身未改動。
+//   （#TS-BASE：本檔所有「HEAD」「diff」均指相對功能 commit 前基準 aa2db59＝PRE_FEATURE_BASE）
 //   A5 _app.place.tsx：單欄時 className 字串與 HEAD 完全相同；fetchError 判斷抽取後與原條件相同；
 //      雙頁開合只改 className（同一 JSX 樹）。
 // Part B（真實瀏覽器，真實 PlaceDetailSheet + 以目前 styles.css 編譯的 Tailwind CSS）：
@@ -27,6 +28,12 @@ import { spawn, execFileSync } from "node:child_process";
 const root = process.cwd();
 const read = (p) => fs.readFileSync(path.join(root, p), "utf8");
 const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
+// #TS-BASE：功能 commit（943a047…）之前的基準 commit。功能已 commit 進 HEAD 後，「工作區 diff」為空、「HEAD 版＝改動前」不成立，
+//   A2–A5 與 B1 的「改動前（下文沿用 HEAD 稱呼）」一律以此基準為準（日後基準前移時只改這一行）。
+const PRE_FEATURE_BASE = "aa2db59";
+// 工作區相對基準的 diff；為空表示功能不存在，各斷言另以「必須有預期的新增」防止空洞通過
+const diffVsBase = (...args) => git("diff", ...args.slice(0, -1), PRE_FEATURE_BASE, "--", args[args.length - 1]);
+const showBase = (p) => git("show", PRE_FEATURE_BASE + ":" + p);
 const failures = [];
 const check = (name, fn) => {
   try {
@@ -79,18 +86,21 @@ check("A6 anchor positioning 只在 duo-two-pane 的 .place-duo-root 規則內�
 });
 
 check("A2 styles.css 中 place-duo／place-split 相關行只有新增", () => {
-  const diff = git("diff", "-U0", "--", "src/styles.css");
-  const removed = diff
-    .split("\n")
+  const diff = diffVsBase("-U0", "src/styles.css");
+  const lines = diff.split("\n");
+  const removed = lines
     .filter((l) => l.startsWith("-") && !l.startsWith("---"))
     .filter((l) => /place-|data-place-detail-hero/.test(l));
   assert.deepEqual(removed, [], "有刪除／修改既有 place 規則");
-  const head = git("show", "HEAD:src/styles.css");
-  assert.ok(!/place-duo|place-split/.test(head), "HEAD 已有 place-duo 規則？");
+  // #TS-BASE：diff 必須確實含有新增的 place-duo 行（避免基準＝目前時空洞通過）
+  assert.ok(lines.some((l) => l.startsWith("+") && !l.startsWith("+++") && /place-duo/.test(l)), `相對 ${PRE_FEATURE_BASE} 沒有新增任何 place-duo 行`);
+  const head = showBase("src/styles.css");
+  assert.ok(!/place-duo|place-split/.test(head), `${PRE_FEATURE_BASE} 已有 place-duo 規則？`);
 });
 
 check("A3 PlaceDetailSheet 只新增 SplitGroup 包裹層，其他內容（忽略縮排）不變", () => {
-  const diff = git("diff", "-w", "-U0", "--", "src/components/map/PlaceDetailSheet.tsx");
+  // #TS-BASE：工作區 vs PRE_FEATURE_BASE（下方 removed 必須恰為 import 一行、SplitGroup 開閉各 4 個，diff 為空會失敗）
+  const diff = diffVsBase("-w", "-U0", "src/components/map/PlaceDetailSheet.tsx");
   const lines = diff
     .split("\n")
     .filter((l) => /^[+-]/.test(l) && !/^(\+\+\+|---)/.test(l));
@@ -142,7 +152,7 @@ check("A4 探索頁未傳 routeSplitLayout，_app.map.tsx 除 #H3-1 詳情一頁
   assert.equal(rest.split(L1_IMPORT).length, 2, "#L1 import 應恰好一次");
   assert.equal(rest.split("  const openInChat = (p: MapPlaceCard) => {\n" + L1_GUARD).length, 2, "#L1 守門行應恰好一次且位於 openInChat 開頭");
   rest = rest.replace(L1_IMPORT, "").replace(L1_GUARD, "");
-  assert.equal(rest, git("show", "HEAD:src/routes/_app.map.tsx"), "_app.map.tsx 有 #H3-1／#L1 段落以外的變更");
+  assert.equal(rest, showBase("src/routes/_app.map.tsx"), `_app.map.tsx 有 #H3-1／#L1 段落以外的變更（對 ${PRE_FEATURE_BASE}）`);
   const others = execFileSync("git", ["grep", "-l", "routeSplitLayout", "--", "src"], {
     cwd: root,
     encoding: "utf8",
@@ -156,7 +166,7 @@ check("A4 探索頁未傳 routeSplitLayout，_app.map.tsx 除 #H3-1 詳情一頁
 
 check("A5 _app.place.tsx 單欄 className 與 HEAD 相同、fetchError 條件等價、開合同一 JSX 樹", () => {
   const cur = read("src/routes/_app.place.tsx");
-  const head = git("show", "HEAD:src/routes/_app.place.tsx");
+  const head = showBase("src/routes/_app.place.tsx");
   const headClasses = [...head.matchAll(/className="(place-detail-route[^"]*|flex flex-1 flex-col items-center justify-center gap-4 px-8 py-20 text-center)"/g)].map(
     (m) => m[1],
   );
@@ -182,10 +192,12 @@ check("A5 _app.place.tsx 單欄 className 與 HEAD 相同、fetchError 條件等
   // routeSplitLayout 為常數 true
   assert.match(cur, /ticketOffers=\{placeTicketOffers\}\s+routeSplitLayout\s+\/>/);
   // 除了 duo 相關，route diff 沒有其他行為改變
-  const diff = git("diff", "-w", "-U0", "--", "src/routes/_app.place.tsx")
+  const diff = diffVsBase("-w", "-U0", "src/routes/_app.place.tsx")
     .split("\n")
     .filter((l) => /^[+-]/.test(l) && !/^(\+\+\+|---)/.test(l));
   const removed = diff.filter((l) => l.startsWith("-")).map((l) => l.slice(1).trim());
+  // #TS-BASE：相對基準必須確實改寫了 fetchError 條件（否則表示比對對象錯誤、下方 for 迴圈會空洞通過）
+  assert.ok(removed.includes("{fetchError && usedFallback && !place.address && place.lat == null ? ("), `相對 ${PRE_FEATURE_BASE} 找不到 fetchError 條件的改寫`);
   for (const r of removed) {
     assert.ok(
       /^<div className="(place-detail-route|flex flex-1 flex-col items-center)/.test(r) ||
@@ -225,7 +237,9 @@ async function runBrowser() {
   const css = compiler.build(scanner.scan());
   assert.match(css, /\.contents\s*\{\s*display:\s*contents/, "Tailwind 未產生 .contents");
 
-  const headSheet = git("show", "HEAD:src/components/map/PlaceDetailSheet.tsx");
+  // #TS-BASE：改動前版本取自 PRE_FEATURE_BASE（功能 commit 後 HEAD 版＝目前版，B1 會空洞通過）
+  const headSheet = showBase("src/components/map/PlaceDetailSheet.tsx");
+  assert.notEqual(headSheet, read("src/components/map/PlaceDetailSheet.tsx"), `${PRE_FEATURE_BASE} 版 PlaceDetailSheet 與目前相同`);
   const mocks = {
     "@/integrations/supabase/client": `export const isSupabaseConfigured=false;export const supabase={auth:{getSession:async()=>({data:{session:null}})}}`,
     "@/lib/api-url": `export const resolveApiUrl=p=>location.origin+p`,

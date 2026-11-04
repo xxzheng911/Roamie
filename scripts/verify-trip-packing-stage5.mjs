@@ -471,7 +471,9 @@ import {Route as PkRoute} from '@/routes/_app.saved_.$tripId.packing';
 import {getTripPackingCopy} from '@/lib/i18n/trip-workspace-copy';
 import {packingErrorMessage} from '@/components/trip/packing/packing-text';
 import {PACKING_SERVER_ERROR_CODES} from '@/components/trip/packing/packing-model';
+import {packingSuggestionsFor} from '@/components/trip/packing/packing-suggestions';
 import * as RET from '@/components/trip/expenses/expenses-return';
+window.SUGG=function(l,k,names){return packingSuggestionsFor(l,k,names);};
 console.info=()=>{};console.debug=()=>{};console.log=()=>{};console.warn=()=>{};
 const realNow=Date.now.bind(Date);Date.now=()=>realNow()+(window.__clock||0);
 Object.defineProperty(document,'visibilityState',{configurable:true,get:()=>window.__vis||'visible'});
@@ -632,6 +634,16 @@ window.openAdder=function(label){const s=label==null?qa('#root .rounded-2xl').fi
 function adderInput(label){return qa('#root input').find(function(i){return i.getAttribute('aria-label')===fmt(C().addItemLabel,{name:label});})||null;}
 window.typeAdd=function(label,text){const el=adderInput(label);if(!el)return 'missing';flushSync(function(){setVal(el,text);});return 'set';};
 window.adderValue=function(label){const el=adderInput(label);return el?el.value:null;};
+function suggRow(s){const p=qa('p',s).find(function(x){return x.textContent===C().suggestionsLabel;});return p?p.parentElement:null;}
+window.suggs=function(label){const s=sectionOf(label);if(!s)return null;const r=suggRow(s);if(!r)return [];
+  const addBtn=qa('button',s).find(function(x){return x.textContent.trim()===C().addItem;});
+  return qa('button',r).map(function(b){return {name:b.textContent.trim(),aria:b.getAttribute('aria-label'),disabled:b.disabled,busy:b.getAttribute('aria-busy'),
+    beforeAdder:addBtn?!!(b.compareDocumentPosition(addBtn)&Node.DOCUMENT_POSITION_FOLLOWING):null};});};
+window.suggLabelCount=function(){return qa('#root p').filter(function(p){return p.textContent===C().suggestionsLabel;}).length;};
+function suggBtn(label,name){const s=sectionOf(label);return s?qa('button',s).find(function(x){return x.getAttribute('aria-label')===fmt(C().addSuggestionLabel,{item:name,name:label});})||null:null;}
+window.clickSugg=function(label,name){return clickEl(suggBtn(label,name));};
+window.clickSuggTwice=function(label,name){return new Promise(function(res){const b=suggBtn(label,name);if(!b)return res('missing');b.click();setTimeout(function(){b.click();res('ok');},0);});};
+window.srvDeleteCat=function(key){const c=S().cats.find(function(x){return x.trip_id===window.__pk.tripId&&x.default_key===key;});c.deleted_at=txTs();return true;};
 window.pressEnter=function(label,o){const el=adderInput(label);if(!el)return 'missing';o=o||{};const ev=new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true,cancelable:true,isComposing:!!o.composing});
   if(o.keyCode)Object.defineProperty(ev,'keyCode',{get:function(){return o.keyCode;}});flushSync(function(){el.dispatchEvent(ev);});return ev.defaultPrevented?'prevented':'dispatched';};
 window.clickIn=function(scope,text,label){const r=scope==='alert'?alertDlg():scope==='header'?document.querySelector('#root header'):scope==='root'?document.getElementById('root'):sheetWith(scope);if(!r)return 'no-scope';
@@ -733,6 +745,78 @@ window.dstate=function(){const P=getTripPackingCopy('zh-TW');const X=getTripExpe
   ss:(function(){const o={};for(let i=0;i<sessionStorage.length;i++){const k=sessionStorage.key(i);o[k]=sessionStorage.getItem(k);}return o;})(),
   deletes:window.__td.deletes,channels:window.__td.channels,rpc:window.__td.rpc};};
 window.__dready=true;`;
+
+// ── R14 標題列吸頂蓋住狀態列（#TS-UX3）：與 verify-trip-expenses-ui-stage4.mjs R21 同一份量測 ──
+// 套用真實 Tailwind 產出（dist/client/assets/styles-*.css，含 html.duo-rail 規則），main 加上 _app.tsx 的
+// pt-[var(--safe-area-top)]，以 --safe-area-top／html.duo-rail 模擬 iPhone 狀態列與 Duo；同一個 header 換回舊 className
+// （sticky top-0 … bg-background/95 backdrop-blur、無 inline style）量測，比對幾何。
+const HEADER_OLD_CLASS = "sticky top-0 z-20 flex items-center gap-2 border-b border-border bg-background/95 px-3 py-2.5 backdrop-blur";
+const HEADER_CASES = [{ safe: "0px" }, { safe: "47px" }, { safe: "59px" }, { safe: "0px", duo: true }, { safe: "47px", duo: true }];
+const HEADER_EXPECT_PAD = [0, 47, 59, 14, 47];
+function headerGeoCss() {
+  const cssDir = path.join(root, "dist/client/assets");
+  const f = fs.existsSync(cssDir) ? fs.readdirSync(cssDir).find((x) => /^styles-.*\.css$/.test(x)) : null;
+  const css = f ? fs.readFileSync(path.join(cssDir, f), "utf8").replace(/@import\s*(?:url\()?\s*(?:"[^"]*"|'[^']*'|[^)"';]*)\s*\)?[^;]*;/g, "") : "";
+  const need = [".sticky{", ".top-0{", ".z-20{", ".py-2\\.5{", ".border-b{", ".backdrop-blur{", ".pt-\\[var\\(--safe-area-top\\)\\]", "html.duo-rail main.app-scroll", "--duo-app-top:"];
+  return { css, source: f ? "dist/client/assets/" + f : null, missing: need.filter((n) => !css.includes(n)) };
+}
+const HEADER_GEO_FN = String.raw`async function(css,oldCls,cases){
+  const st=document.createElement('style');st.id='hdr-geo-css';st.textContent=css;document.head.appendChild(st);
+  const html=document.documentElement;const main=document.querySelector('main.app-scroll');const PT='pt-[var(--safe-area-top)]';main.classList.add(PT);
+  const h=document.querySelector('#root header');const t=h.querySelector('h1');
+  const frame=function(){return new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(r);});});};
+  const alpha=function(c){c=String(c);if(c==='transparent')return 0;let m=c.match(/\/\s*([\d.]+)(%?)\s*\)$/);if(m)return m[2]?parseFloat(m[1])/100:parseFloat(m[1]);m=c.match(/^rgba\((?:[^,]+,){3}\s*([\d.]+)\)$/);return m?parseFloat(m[1]):1;};
+  const measure=async function(){const out={};for(const s of [0,400]){main.scrollTop=s;await frame();
+    const mr=main.getBoundingClientRect();const hr=h.getBoundingClientRect();const tr=t.getBoundingClientRect();const pad=parseFloat(getComputedStyle(main).paddingTop);const nx=h.nextElementSibling;
+    const ys=pad>0?[1,Math.floor(pad/2),Math.max(1,Math.ceil(pad)-1)]:[];const cs=getComputedStyle(h);
+    out[s]={scrollTop:main.scrollTop,pad:pad,hTop:hr.top-mr.top,hBottom:hr.bottom-mr.top,titleTop:tr.top-mr.top,nextTop:nx?nx.getBoundingClientRect().top-mr.top+main.scrollTop:null,
+      covered:ys.map(function(y){const e=document.elementFromPoint(mr.left+mr.width/2,mr.top+y);return !!e&&h.contains(e);}),bg:cs.backgroundColor,bgAlpha:alpha(cs.backgroundColor),position:cs.position};}
+    main.scrollTop=0;await frame();return out;};
+  const res=[];
+  for(const c of cases){html.style.setProperty('--safe-area-top',c.safe);html.classList.toggle('duo-rail',!!c.duo);await frame();
+    const now=await measure();const oc=h.className;const os=h.getAttribute('style');h.className=oldCls;h.removeAttribute('style');const old=await measure();h.className=oc;if(os!=null)h.setAttribute('style',os);
+    res.push({c:c,now:now,old:old,scrollMax:main.scrollHeight-main.clientHeight,style:os});}
+  html.style.removeProperty('--safe-area-top');html.classList.remove('duo-rail');main.classList.remove(PT);st.remove();return res;}`;
+async function headerGeoChecks(tag, page, res, cssInfo) {
+  const r1 = (x) => Math.round(x * 10) / 10;
+  info(`${tag} CSS：${cssInfo.source ?? "（無 dist CSS）"}${cssInfo.missing.length ? "；缺少 " + cssInfo.missing.join(" ") : ""}`);
+  for (const x of res) {
+    const pick = (m) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k, { hTop: r1(v.hTop), hBottom: r1(v.hBottom), title: r1(v.titleTop), next: v.nextTop == null ? null : r1(v.nextTop), covered: v.covered, bg: v.bg }]));
+    info(`${tag} ${JSON.stringify(x.c)} pad=${x.now[0].pad} scrollMax=${x.scrollMax} 新：${JSON.stringify(pick(x.now))} 舊：${JSON.stringify(pick(x.old))}`);
+  }
+  await check(`${tag} ${page}標題列：量測前提（真實 CSS 可用、position sticky、可捲動 ≥ 400px、main 上內距＝0／47／59／Duo 14／Duo 47）`, () => {
+    assert.deepEqual(cssInfo.missing, [], "缺少真實 CSS");
+    res.forEach((x, i) => {
+      assert.equal(x.now[0].position, "sticky");
+      assert.ok(x.scrollMax >= 400, "內容不足以捲動 400px：" + x.scrollMax);
+      assert.equal(x.now[400].scrollTop, 400);
+      assert.equal(x.now[0].pad, HEADER_EXPECT_PAD[i], JSON.stringify(x.c));
+    });
+  });
+  const web = res[0];
+  await check(`${tag} ${page}網頁版（safe-area 0、非 Duo）：捲動前後 header 上下緣、標題文字、下一個區塊位置與修改前完全相同`, () => {
+    for (const s of [0, 400]) {
+      for (const k of ["hTop", "hBottom", "titleTop", "nextTop"]) assert.ok(Math.abs(web.now[s][k] - web.old[s][k]) < 0.5, `scroll ${s} ${k}：新 ${web.now[s][k]} 舊 ${web.old[s][k]}`);
+    }
+  });
+  for (let i = 1; i < res.length; i++) {
+    const x = res[i];
+    const pad = HEADER_EXPECT_PAD[i];
+    const label = (x.c.duo ? "Duo（--duo-app-top）" : "iPhone") + " safe-area-top " + x.c.safe;
+    await check(`${tag} ${page}${label}：未捲動時標題文字／header 下緣／下一個區塊位置與修改前相同、header 背景延伸到頂端；捲動 400px 後 header 貼齊捲動容器頂端、標題文字不動、狀態列區（0～${pad}px）全被不透明 header 蓋住（修改前會露出內容）`, () => {
+      const n0 = x.now[0], n4 = x.now[400], o0 = x.old[0], o4 = x.old[400];
+      assert.ok(Math.abs(n0.titleTop - o0.titleTop) < 0.5, `標題位置改變：新 ${n0.titleTop} 舊 ${o0.titleTop}`);
+      assert.ok(Math.abs(n0.hBottom - o0.hBottom) < 0.5, `header 下緣改變：新 ${n0.hBottom} 舊 ${o0.hBottom}`);
+      assert.ok(Math.abs(n0.nextTop - o0.nextTop) < 0.5, `下一個區塊位置改變：新 ${n0.nextTop} 舊 ${o0.nextTop}`);
+      assert.ok(Math.abs(n0.hTop) < 0.5, "未捲動時 header 未延伸到頂端：" + n0.hTop);
+      assert.ok(Math.abs(n4.hTop) < 0.5, "捲動後 header 未貼齊捲動容器頂端：" + n4.hTop);
+      assert.ok(Math.abs(n4.titleTop - n0.titleTop) < 0.5, `捲動後標題文字移動：${n0.titleTop} → ${n4.titleTop}`);
+      assert.ok(n4.covered.length > 0 && n4.covered.every(Boolean), "狀態列區有點未被 header 蓋住：" + JSON.stringify(n4.covered));
+      assert.equal(n4.bgAlpha, 1, "header 背景非不透明：" + n4.bg);
+      assert.ok(o4.covered.some((c) => !c), "敏感度：舊 className 捲動後應會露出狀態列區內容，實得 " + JSON.stringify(o4.covered));
+    });
+  }
+}
 
 if (!chromeBin) {
   failures.push("R 無可用 Chrome");
@@ -1052,6 +1136,281 @@ async function runBrowser() {
       });
       await check("R3f 連續新增：送出中已輸入的下一個物品名稱，在前一筆成功後不得被清掉", () => {
         assert.equal(after, "口罩", "前一筆成功後把正在輸入的「口罩」清空為 " + JSON.stringify(after));
+      });
+    }
+
+    // ═══ SG 建議物品標籤（#TS-PACK）═══
+    const LOCS = ["zh-TW", "en", "ja", "ko"];
+    const DKEY_COPY = { clothing: "defaultClothing", toiletries: "defaultToiletries", electronics: "defaultElectronics", documents: "defaultDocuments", medicine: "defaultMedicine", other: "defaultOther" };
+    const DKEY_LIST = Object.keys(DKEY_COPY);
+    const UUID4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    const sugg = (l, k, names = []) => evaluate(`window.SUGG(${JSON.stringify(l)},${JSON.stringify(k)},${JSON.stringify(names)})`);
+    const sgIns = (s) => writes(s).filter((w) => w.op === "insert" && w.t === "packing_items");
+    {
+      await mount({ seed: { ...STD, cats: [{ name: "相機", icon: "Camera", sort: 6 }], items: [...STD.items, { cat: "相機", name: "記憶卡" }] } });
+      const s = await st();
+      const rows = {};
+      for (const k of DKEY_LIST) rows[k] = await ev("suggs", Z[DKEY_COPY[k]]);
+      const custom = await ev("suggs", "相機");
+      const exp = {};
+      for (const k of DKEY_LIST) exp[k] = await sugg("zh-TW", k, s.cats.find((c) => c.label === Z[DKEY_COPY[k]]).items.map((i) => i.name));
+      await check("SG1 六個預設分類展開後在「新增物品」上方顯示建議標籤（已有同名者不顯示）；自訂分類不顯示；aria-label 依 addSuggestionLabel", () => {
+        for (const k of DKEY_LIST) {
+          assert.ok(Array.isArray(rows[k]) && rows[k].length > 0, k + " 沒有建議列");
+          assert.deepEqual(rows[k].map((b) => b.name), exp[k], k);
+          for (const b of rows[k]) {
+            assert.equal(b.beforeAdder, true, k + " 建議不在「新增物品」上方");
+            assert.equal(b.aria, fmt(Z.addSuggestionLabel, { item: b.name, name: Z[DKEY_COPY[k]] }));
+            assert.equal(b.disabled, false);
+          }
+        }
+        assert.deepEqual(rows.clothing.map((b) => b.name), ["上衣", "褲子", "內衣褲", "睡衣", "外套"], "衣物應排除已有的「襪子」");
+        assert.ok(!rows.toiletries.some((b) => b.name === "牙刷"));
+        assert.ok(!rows.electronics.some((b) => b.name === "充電器"));
+        assert.ok(!rows.other.some((b) => b.name === "雨傘"));
+        assert.equal(rows.documents.length, 6);
+        assert.deepEqual(custom, [], "自訂分類不應顯示建議");
+        assert.equal(s.cats.find((c) => c.label === "相機").items.length, 1);
+        assert.equal(writes(s).length, 0, "只是顯示建議不應寫入");
+      });
+      await ev("toggleSection", "證件");
+      await sleep(30);
+      const collapsed = await ev("suggs", "證件");
+      await check("SG1b 分類摺疊時不顯示建議", () => assert.deepEqual(collapsed, []));
+    }
+    {
+      await mount({ seed: { defaults: true, deleteKeys: DKEY_LIST } });
+      const n = await ev("suggLabelCount");
+      const s = await st();
+      await check("SG2 沒有任何分類的空狀態：不顯示建議", () => {
+        assert.equal(s.cats.length, 0);
+        assert.ok(s.text.includes(Z.emptyTitle));
+        assert.equal(n, 0);
+      });
+    }
+    {
+      // 點標籤：送出中停用＋連點只送一次；成功後標籤消失、物品出現
+      await mount({ seed: STD, plan: { "insert:packing_items": ["defer"] } });
+      const r1 = await ev("clickSugg", "證件", "護照");
+      await sleep(30);
+      const mid = await ev("suggs", "證件");
+      await ev("clickSuggTwice", "證件", "護照");
+      const r3 = await ev("clickSugg", "證件", "護照");
+      await sleep(30);
+      const sMid = await st();
+      await ev("release", 0);
+      await sleep(120);
+      const s = await st();
+      const after = await ev("suggs", "證件");
+      const docId = s.srvCats.find((c) => c.key === "documents").id;
+      await check("SG3 點標籤：createPackingItem（insert）只 1 次，帶正確 category_id／名稱／quantity 1／note null／uuid v4 client_request_id；送出中標籤停用、連點不重送；成功後標籤消失、物品加入該分類", () => {
+        assert.equal(r1, "clicked");
+        const busy = mid.find((b) => b.name === "護照");
+        assert.ok(busy && busy.disabled && busy.busy === "true", "送出中標籤未停用：" + JSON.stringify(busy));
+        assert.equal(r3, "disabled");
+        assert.equal(sgIns(sMid).length, 1, "送出中連點重送：" + sgIns(sMid).length);
+        assert.equal(sgIns(s).length, 1);
+        const p = sgIns(s)[0].payload;
+        assert.deepEqual(Object.keys(p).sort(), ["category_id", "client_request_id", "name", "note", "quantity", "sort_index", "trip_id"]);
+        assert.equal(p.category_id, docId);
+        assert.equal(p.name, "護照");
+        assert.equal(p.quantity, 1);
+        assert.equal(p.note, null);
+        assert.equal(p.sort_index, 0);
+        assert.match(p.client_request_id, UUID4);
+        assert.equal(s.srvItems.filter((i) => i.name === "護照").length, 1);
+        assert.ok(!after.some((b) => b.name === "護照"), "成功後標籤仍在");
+        assert.equal(after.length, 5);
+        assert.deepEqual(s.cats.find((c) => c.label === "證件").items.map((i) => i.name), ["護照"]);
+        assert.equal(s.progress, "已打包 2 / 6");
+        assert.deepEqual(s.violations, []);
+        assert.equal(s.toasts.filter((t) => t.kind === "error").length, 0);
+      });
+      // 接著點同分類另一個標籤：sort_index 接在後面
+      await ev("clickSugg", "證件", "身分證");
+      await sleep(120);
+      const s2 = await st();
+      await check("SG3b 同分類再點下一個標籤：新的 client_request_id、sort_index 接在最後", () => {
+        const ins = sgIns(s2);
+        assert.equal(ins.length, 2);
+        assert.notEqual(ins[1].payload.client_request_id, ins[0].payload.client_request_id);
+        assert.equal(ins[1].payload.sort_index, 1);
+        assert.deepEqual(s2.cats.find((c) => c.label === "證件").items.map((i) => i.name), ["護照", "身分證"]);
+      });
+    }
+    {
+      // 兩個不同標籤同時送出（不同 key 不互鎖）：記錄 sort_index 是否重複
+      await mount({ seed: STD, plan: { "insert:packing_items": ["defer", "defer"] } });
+      await ev("clickSugg", "藥品", "感冒藥");
+      await ev("clickSugg", "藥品", "腸胃藥");
+      await sleep(30);
+      await ev("release", 0);
+      await ev("release", 1);
+      await sleep(150);
+      const s = await st();
+      const ins = sgIns(s);
+      info("SG3c 同分類兩個標籤同時送出：insert " + ins.length + " 次，sort_index " + JSON.stringify(ins.map((w) => w.payload.sort_index)) + "，畫面 " + JSON.stringify(s.cats.find((c) => c.label === "藥品").items.map((i) => i.name)));
+      await check("SG3c 同分類兩個不同標籤同時送出：兩筆都建立、各 1 次、不同 client_request_id、畫面兩筆都出現", () => {
+        assert.equal(ins.length, 2);
+        assert.notEqual(ins[0].payload.client_request_id, ins[1].payload.client_request_id);
+        assert.deepEqual(s.cats.find((c) => c.label === "藥品").items.map((i) => i.name).sort(), ["感冒藥", "腸胃藥"].sort());
+        assert.equal(s.srvItems.filter((i) => i.name === "感冒藥" || i.name === "腸胃藥").length, 2);
+      });
+    }
+    {
+      // 網路失敗 → 重試沿用同一 client_request_id
+      await mount({ seed: STD, plan: { "insert:packing_items": ["network"] } });
+      await ev("clickSugg", "藥品", "止痛藥");
+      await sleep(100);
+      const sFail = await st();
+      const rowFail = await ev("suggs", "藥品");
+      await ev("clickSugg", "藥品", "止痛藥");
+      await sleep(120);
+      const sOk = await st();
+      const rowOk = await ev("suggs", "藥品");
+      await check("SG4a 失敗：提示網路錯誤、標籤保留且可再點；重試沿用同一 client_request_id，成功後伺服器 1 筆、標籤消失", () => {
+        assert.ok(sFail.toasts.some((t) => t.kind === "error" && t.m === Z.errorNetwork), JSON.stringify(sFail.toasts));
+        const b = rowFail.find((x) => x.name === "止痛藥");
+        assert.ok(b && !b.disabled && b.busy == null, "失敗後標籤應保留且可點：" + JSON.stringify(b));
+        const ins = sgIns(sOk);
+        assert.equal(ins.length, 2);
+        assert.equal(ins[1].payload.client_request_id, ins[0].payload.client_request_id, "重試未沿用 client_request_id");
+        assert.equal(sOk.srvItems.filter((i) => i.name === "止痛藥").length, 1);
+        assert.ok(!rowOk.some((x) => x.name === "止痛藥"));
+      });
+    }
+    {
+      // 回應遺失（伺服器已建立）→ 重試 23505 查回原列，不重複
+      await mount({ seed: STD, plan: { "insert:packing_items": ["apply-then-network"] } });
+      await ev("clickSugg", "藥品", "止痛藥");
+      await sleep(100);
+      await ev("clickSugg", "藥品", "止痛藥");
+      await sleep(150);
+      const s = await st();
+      const row = await ev("suggs", "藥品");
+      await check("SG4b 回應遺失後重試：同一 client_request_id → 23505 查回原列；伺服器只有 1 筆、畫面 1 筆、標籤消失、只有第一次的錯誤提示", () => {
+        const ins = sgIns(s);
+        assert.equal(ins.length, 2);
+        assert.equal(ins[1].payload.client_request_id, ins[0].payload.client_request_id);
+        assert.equal(s.srvItems.filter((i) => i.name === "止痛藥").length, 1, "重複建立");
+        assert.deepEqual(s.cats.find((c) => c.label === "藥品").items.map((i) => i.name), ["止痛藥"]);
+        assert.ok(!row.some((x) => x.name === "止痛藥"));
+        assert.equal(s.toasts.filter((t) => t.kind === "error").length, 1);
+      });
+    }
+    {
+      // 回應遺失 → 回前景重讀已帶回該物品 → 使用者刪除該物品 → 標籤重新出現 → 再點應能新增
+      await mount({ seed: STD, plan: { "insert:packing_items": ["apply-then-network"] } });
+      await ev("clickSugg", "藥品", "止痛藥");
+      await sleep(100);
+      await evaluate("window.__clock=31000");
+      await ev("visible", "visible");
+      await sleep(150);
+      const sReload = await st();
+      await ev("openItem", "止痛藥");
+      await sleep(60);
+      await ev("clickIn", Z.itemSheetTitle, Z.delete);
+      await sleep(150);
+      const rowBack = await ev("suggs", "藥品");
+      await ev("clickSugg", "藥品", "止痛藥");
+      await sleep(150);
+      const sFirst = await st();
+      if (!sFirst.srvItems.some((i) => i.name === "止痛藥" && !i.deleted)) {
+        // 使用者看到失敗再點一次（證明不是暫時性）
+        await ev("clickSugg", "藥品", "止痛藥");
+        await sleep(150);
+      }
+      const s = await st();
+      const ins = sgIns(s);
+      info("SG4c 再點時 insert client_request_id：" + JSON.stringify(ins.map((w) => w.payload.client_request_id)) + "；錯誤提示：" + JSON.stringify(s.toasts.filter((t) => t.kind === "error").map((t) => t.m)));
+      await check("SG4c 回應遺失後經重讀已出現、再被使用者刪除：標籤重新出現，再點應建立新物品（不得永遠卡在 23505 重複）", () => {
+        assert.deepEqual(sReload.cats.find((c) => c.label === "藥品").items.map((i) => i.name), ["止痛藥"], "重讀後應帶回止痛藥");
+        assert.ok(rowBack.some((x) => x.name === "止痛藥"), "刪除後標籤應重新出現");
+        assert.equal(s.srvItems.filter((i) => i.name === "止痛藥" && !i.deleted).length, 1,
+          "再點（含再重試 1 次）後伺服器應有 1 筆未刪除的止痛藥；實際 insert 次數 " + ins.length + "、client_request_id 皆相同＝" + (new Set(ins.map((w) => w.payload.client_request_id)).size === 1));
+        assert.deepEqual(s.cats.find((c) => c.label === "藥品").items.map((i) => i.name), ["止痛藥"]);
+        assert.equal(s.toasts.filter((t) => t.kind === "error").length, 1, "只應有第一次的網路錯誤提示");
+      });
+    }
+    {
+      // 分類已在其他裝置刪除 → 提示並重讀
+      await mount({ seed: STD });
+      await ev("srvDeleteCat", "documents");
+      const before = await st();
+      await ev("clickSugg", "證件", "護照");
+      await sleep(200);
+      const s = await st();
+      const ERRZ = await evaluate("window.ERRMSG['zh-TW']");
+      const window_ERR = (_l, c) => ERRZ[c];
+      await check("SG4d 分類已被刪除：提示「分類已刪除」對應訊息並重新讀取；證件分類與其建議消失", () => {
+        assert.ok(s.toasts.some((t) => t.kind === "error" && t.m === window_ERR("zh-TW", "packing_category_deleted")), JSON.stringify(s.toasts));
+        assert.equal(ensures(s).length, ensures(before).length + 1, "未重新讀取");
+        assert.ok(!s.cats.some((c) => c.label === "證件"));
+        assert.equal(s.srvItems.filter((i) => i.name === "護照").length, 0);
+      });
+    }
+    {
+      // 大小寫／前後空白不同的既有物品 → 不顯示該建議；全部加過 → 整列不顯示
+      await mount({ locale: "en", seed: { defaults: true, items: [
+        { cat: "clothing", name: "  socks " }, { cat: "clothing", name: "TOPS" },
+        { cat: "medicine", name: "cold medicine" }, { cat: "medicine", name: " Stomach Medicine" }, { cat: "medicine", name: "PAINKILLERS  " }, { cat: "medicine", name: "bandages" },
+      ] } });
+      const E = COPY.en;
+      const clothing = await ev("suggs", E.defaultClothing);
+      const medicine = await ev("suggs", E.defaultMedicine);
+      const docs = await ev("suggs", E.defaultDocuments);
+      const labels = await ev("suggLabelCount");
+      await check("SG5 既有物品名稱大小寫／前後空白不同仍視為同名：不顯示；分類全部加過 → 整列（含「Suggestions」標題）不顯示", () => {
+        assert.deepEqual(clothing.map((b) => b.name), ["Pants", "Underwear", "Pajamas", "Jacket"], "「  socks 」「TOPS」應排除 Socks／Tops");
+        assert.deepEqual(medicine, [], "藥品全部已加入仍顯示建議列");
+        assert.equal(docs.length, 6);
+        assert.equal(labels, 5, "應只有 5 個分類顯示建議標題");
+      });
+    }
+    {
+      const per = {};
+      for (const l of LOCS) {
+        await mount({ locale: l, seed: { defaults: true } });
+        const C = COPY[l];
+        const rows = {};
+        for (const k of DKEY_LIST) rows[k] = await ev("suggs", C[DKEY_COPY[k]]);
+        const text = (await st()).text;
+        const exp = {};
+        for (const k of DKEY_LIST) exp[k] = await sugg(l, k, []);
+        per[l] = { rows, exp, text };
+      }
+      await check("SG6 四語系：兩個新 key 皆有非空文案且含 {item}／{name}；每個預設分類都有建議（依語系、彼此不同）；畫面顯示該語系建議與標題、aria-label 用該語系分類名稱", () => {
+        for (const l of LOCS) {
+          const C = COPY[l];
+          assert.ok(typeof C.suggestionsLabel === "string" && C.suggestionsLabel.trim(), l + " suggestionsLabel");
+          assert.ok(typeof C.addSuggestionLabel === "string" && C.addSuggestionLabel.includes("{item}") && C.addSuggestionLabel.includes("{name}"), l + " addSuggestionLabel");
+          assert.ok(per[l].text.includes(C.suggestionsLabel), l + " 畫面無建議標題");
+          for (const k of DKEY_LIST) {
+            assert.ok(per[l].exp[k].length > 0, l + " " + k + " 無建議");
+            assert.equal(new Set(per[l].exp[k]).size, per[l].exp[k].length, l + " " + k + " 建議重複");
+            assert.deepEqual(per[l].rows[k].map((b) => b.name), per[l].exp[k], l + " " + k);
+            for (const b of per[l].rows[k]) assert.equal(b.aria, fmt(C.addSuggestionLabel, { item: b.name, name: C[DKEY_COPY[k]] }));
+          }
+        }
+        for (const k of DKEY_LIST) {
+          const all = LOCS.map((l) => JSON.stringify(per[l].exp[k]));
+          assert.equal(new Set(all).size, 4, k + " 四語系建議應各自不同");
+        }
+      });
+    }
+    {
+      // 純函式邊界
+      const r = {
+        custom: await sugg("zh-TW", null, []),
+        bogus: await sugg("zh-TW", "shoes", []),
+        unknownLocale: await sugg("fr", "medicine", []),
+        allZh: await sugg("zh-TW", "medicine", ["感冒藥", "腸胃藥", "止痛藥", " ok 繃 "]),
+      };
+      await check("SG7 packingSuggestionsFor：default_key＝null／未知 key → []；未知語系退回 zh-TW；OK 繃 以不分大小寫＋trim 比對", () => {
+        assert.deepEqual(r.custom, []);
+        assert.deepEqual(r.bogus, []);
+        assert.deepEqual(r.unknownLocale, ["感冒藥", "腸胃藥", "止痛藥", "OK 繃"]);
+        assert.deepEqual(r.allZh, []);
       });
     }
 
@@ -2143,6 +2502,15 @@ async function runBrowser() {
         assert.equal(COPY["zh-TW"].title, "我的行李");
         assert.equal(COPY["zh-TW"].privateNote, "只有你看得到這份清單");
       });
+    }
+
+    // ═══ R14 標題列吸頂蓋住狀態列（#TS-UX3）═══
+    {
+      await mount({ seed: STD });
+      const cssInfo = headerGeoCss();
+      const res = await evaluate(`(${HEADER_GEO_FN})(${JSON.stringify(cssInfo.css)},${JSON.stringify(HEADER_OLD_CLASS)},${JSON.stringify(HEADER_CASES)})`);
+      await headerGeoChecks("R14", "我的行李", res, cssInfo);
+      await ev("unmountAll");
     }
 
     // ═══ R13（行李頁部分）═══

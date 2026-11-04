@@ -7,7 +7,8 @@
 //   src/components/chat/ChatComposer.tsx。多個 Duo 腳本原本以 sha／「相對 HEAD 無變更」斷言「聊聊頁未被改動
 //   （Duo 段落、React 樹不變）」。本模組把 #L1 新增的段落逐字移除，移除後必須：
 //   - _app.chat.tsx 與 #L1 改動前版本（sha256 95e7866a0e96f036540d1e6402534f02ac436ce9f0a431bc48f6f6de5790a5f4）逐字相同
-//   - ChatComposer.tsx 與 HEAD 逐字相同
+//   - ChatComposer.tsx 與功能 commit 前基準 PRE_FEATURE_BASE（aa2db59）逐字相同
+//     （#TS-BASE：功能已 commit 進 HEAD 後 HEAD＝工作區，比對 HEAD 失去鑑別力；改對 commit 前基準比對）
 //   每一段都必須「恰好出現一次」（或列明的次數），任何多出、少掉、改寫的段落都會失敗，
 //   因此「聊聊頁除了生成鎖以外沒有其他變更」的語意被完整保留。
 //
@@ -24,6 +25,9 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => fs.readFileSync(path.join(root, p), "utf8");
 const sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
+
+// #TS-BASE：功能 commit（943a047…7ffebd1）之前的基準 commit；「只新增授權段落、其餘未改」一律對此比對。
+export const PRE_FEATURE_BASE = "aa2db59";
 
 export const CHAT_TSX_PRE_LOCK_SHA256 = "95e7866a0e96f036540d1e6402534f02ac436ce9f0a431bc48f6f6de5790a5f4";
 // #L1-T3：第 2 輪（清除聊聊上鎖、離開原對話時的失敗提示、提示文案改在顯示當下取目前語系）授權變更：
@@ -723,11 +727,11 @@ export function assertChatTsxOnlyLockChanges() {
   return sha(cur);
 }
 
-/** ChatComposer.tsx 移除 #L1 段落後必須與 HEAD 逐字相同。 */
+/** ChatComposer.tsx 移除 #L1 段落後必須與 PRE_FEATURE_BASE（aa2db59）版逐字相同。 */
 export function assertComposerOnlyLockChanges() {
   const cur = read("src/components/chat/ChatComposer.tsx");
-  const head = execFileSync("git", ["show", "HEAD:src/components/chat/ChatComposer.tsx"], { cwd: root, encoding: "utf8" });
-  assert.equal(strip(cur, COMPOSER_HUNKS, "ChatComposer.tsx"), head, "ChatComposer.tsx 移除生成鎖段落後與 HEAD 不同");
+  const base = execFileSync("git", ["show", PRE_FEATURE_BASE + ":src/components/chat/ChatComposer.tsx"], { cwd: root, encoding: "utf8" });
+  assert.equal(strip(cur, COMPOSER_HUNKS, "ChatComposer.tsx"), base, `ChatComposer.tsx 移除生成鎖段落後與 ${PRE_FEATURE_BASE} 不同`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -745,7 +749,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       const h = assertChatTsxOnlyLockChanges();
       assert.equal(h.slice(0, 16), CHAT_TSX_LOCK_SHA16, "目前 sha256 前 16 碼");
     }],
-    ["ChatComposer.tsx 只有 #L1 生成鎖段落（移除後＝HEAD）", assertComposerOnlyLockChanges],
+    [`ChatComposer.tsx 只有 #L1 生成鎖段落（移除後＝${PRE_FEATURE_BASE}）`, assertComposerOnlyLockChanges],
   ]) {
     try {
       fn();

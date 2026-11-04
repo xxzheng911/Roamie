@@ -2,6 +2,7 @@
 //
 // Part A（靜態）
 //   A1 src/routes/_app.chat.tsx 差異只落在 #L1 生成鎖與 #PL-FIX Planner 授權段落（移除後＝95e7866a0e96f036；不寫死目前 sha）
+//   （#TS-BASE：下列「相對 HEAD」一律改為相對功能 commit 前基準 aa2db59＝PRE_FEATURE_BASE）
 //   A2b （#H3-1）_app.map.tsx、map-search-keyboard.ts 相對 HEAD 只新增詳情一頁式 effect／鍵盤動畫 class 兩段
 //   A2 探索／聊聊相關元件（MapExploreSheet、MapSearchBarOverlay、GoogleMapBackground、ChatComposer、
 //      use-messenger-chat-layout 等）相對 HEAD 無變更 → 姿勢切換只靠 CSS class，React 樹不變（不 remount、不重新搜尋）
@@ -61,6 +62,9 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => fs.readFileSync(path.join(root, p), "utf8");
+// #TS-BASE：功能 commit（943a047…）之前的基準 commit。功能已 commit 進 HEAD 後，A2／A2b／A3「相對 HEAD」比對會因
+//   HEAD＝工作區而失效，改以此基準比對（日後基準前移時只改這一行；ChatComposer 的基準在 verify-chat-generation-lock-authorized-diff.mjs）。
+const PRE_FEATURE_BASE = "aa2db59";
 const styles = read("src/styles.css");
 const failures = [];
 async function check(name, fn) {
@@ -101,16 +105,17 @@ const UNCHANGED = [
   "src/hooks/use-messenger-chat-layout.ts",
   "src/lib/app-scroll-contract.ts",
 ];
-await check("A2 探索／聊聊元件相對 HEAD 無變更（姿勢切換只靠 CSS class，React 樹不變）；ChatComposer 只有 #L1 生成鎖段落", async () => {
-  const out = execFileSync("git", ["diff", "--name-only", "HEAD", "--", ...UNCHANGED], { cwd: root, encoding: "utf8" }).trim();
+await check(`A2 探索／聊聊元件相對 ${PRE_FEATURE_BASE} 無變更（姿勢切換只靠 CSS class，React 樹不變）；ChatComposer 只有 #L1 生成鎖段落`, async () => {
+  // #TS-BASE：工作區 vs 功能 commit 前基準（涵蓋已 commit 與未 commit 的變更）
+  const out = execFileSync("git", ["diff", "--name-only", PRE_FEATURE_BASE, "--", ...UNCHANGED], { cwd: root, encoding: "utf8" }).trim();
   assert.equal(out, "", "下列檔案有變更：\n" + out);
-  // #L1-T2：ChatComposer.tsx 經 #L1 授權新增 lockedPlaceholder／lockedHint（未鎖時不傳，DOM 與 HEAD 相同）。
-  //   逐字移除這些段落後必須與 HEAD 相同（其他變更仍會失敗）。
+  // #L1-T2：ChatComposer.tsx 經 #L1 授權新增 lockedPlaceholder／lockedHint（未鎖時不傳，DOM 與基準相同）。
+  //   逐字移除這些段落後必須與 PRE_FEATURE_BASE 版相同（其他變更仍會失敗；基準定義在 verify-chat-generation-lock-authorized-diff.mjs）。
   const { assertComposerOnlyLockChanges } = await import("./verify-chat-generation-lock-authorized-diff.mjs");
   assertComposerOnlyLockChanges();
 });
-await check("A2b _app.map.tsx／map-search-keyboard.ts 相對 HEAD 只新增 #H3-1 的兩段＋#H3-2 鍵盤上緣段（移除後與 HEAD 逐字相同；JSX 不變）", () => {
-  const head = (p) => execFileSync("git", ["show", "HEAD:" + p], { cwd: root, encoding: "utf8", maxBuffer: 64 << 20 });
+await check(`A2b _app.map.tsx／map-search-keyboard.ts 相對 ${PRE_FEATURE_BASE} 只新增 #H3-1 的兩段＋#H3-2 鍵盤上緣段（移除後與基準逐字相同；JSX 不變）`, () => {
+  const head = (p) => execFileSync("git", ["show", PRE_FEATURE_BASE + ":" + p], { cwd: root, encoding: "utf8", maxBuffer: 64 << 20 });
   const cut = (s, from, to, label) => {
     const a = s.indexOf(from);
     const b = s.indexOf(to, a);
@@ -285,8 +290,9 @@ await check("A3 新規則：筆電區塊內、地點詳情雙頁之前、@layer 
     assert.equal(depthAt[newRegionStart + m.index + m[0].indexOf("{")], 0, "規則在 @layer／區塊內：" + m[1].trim().slice(0, 80));
   const rules = [...nc.matchAll(/([^{}]+)\{[^{}]*\}/g)];
   assert.match(rules[rules.length - 1][1], /\.place-duo-root/);
-  const numstat = execFileSync("git", ["diff", "--numstat", "HEAD", "--", "src/styles.css"], { cwd: root, encoding: "utf8" }).trim();
-  assert.equal(numstat.split(/\s+/)[1], "0", "styles.css 有刪除行：" + numstat);
+  // #TS-BASE：「只新增」對 PRE_FEATURE_BASE 比對；numstat 為空時 [1] 為 undefined → 失敗
+  const numstat = execFileSync("git", ["diff", "--numstat", PRE_FEATURE_BASE, "--", "src/styles.css"], { cwd: root, encoding: "utf8" }).trim();
+  assert.equal(numstat.split(/\s+/)[1], "0", `styles.css 相對 ${PRE_FEATURE_BASE} 有刪除行：` + numstat);
 });
 
 const src = {

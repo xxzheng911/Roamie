@@ -11,7 +11,7 @@ const sourceRoot = process.env.REVIEW_SOURCE_ROOT || root;
 const mocks = {
   "@/services/placeImageService": `export const getRoamieDefaultImage=()=>"/fixture-cover.png"`,
   "@/hooks/use-auth": `export const useAuth=()=>({user:{id:'fixture'}})`,
-  "@/hooks/use-access": `export const useAccess=()=>({isPlusUser:false})`,
+  "@/hooks/use-access": `export const useAccess=()=>({isPlusUser:false});export const useAccessOptional=()=>null`,
   "@/providers/SubscriptionProvider": `const loadOfferings=async()=>{};export const useSubscription=()=>({packages:[],offeringsLoading:false,offeringsState:'empty',loadOfferings,purchase:()=>{throw Error('unexpected purchase')},restore:()=>{throw Error('unexpected restore')}})`,
   "@/components/media/PlaceCoverImage": `export const PlaceCoverImage=()=>null`,
   "@/components/media/SafeImage": `export const SafeImage=()=>null`,

@@ -5,7 +5,7 @@
 //     聊聊／探索段落（#H2b-1）只允許列舉的前綴（見 A2；版面量測見 verify-duo-laptop-chat-explore.mjs）
 //     收藏／首頁／我的段落（#H2b-3）selector 逐字列舉（見 A2 SHP_SELECTORS；量測見 verify-duo-laptop-saved-home-profile.mjs）；
 //     #H2b-5：首頁／我的版面規則已移除，A2b 檢查不得殘留
-//   - styles.css 相對 HEAD 只有新增、沒有刪除
+//   - styles.css 相對功能 commit 前基準 aa2db59（PRE_FEATURE_BASE）只有新增、沒有刪除
 //   - 區塊位置在「地點詳情頁雙頁」區塊之前
 // Part B（headless Chrome）：以目前 styles.css 編譯 Tailwind，靜態 DOM fixture（class 字串取自
 //   _app.tsx／MobileFrame／TripDetailScreen／SavedTripItineraryEditor／TripWorkspaceMap／ui/*），
@@ -31,6 +31,9 @@ import { spawn, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// #TS-BASE：功能 commit（943a047…）之前的基準 commit。功能已 commit 進 HEAD 後，「相對 HEAD 只新增」會因 diff 為空而失效，
+//   改以此基準比對（日後基準前移時只改這一行）。
+const PRE_FEATURE_BASE = "aa2db59";
 const styles = fs.readFileSync(path.join(root, "src/styles.css"), "utf8");
 const failures = [];
 function check(name, fn) {
@@ -258,8 +261,9 @@ check("A5 筆電區塊規則全在 @layer 外；styles.css 最後一條規則屬
   assert.match(last[1], /\.place-duo-root/, "最後一條規則：" + last[1].trim().slice(0, 120));
   assert.equal(depthAt(last.index), 0);
 });
-check("A4 styles.css 相對 HEAD 只有新增、沒有刪除", () => {
-  const numstat = execFileSync("git", ["diff", "--numstat", "HEAD", "--", "src/styles.css"], { cwd: root, encoding: "utf8" }).trim();
+check(`A4 styles.css 相對功能 commit 前基準 ${PRE_FEATURE_BASE} 只有新增、沒有刪除`, () => {
+  // 比對「工作區」與基準：涵蓋已 commit 的功能與任何未 commit 修改；numstat 為空（未新增任何規則）時 removed 為 undefined → 失敗
+  const numstat = execFileSync("git", ["diff", "--numstat", PRE_FEATURE_BASE, "--", "src/styles.css"], { cwd: root, encoding: "utf8" }).trim();
   const [, removed] = numstat.split(/\s+/);
   assert.equal(removed, "0", numstat);
 });
