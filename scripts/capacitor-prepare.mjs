@@ -16,7 +16,12 @@ import { spawnSync } from "node:child_process";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { RECEIPT, verifyReleaseArtifacts, writeReleaseReceipt } from "./verify-release-artifacts.mjs";
+import {
+  RECEIPT,
+  findManifestClientEntry,
+  verifyReleaseArtifacts,
+  writeReleaseReceipt,
+} from "./verify-release-artifacts.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // Re-prepare (iOS sync) accepts only an already verified release artifact.
@@ -134,8 +139,8 @@ function findClientEntryFromManifest() {
   if (!manifestFile) return null;
 
   const text = readFileSync(join(serverAssets, manifestFile), "utf8");
-  const match = text.match(/clientEntry:\s*"(\/assets\/[^"]+)"/);
-  return match?.[1]?.replace(/^\//, "") ?? null;
+  const match = findManifestClientEntry(text);
+  return match?.entry?.replace(/^\//, "") ?? null;
 }
 
 /** Capacitor WebView：使用 `./assets/*` 避免 `/assets/*` 在部分 scheme 下載入失敗 */

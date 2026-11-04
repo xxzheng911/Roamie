@@ -24,6 +24,48 @@ const clientSecretNamePatterns = [
 ];
 export const RECEIPT = "dist/release-receipt.json";
 
+/** Returns the `{...}` object literal that follows `__root__:` in a TanStack Start manifest, with offsets. */
+function findRootRouteObject(text) {
+  const key = /(?:^|[{,\s])(["']?)__root__\1\s*:\s*\{/.exec(text);
+  if (!key) return null;
+  const start = key.index + key[0].length - 1;
+  let depth = 0,
+    quote = null;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (quote) {
+      if (c === "\\") i++;
+      else if (c === quote) quote = null;
+    } else if (c === '"' || c === "'" || c === "`") quote = c;
+    else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return { start, end: i + 1, body: text.slice(start, i + 1) };
+  }
+  return null;
+}
+
+/**
+ * Locate the client entry in a TanStack Start manifest.
+ * Legacy: `clientEntry: "/assets/x.js"`. Current (start-plugin-core >= 1.171): the first
+ * `scripts[].attrs.src` of the `__root__` route only. Returns `{ entry, format, start, end }`
+ * where `entry` is `/assets/x.js` and `[start, end)` is the offset of `entry` in `text`; null if absent.
+ */
+export function findManifestClientEntry(text) {
+  const legacy = /clientEntry:\s*"(\/assets\/[^"?#]+\.js)"/.exec(text);
+  if (legacy) {
+    const start = legacy.index + legacy[0].indexOf(legacy[1]);
+    return { entry: legacy[1], format: "clientEntry", start, end: start + legacy[1].length };
+  }
+  const rootRoute = findRootRouteObject(text);
+  if (!rootRoute) return null;
+  const script =
+    /(?:^|[{,\s])["']?scripts["']?\s*:\s*\[\s*\{\s*["']?attrs["']?\s*:\s*\{[^{}]*?["']?src["']?\s*:\s*"(\/assets\/[^"?#]+\.js)"/.exec(
+      rootRoute.body,
+    );
+  if (!script) return null;
+  const start = rootRoute.start + script.index + script[0].length - script[1].length - 1;
+  return { entry: script[1], format: "rootScripts", start, end: start + script[1].length };
+}
+
 /** SHA-256 of the Unsplash access key that shipped in public client bundles. The key itself is not stored. */
 export const RETIRED_UNSPLASH_ACCESS_KEY_SHA256 = Object.freeze([
   "b154eedf0629ded229de62e02ab8b50448e110b42728f6c1afba5141fdad7ded",
@@ -356,9 +398,9 @@ function inspectContract(root) {
     /^_tanstack-start-manifest_v-.*\.js$/.test(basename(p)),
   );
   need(manifests.length === 1, "expected one client manifest");
-  const match = read(manifests[0]).match(/clientEntry:\s*"(\/assets\/[^"?#]+\.js)"/);
+  const match = findManifestClientEntry(read(manifests[0]));
   need(match, "manifest client entry missing");
-  const entry = resolve(client, "." + match[1]);
+  const entry = resolve(client, "." + match.entry);
   need(entry.startsWith(client + "/"), "invalid manifest entry path");
   const index = resolve(client, "index.html"),
     bootstrap = resolve(client, "assets/capacitor-bootstrap.js");

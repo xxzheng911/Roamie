@@ -17,7 +17,12 @@ import { spawnSync, execFileSync } from "node:child_process";
 import { openSync, closeSync, statSync } from "node:fs";
 import vm from "node:vm";
 import { loadPublicClientEnv } from "./public-client-env.mjs";
-import { RECEIPT, hashArtifacts, verifyReleaseArtifacts } from "./verify-release-artifacts.mjs";
+import {
+  RECEIPT,
+  findManifestClientEntry,
+  hashArtifacts,
+  verifyReleaseArtifacts,
+} from "./verify-release-artifacts.mjs";
 
 const repo = resolve(import.meta.dirname, "..");
 const isolated = process.argv[2] === "--build-paths" ? buildPaths() : null;
@@ -86,7 +91,13 @@ try {
   corruption(
     "E manifest points to missing entry",
     manifest,
-    (s) => s.replace(/clientEntry:\s*"[^"]+"/, 'clientEntry:"/assets/missing.js"'),
+    (s) => {
+      const found = findManifestClientEntry(s);
+      assert.ok(found, "E: manifest client entry not found before mutation");
+      const out = s.slice(0, found.start) + "/assets/missing.js" + s.slice(found.end);
+      assert.equal(findManifestClientEntry(out)?.entry, "/assets/missing.js", "E: mutation not applied");
+      return out;
+    },
     /missing artifact/,
   );
   corruption(
