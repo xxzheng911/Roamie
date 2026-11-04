@@ -132,6 +132,27 @@ const COFFEE_NEARBY_TEXT_QUERIES = [
   "高雄 咖啡廳",
 ] as const;
 
+function isAbortLikeError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "name" in error && error.name === "AbortError";
+}
+
+/** session 未取消、僅預算用盡（assertExploreSessionActive）時丟出的 AbortError */
+function isExploreBudgetStop(error: unknown, session?: ExploreRequestSession): boolean {
+  return Boolean(session) && !session!.controller.signal.aborted && isAbortLikeError(error);
+}
+
+function isExplorePlacesTimeoutError(error: unknown): boolean {
+  return error instanceof Error && /places_(?:search_attempt_)?timeout/.test(error.message);
+}
+
+function exploreFailureCode(error: unknown, session?: ExploreRequestSession): string {
+  if (isExploreBudgetStop(error, session)) return "explore_budget";
+  if (isExplorePlacesTimeoutError(error)) return "places_timeout";
+  if (isAbortLikeError(error)) return "aborted";
+  const msg = error instanceof Error ? error.message : "";
+  return /^[a-z][a-z0-9_]{0,63}$/i.test(msg) ? msg : "provider_error";
+}
+
 function mergePlacesById(base: PlaceResult[], extra: PlaceResult[]): PlaceResult[] {
   const seen = new Set(base.map((p) => p.id));
   const merged = [...base];
@@ -729,10 +750,20 @@ async function searchExploreAllPlacesMerged(ctx: {
         cityLabel,
         cityPlaceId: ctx.cityPlaceId,
         onProgress: undefined,
+        allSubcategory: true,
       });
     } catch (error) {
-      if (error instanceof Error &&
-          (error.name === "AbortError" || error.message.includes("places_search_attempt_timeout"))) throw error;
+      const budgetStop = isExploreBudgetStop(error, ctx.requestSession);
+      console.warn("[EXPLORE_ALL_SUBCATEGORY_FAILED]", {
+        category: subId,
+        code: exploreFailureCode(error, ctx.requestSession),
+      });
+      if (
+        ctx.requestSession?.controller.signal.aborted ||
+        (isAbortLikeError(error) && !budgetStop) ||
+        isExplorePlacesTimeoutError(error)
+      )
+        throw error;
       failedSubIds.push(subId);
       cardsByCategory[subId] = [];
     }
@@ -788,6 +819,25 @@ async function searchExploreAllPlacesMerged(ctx: {
 
   if (merged.length > 0) {
     writeMapPlacesCache(allKey, merged, null);
+  } else {
+    let rawCount = 0;
+    for (const subId of EXPLORE_ALL_SUBCATEGORY_IDS) {
+      rawCount +=
+        readExploreRawPool(
+          buildCategoryRawPoolKey(subId, userLocation, locale, recommendMode, {
+            cityPlaceId: ctx.cityPlaceId,
+            cityLabel,
+          }),
+        )?.length ?? 0;
+    }
+    console.warn("[EXPLORE_EMPTY_RESULT]", {
+      category: "all",
+      rawCount,
+      finalCount: 0,
+      viaSubcategories: true,
+      attemptedSubcategories: missingSubIds.length,
+      failedSubcategories: failedSubIds.length,
+    });
   }
   devVerboseInfo("[EXPLORE_ALL_HYDRATION]", {
     requiredCategories: EXPLORE_ALL_SUBCATEGORY_IDS,
@@ -895,6 +945,8 @@ export async function searchExploreCategoryPlaces(
     cityPlaceId?: string | null;
     requestSession?: ExploreRequestSession;
     onProgress?: (cards: ExplorePlaceCard[], progress?: ExploreAllSearchProgress) => void;
+    /** 由「全部」子分類流程呼叫：補查遇 session 預算用盡時保留既有結果 */
+    allSubcategory?: boolean;
   },
 ): Promise<ExplorePlaceCard[]> {
   if (
@@ -904,16 +956,23 @@ export async function searchExploreCategoryPlaces(
   )
     return [];
   let providerFailure: unknown = null;
+  // 第一個「非額度用完」的錯誤：額度用完常是最後一個錯誤，不得蓋掉真正的 provider 失敗
+  let providerHardFailure: unknown = null;
   const providerSearch = ctx.searchPlacesFn;
+  const sessionForFailure = ctx.requestSession;
   ctx = {
     ...ctx,
     searchPlacesFn: async (args) => {
       try {
         const result = await providerSearch(args);
-        if (result.error) providerFailure = new Error(result.error);
+        if (result.error) {
+          providerFailure = new Error(result.error);
+          providerHardFailure ??= providerFailure;
+        }
         return result;
       } catch (error) {
         providerFailure = error;
+        if (!isExploreBudgetStop(error, sessionForFailure)) providerHardFailure ??= error;
         throw error;
       }
     },
@@ -963,9 +1022,16 @@ export async function searchExploreCategoryPlaces(
       cityPlaceId: ctx.cityPlaceId,
       requestSession: ctx.requestSession,
       onProgress: ctx.onProgress,
-    }).then(settle).finally(() => {
-      categorySearchInFlight.delete(flightKey);
-    });
+    })
+      .then((cards) => {
+        // 0 件且曾有真正的 provider 失敗：照舊丟出，讓畫面顯示錯誤而非「沒有結果」
+        if (!ctx.forHome && cards.length === 0 && providerHardFailure) throw providerHardFailure;
+        // 「全部」僅因 session 額度用完而 0 件：回空結果（走空結果畫面），不得以 AbortError 被當成取消。
+        return isExploreBudgetStop(providerFailure, ctx.requestSession) ? cards : settle(cards);
+      })
+      .finally(() => {
+        categorySearchInFlight.delete(flightKey);
+      });
     categorySearchInFlight.set(flightKey, promise);
     return promise;
   }
@@ -1027,6 +1093,7 @@ async function searchExploreCategoryPlacesInner(
     requestSession?: ExploreRequestSession;
     onProgress?: (cards: ExplorePlaceCard[], progress?: ExploreAllSearchProgress) => void;
     quiet?: boolean;
+    allSubcategory?: boolean;
   },
 ): Promise<ExplorePlaceCard[]> {
   const { userLocation, weather, locale, reasonProfile, saved, searchPlacesFn, forHome } = ctx;
@@ -1184,15 +1251,22 @@ async function searchExploreCategoryPlacesInner(
   const tryFallback = async (textQuery: string | null) => {
     if (!textQuery?.trim() || fallbackQueriesUsed >= maxFallbackQueries) return;
     fallbackQueriesUsed += 1;
-    const fallbackPlaces = await runSingleTextFallback(
-      basePayload,
-      textQuery.trim(),
-      cat,
-      locale,
-      searchPlacesFn,
-      placesScreen,
-      cacheFields,
-    );
+    let fallbackPlaces: PlaceResult[];
+    try {
+      fallbackPlaces = await runSingleTextFallback(
+        basePayload,
+        textQuery.trim(),
+        cat,
+        locale,
+        searchPlacesFn,
+        placesScreen,
+        cacheFields,
+      );
+    } catch (error) {
+      if (!ctx.allSubcategory || !isExploreBudgetStop(error, ctx.requestSession)) throw error;
+      fallbackQueriesUsed = maxFallbackQueries;
+      return;
+    }
     if (fallbackPlaces.length > 0) {
       apiPlaces = mergePlacesById(apiPlaces, fallbackPlaces);
       mergeIntoExploreRawPool(rawPoolKey, fallbackPlaces);
@@ -1362,6 +1436,14 @@ async function searchExploreCategoryPlacesInner(
     }),
   );
   writeMapPlacesCache(mapKey, sorted, null);
+  if (sorted.length === 0 && !ctx.allSubcategory) {
+    console.warn("[EXPLORE_EMPTY_RESULT]", {
+      category: cat.id,
+      rawCount: apiPlaces.length,
+      finalCount: 0,
+      viaSubcategories: false,
+    });
+  }
   return sorted;
 }
 
