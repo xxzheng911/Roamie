@@ -1,5 +1,5 @@
 PODS:
-  - Capacitor (7.6.5):
+  - Capacitor (7.6.10):
     - CapacitorCordova
   - CapacitorApp (7.1.2):
     - Capacitor
@@ -11,7 +11,7 @@ PODS:
     - Capacitor
   - CapacitorCommunityAppleSignIn (7.1.0):
     - Capacitor
-  - CapacitorCordova (7.6.5)
+  - CapacitorCordova (7.6.10)
   - CapacitorGeolocation (7.1.8):
     - Capacitor
     - IONGeolocationLib (= 1.0.1)
@@ -91,13 +91,13 @@ EXTERNAL SOURCES:
     :path: "../../node_modules/@revenuecat/purchases-capacitor"
 
 SPEC CHECKSUMS:
-  Capacitor: e9708b186e71dc45f9b2ee72e826b7389fb79ff2
+  Capacitor: f50a57c9ce466bce30d574e1348ab25b1f572536
   CapacitorApp: f01a913211780e0718dae9750442c3e23f96e106
   CapacitorBrowser: 6d09f59655e89aede71654ef08b98de55cf032b6
   CapacitorCamera: 9e952270be355797f769aa835bb7643a96c871fe
   CapacitorClipboard: d1f123674cf413125db816a45e8f70e8770972fc
   CapacitorCommunityAppleSignIn: 271cb2860576fd2961508bbfa7a82117d93eadca
-  CapacitorCordova: 2b36392a7292c3c451dcae154185ee8804d7b6b3
+  CapacitorCordova: 33313bf8891d44741970e16534be781ff3caa00a
   CapacitorGeolocation: ab54d708e2fcf99a7bafe0219eaa6f7a932f001a
   CapacitorKeyboard: a2e0869edd229490ce36aed2549c0d6b95e27ee8
   CapacitorLocalNotifications: 2e3f5b717ec9cd2bd64d93c99a9470941e1c80be

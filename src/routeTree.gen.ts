@@ -9,86 +9,50 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as WelcomeRouteImport } from './routes/welcome'
-import { Route as TripRouteImport } from './routes/trip'
-import { Route as TravelPreferenceTestRouteImport } from './routes/travel-preference-test'
-import { Route as TermsRouteImport } from './routes/terms'
-import { Route as SupportRouteImport } from './routes/support'
-import { Route as PrivacyRouteImport } from './routes/privacy'
-import { Route as OnboardingRouteImport } from './routes/onboarding'
-import { Route as LoginRouteImport } from './routes/login'
-import { Route as AdminRouteImport } from './routes/admin'
 import { Route as AppRouteImport } from './routes/_app'
-import { Route as AppIndexRouteImport } from './routes/_app.index'
-import { Route as TripInviteTokenRouteImport } from './routes/trip-invite.$token'
-import { Route as LoginLegalRouteImport } from './routes/login/legal'
-import { Route as AuthCallbackRouteImport } from './routes/auth.callback'
-import { Route as ApiUnsplashRouteImport } from './routes/api/unsplash'
-import { Route as ApiRoamieRouteImport } from './routes/api/roamie'
-import { Route as ApiPlacePhotoRouteImport } from './routes/api/place-photo'
-import { Route as ApiGoogleRouteImport } from './routes/api/google'
-import { Route as ApiGenerateItineraryRouteImport } from './routes/api/generate-itinerary'
-import { Route as ApiChatRouteImport } from './routes/api/chat'
-import { Route as AppTravelDraftsRouteImport } from './routes/_app.travel-drafts'
-import { Route as AppSettingsRouteImport } from './routes/_app.settings'
-import { Route as AppSavedRouteImport } from './routes/_app.saved'
-import { Route as AppRecommendationsRouteImport } from './routes/_app.recommendations'
-import { Route as AppProfileRouteImport } from './routes/_app.profile'
-import { Route as AppPlanRouteImport } from './routes/_app.plan'
-import { Route as AppPlaceRouteImport } from './routes/_app.place'
-import { Route as AppMapRouteImport } from './routes/_app.map'
-import { Route as AppDeveloperRouteImport } from './routes/_app.developer'
-import { Route as AppChatRouteImport } from './routes/_app.chat'
+import { Route as AdminRouteImport } from './routes/admin'
+import { Route as LoginRouteImport } from './routes/login'
+import { Route as OnboardingRouteImport } from './routes/onboarding'
+import { Route as PrivacyRouteImport } from './routes/privacy'
+import { Route as SupportRouteImport } from './routes/support'
+import { Route as TermsRouteImport } from './routes/terms'
+import { Route as TravelPreferenceTestRouteImport } from './routes/travel-preference-test'
+import { Route as TripRouteImport } from './routes/trip'
+import { Route as WelcomeRouteImport } from './routes/welcome'
 import { Route as DotwellKnownAppleAppSiteAssociationRouteImport } from './routes/[.]well-known/apple-app-site-association'
+import { Route as AppIndexRouteImport } from './routes/_app.index'
+import { Route as AppChatRouteImport } from './routes/_app.chat'
+import { Route as AppDeveloperRouteImport } from './routes/_app.developer'
+import { Route as AppMapRouteImport } from './routes/_app.map'
+import { Route as AppPlaceRouteImport } from './routes/_app.place'
+import { Route as AppPlanRouteImport } from './routes/_app.plan'
+import { Route as AppProfileRouteImport } from './routes/_app.profile'
+import { Route as AppRecommendationsRouteImport } from './routes/_app.recommendations'
+import { Route as AppSavedRouteImport } from './routes/_app.saved'
+import { Route as AppSettingsRouteImport } from './routes/_app.settings'
+import { Route as AppTravelDraftsRouteImport } from './routes/_app.travel-drafts'
+import { Route as ApiChatRouteImport } from './routes/api/chat'
+import { Route as ApiGenerateItineraryRouteImport } from './routes/api/generate-itinerary'
+import { Route as ApiGoogleRouteImport } from './routes/api/google'
+import { Route as ApiPlacePhotoRouteImport } from './routes/api/place-photo'
+import { Route as ApiRoamieRouteImport } from './routes/api/roamie'
+import { Route as ApiUnsplashRouteImport } from './routes/api/unsplash'
+import { Route as AuthCallbackRouteImport } from './routes/auth.callback'
+import { Route as LoginLegalRouteImport } from './routes/login/legal'
+import { Route as TripInviteTokenRouteImport } from './routes/trip-invite.$token'
 import { Route as AppSavedIndexRouteImport } from './routes/_app.saved.index'
-import { Route as ApiSubscriptionWebhookRouteImport } from './routes/api/subscription/webhook'
-import { Route as ApiSubscriptionSyncRouteImport } from './routes/api/subscription/sync'
-import { Route as ApiPlacePhotoSignRouteImport } from './routes/api/place-photo/sign'
-import { Route as ApiAnalyticsEventsRouteImport } from './routes/api/analytics/events'
-import { Route as ApiAdminDashboardRouteImport } from './routes/api/admin/dashboard'
-import { Route as ApiAccountDeleteRouteImport } from './routes/api/account/delete'
 import { Route as AppSavedTripIdRouteImport } from './routes/_app.saved.$tripId'
-import { Route as AppSavedTripIdPackingRouteImport } from './routes/_app.saved_.$tripId.packing'
+import { Route as ApiAccountDeleteRouteImport } from './routes/api/account/delete'
+import { Route as ApiAdminDashboardRouteImport } from './routes/api/admin/dashboard'
+import { Route as ApiAnalyticsEventsRouteImport } from './routes/api/analytics/events'
+import { Route as ApiPlacePhotoSignRouteImport } from './routes/api/place-photo/sign'
+import { Route as ApiSubscriptionSyncRouteImport } from './routes/api/subscription/sync'
+import { Route as ApiSubscriptionWebhookRouteImport } from './routes/api/subscription/webhook'
 import { Route as AppSavedTripIdExpensesRouteImport } from './routes/_app.saved_.$tripId.expenses'
+import { Route as AppSavedTripIdPackingRouteImport } from './routes/_app.saved_.$tripId.packing'
 
-const WelcomeRoute = WelcomeRouteImport.update({
-  id: '/welcome',
-  path: '/welcome',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const TripRoute = TripRouteImport.update({
-  id: '/trip',
-  path: '/trip',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const TravelPreferenceTestRoute = TravelPreferenceTestRouteImport.update({
-  id: '/travel-preference-test',
-  path: '/travel-preference-test',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const TermsRoute = TermsRouteImport.update({
-  id: '/terms',
-  path: '/terms',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const SupportRoute = SupportRouteImport.update({
-  id: '/support',
-  path: '/support',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const PrivacyRoute = PrivacyRouteImport.update({
-  id: '/privacy',
-  path: '/privacy',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const OnboardingRoute = OnboardingRouteImport.update({
-  id: '/onboarding',
-  path: '/onboarding',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const LoginRoute = LoginRouteImport.update({
-  id: '/login',
-  path: '/login',
+const AppRoute = AppRouteImport.update({
+  id: '/_app',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AdminRoute = AdminRouteImport.update({
@@ -96,109 +60,45 @@ const AdminRoute = AdminRouteImport.update({
   path: '/admin',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AppRoute = AppRouteImport.update({
-  id: '/_app',
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AppIndexRoute = AppIndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => AppRoute,
-} as any)
-const TripInviteTokenRoute = TripInviteTokenRouteImport.update({
-  id: '/trip-invite/$token',
-  path: '/trip-invite/$token',
+const OnboardingRoute = OnboardingRouteImport.update({
+  id: '/onboarding',
+  path: '/onboarding',
   getParentRoute: () => rootRouteImport,
 } as any)
-const LoginLegalRoute = LoginLegalRouteImport.update({
-  id: '/legal',
-  path: '/legal',
-  getParentRoute: () => LoginRoute,
-} as any)
-const AuthCallbackRoute = AuthCallbackRouteImport.update({
-  id: '/auth/callback',
-  path: '/auth/callback',
+const PrivacyRoute = PrivacyRouteImport.update({
+  id: '/privacy',
+  path: '/privacy',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiUnsplashRoute = ApiUnsplashRouteImport.update({
-  id: '/api/unsplash',
-  path: '/api/unsplash',
+const SupportRoute = SupportRouteImport.update({
+  id: '/support',
+  path: '/support',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiRoamieRoute = ApiRoamieRouteImport.update({
-  id: '/api/roamie',
-  path: '/api/roamie',
+const TermsRoute = TermsRouteImport.update({
+  id: '/terms',
+  path: '/terms',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiPlacePhotoRoute = ApiPlacePhotoRouteImport.update({
-  id: '/api/place-photo',
-  path: '/api/place-photo',
+const TravelPreferenceTestRoute = TravelPreferenceTestRouteImport.update({
+  id: '/travel-preference-test',
+  path: '/travel-preference-test',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiGoogleRoute = ApiGoogleRouteImport.update({
-  id: '/api/google',
-  path: '/api/google',
+const TripRoute = TripRouteImport.update({
+  id: '/trip',
+  path: '/trip',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiGenerateItineraryRoute = ApiGenerateItineraryRouteImport.update({
-  id: '/api/generate-itinerary',
-  path: '/api/generate-itinerary',
+const WelcomeRoute = WelcomeRouteImport.update({
+  id: '/welcome',
+  path: '/welcome',
   getParentRoute: () => rootRouteImport,
-} as any)
-const ApiChatRoute = ApiChatRouteImport.update({
-  id: '/api/chat',
-  path: '/api/chat',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const AppTravelDraftsRoute = AppTravelDraftsRouteImport.update({
-  id: '/travel-drafts',
-  path: '/travel-drafts',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppSettingsRoute = AppSettingsRouteImport.update({
-  id: '/settings',
-  path: '/settings',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppSavedRoute = AppSavedRouteImport.update({
-  id: '/saved',
-  path: '/saved',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppRecommendationsRoute = AppRecommendationsRouteImport.update({
-  id: '/recommendations',
-  path: '/recommendations',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppProfileRoute = AppProfileRouteImport.update({
-  id: '/profile',
-  path: '/profile',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppPlanRoute = AppPlanRouteImport.update({
-  id: '/plan',
-  path: '/plan',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppPlaceRoute = AppPlaceRouteImport.update({
-  id: '/place',
-  path: '/place',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppMapRoute = AppMapRouteImport.update({
-  id: '/map',
-  path: '/map',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppDeveloperRoute = AppDeveloperRouteImport.update({
-  id: '/developer',
-  path: '/developer',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppChatRoute = AppChatRouteImport.update({
-  id: '/chat',
-  path: '/chat',
-  getParentRoute: () => AppRoute,
 } as any)
 const DotwellKnownAppleAppSiteAssociationRoute =
   DotwellKnownAppleAppSiteAssociationRouteImport.update({
@@ -206,29 +106,119 @@ const DotwellKnownAppleAppSiteAssociationRoute =
     path: '/.well-known/apple-app-site-association',
     getParentRoute: () => rootRouteImport,
   } as any)
+const AppIndexRoute = AppIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppChatRoute = AppChatRouteImport.update({
+  id: '/chat',
+  path: '/chat',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppDeveloperRoute = AppDeveloperRouteImport.update({
+  id: '/developer',
+  path: '/developer',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppMapRoute = AppMapRouteImport.update({
+  id: '/map',
+  path: '/map',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppPlaceRoute = AppPlaceRouteImport.update({
+  id: '/place',
+  path: '/place',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppPlanRoute = AppPlanRouteImport.update({
+  id: '/plan',
+  path: '/plan',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppProfileRoute = AppProfileRouteImport.update({
+  id: '/profile',
+  path: '/profile',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppRecommendationsRoute = AppRecommendationsRouteImport.update({
+  id: '/recommendations',
+  path: '/recommendations',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppSavedRoute = AppSavedRouteImport.update({
+  id: '/saved',
+  path: '/saved',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppSettingsRoute = AppSettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppTravelDraftsRoute = AppTravelDraftsRouteImport.update({
+  id: '/travel-drafts',
+  path: '/travel-drafts',
+  getParentRoute: () => AppRoute,
+} as any)
+const ApiChatRoute = ApiChatRouteImport.update({
+  id: '/api/chat',
+  path: '/api/chat',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiGenerateItineraryRoute = ApiGenerateItineraryRouteImport.update({
+  id: '/api/generate-itinerary',
+  path: '/api/generate-itinerary',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiGoogleRoute = ApiGoogleRouteImport.update({
+  id: '/api/google',
+  path: '/api/google',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPlacePhotoRoute = ApiPlacePhotoRouteImport.update({
+  id: '/api/place-photo',
+  path: '/api/place-photo',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiRoamieRoute = ApiRoamieRouteImport.update({
+  id: '/api/roamie',
+  path: '/api/roamie',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiUnsplashRoute = ApiUnsplashRouteImport.update({
+  id: '/api/unsplash',
+  path: '/api/unsplash',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AuthCallbackRoute = AuthCallbackRouteImport.update({
+  id: '/auth/callback',
+  path: '/auth/callback',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginLegalRoute = LoginLegalRouteImport.update({
+  id: '/legal',
+  path: '/legal',
+  getParentRoute: () => LoginRoute,
+} as any)
+const TripInviteTokenRoute = TripInviteTokenRouteImport.update({
+  id: '/trip-invite/$token',
+  path: '/trip-invite/$token',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AppSavedIndexRoute = AppSavedIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => AppSavedRoute,
 } as any)
-const ApiSubscriptionWebhookRoute = ApiSubscriptionWebhookRouteImport.update({
-  id: '/api/subscription/webhook',
-  path: '/api/subscription/webhook',
-  getParentRoute: () => rootRouteImport,
+const AppSavedTripIdRoute = AppSavedTripIdRouteImport.update({
+  id: '/$tripId',
+  path: '/$tripId',
+  getParentRoute: () => AppSavedRoute,
 } as any)
-const ApiSubscriptionSyncRoute = ApiSubscriptionSyncRouteImport.update({
-  id: '/api/subscription/sync',
-  path: '/api/subscription/sync',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiPlacePhotoSignRoute = ApiPlacePhotoSignRouteImport.update({
-  id: '/sign',
-  path: '/sign',
-  getParentRoute: () => ApiPlacePhotoRoute,
-} as any)
-const ApiAnalyticsEventsRoute = ApiAnalyticsEventsRouteImport.update({
-  id: '/api/analytics/events',
-  path: '/api/analytics/events',
+const ApiAccountDeleteRoute = ApiAccountDeleteRouteImport.update({
+  id: '/api/account/delete',
+  path: '/api/account/delete',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiAdminDashboardRoute = ApiAdminDashboardRouteImport.update({
@@ -236,24 +226,34 @@ const ApiAdminDashboardRoute = ApiAdminDashboardRouteImport.update({
   path: '/api/admin/dashboard',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiAccountDeleteRoute = ApiAccountDeleteRouteImport.update({
-  id: '/api/account/delete',
-  path: '/api/account/delete',
+const ApiAnalyticsEventsRoute = ApiAnalyticsEventsRouteImport.update({
+  id: '/api/analytics/events',
+  path: '/api/analytics/events',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AppSavedTripIdRoute = AppSavedTripIdRouteImport.update({
-  id: '/$tripId',
-  path: '/$tripId',
-  getParentRoute: () => AppSavedRoute,
+const ApiPlacePhotoSignRoute = ApiPlacePhotoSignRouteImport.update({
+  id: '/sign',
+  path: '/sign',
+  getParentRoute: () => ApiPlacePhotoRoute,
 } as any)
-const AppSavedTripIdPackingRoute = AppSavedTripIdPackingRouteImport.update({
-  id: '/saved_/$tripId/packing',
-  path: '/saved/$tripId/packing',
-  getParentRoute: () => AppRoute,
+const ApiSubscriptionSyncRoute = ApiSubscriptionSyncRouteImport.update({
+  id: '/api/subscription/sync',
+  path: '/api/subscription/sync',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiSubscriptionWebhookRoute = ApiSubscriptionWebhookRouteImport.update({
+  id: '/api/subscription/webhook',
+  path: '/api/subscription/webhook',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const AppSavedTripIdExpensesRoute = AppSavedTripIdExpensesRouteImport.update({
   id: '/saved_/$tripId/expenses',
   path: '/saved/$tripId/expenses',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppSavedTripIdPackingRoute = AppSavedTripIdPackingRouteImport.update({
+  id: '/saved_/$tripId/packing',
+  path: '/saved/$tripId/packing',
   getParentRoute: () => AppRoute,
 } as any)
 
@@ -542,60 +542,11 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/welcome': {
-      id: '/welcome'
-      path: '/welcome'
-      fullPath: '/welcome'
-      preLoaderRoute: typeof WelcomeRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/trip': {
-      id: '/trip'
-      path: '/trip'
-      fullPath: '/trip'
-      preLoaderRoute: typeof TripRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/travel-preference-test': {
-      id: '/travel-preference-test'
-      path: '/travel-preference-test'
-      fullPath: '/travel-preference-test'
-      preLoaderRoute: typeof TravelPreferenceTestRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/terms': {
-      id: '/terms'
-      path: '/terms'
-      fullPath: '/terms'
-      preLoaderRoute: typeof TermsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/support': {
-      id: '/support'
-      path: '/support'
-      fullPath: '/support'
-      preLoaderRoute: typeof SupportRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/privacy': {
-      id: '/privacy'
-      path: '/privacy'
-      fullPath: '/privacy'
-      preLoaderRoute: typeof PrivacyRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/onboarding': {
-      id: '/onboarding'
-      path: '/onboarding'
-      fullPath: '/onboarding'
-      preLoaderRoute: typeof OnboardingRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/login': {
-      id: '/login'
-      path: '/login'
-      fullPath: '/login'
-      preLoaderRoute: typeof LoginRouteImport
+    '/_app': {
+      id: '/_app'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof AppRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/admin': {
@@ -605,11 +556,67 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/_app': {
-      id: '/_app'
-      path: ''
-      fullPath: '/'
-      preLoaderRoute: typeof AppRouteImport
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/onboarding': {
+      id: '/onboarding'
+      path: '/onboarding'
+      fullPath: '/onboarding'
+      preLoaderRoute: typeof OnboardingRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/privacy': {
+      id: '/privacy'
+      path: '/privacy'
+      fullPath: '/privacy'
+      preLoaderRoute: typeof PrivacyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/support': {
+      id: '/support'
+      path: '/support'
+      fullPath: '/support'
+      preLoaderRoute: typeof SupportRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/terms': {
+      id: '/terms'
+      path: '/terms'
+      fullPath: '/terms'
+      preLoaderRoute: typeof TermsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/travel-preference-test': {
+      id: '/travel-preference-test'
+      path: '/travel-preference-test'
+      fullPath: '/travel-preference-test'
+      preLoaderRoute: typeof TravelPreferenceTestRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/trip': {
+      id: '/trip'
+      path: '/trip'
+      fullPath: '/trip'
+      preLoaderRoute: typeof TripRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/welcome': {
+      id: '/welcome'
+      path: '/welcome'
+      fullPath: '/welcome'
+      preLoaderRoute: typeof WelcomeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/.well-known/apple-app-site-association': {
+      id: '/.well-known/apple-app-site-association'
+      path: '/.well-known/apple-app-site-association'
+      fullPath: '/.well-known/apple-app-site-association'
+      preLoaderRoute: typeof DotwellKnownAppleAppSiteAssociationRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_app/': {
@@ -619,123 +626,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
     }
-    '/trip-invite/$token': {
-      id: '/trip-invite/$token'
-      path: '/trip-invite/$token'
-      fullPath: '/trip-invite/$token'
-      preLoaderRoute: typeof TripInviteTokenRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/login/legal': {
-      id: '/login/legal'
-      path: '/legal'
-      fullPath: '/login/legal'
-      preLoaderRoute: typeof LoginLegalRouteImport
-      parentRoute: typeof LoginRoute
-    }
-    '/auth/callback': {
-      id: '/auth/callback'
-      path: '/auth/callback'
-      fullPath: '/auth/callback'
-      preLoaderRoute: typeof AuthCallbackRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/unsplash': {
-      id: '/api/unsplash'
-      path: '/api/unsplash'
-      fullPath: '/api/unsplash'
-      preLoaderRoute: typeof ApiUnsplashRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/roamie': {
-      id: '/api/roamie'
-      path: '/api/roamie'
-      fullPath: '/api/roamie'
-      preLoaderRoute: typeof ApiRoamieRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/place-photo': {
-      id: '/api/place-photo'
-      path: '/api/place-photo'
-      fullPath: '/api/place-photo'
-      preLoaderRoute: typeof ApiPlacePhotoRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/google': {
-      id: '/api/google'
-      path: '/api/google'
-      fullPath: '/api/google'
-      preLoaderRoute: typeof ApiGoogleRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/generate-itinerary': {
-      id: '/api/generate-itinerary'
-      path: '/api/generate-itinerary'
-      fullPath: '/api/generate-itinerary'
-      preLoaderRoute: typeof ApiGenerateItineraryRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/chat': {
-      id: '/api/chat'
-      path: '/api/chat'
-      fullPath: '/api/chat'
-      preLoaderRoute: typeof ApiChatRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/_app/travel-drafts': {
-      id: '/_app/travel-drafts'
-      path: '/travel-drafts'
-      fullPath: '/travel-drafts'
-      preLoaderRoute: typeof AppTravelDraftsRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/settings': {
-      id: '/_app/settings'
-      path: '/settings'
-      fullPath: '/settings'
-      preLoaderRoute: typeof AppSettingsRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/saved': {
-      id: '/_app/saved'
-      path: '/saved'
-      fullPath: '/saved'
-      preLoaderRoute: typeof AppSavedRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/recommendations': {
-      id: '/_app/recommendations'
-      path: '/recommendations'
-      fullPath: '/recommendations'
-      preLoaderRoute: typeof AppRecommendationsRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/profile': {
-      id: '/_app/profile'
-      path: '/profile'
-      fullPath: '/profile'
-      preLoaderRoute: typeof AppProfileRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/plan': {
-      id: '/_app/plan'
-      path: '/plan'
-      fullPath: '/plan'
-      preLoaderRoute: typeof AppPlanRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/place': {
-      id: '/_app/place'
-      path: '/place'
-      fullPath: '/place'
-      preLoaderRoute: typeof AppPlaceRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/map': {
-      id: '/_app/map'
-      path: '/map'
-      fullPath: '/map'
-      preLoaderRoute: typeof AppMapRouteImport
+    '/_app/chat': {
+      id: '/_app/chat'
+      path: '/chat'
+      fullPath: '/chat'
+      preLoaderRoute: typeof AppChatRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/developer': {
@@ -745,18 +640,123 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppDeveloperRouteImport
       parentRoute: typeof AppRoute
     }
-    '/_app/chat': {
-      id: '/_app/chat'
-      path: '/chat'
-      fullPath: '/chat'
-      preLoaderRoute: typeof AppChatRouteImport
+    '/_app/map': {
+      id: '/_app/map'
+      path: '/map'
+      fullPath: '/map'
+      preLoaderRoute: typeof AppMapRouteImport
       parentRoute: typeof AppRoute
     }
-    '/.well-known/apple-app-site-association': {
-      id: '/.well-known/apple-app-site-association'
-      path: '/.well-known/apple-app-site-association'
-      fullPath: '/.well-known/apple-app-site-association'
-      preLoaderRoute: typeof DotwellKnownAppleAppSiteAssociationRouteImport
+    '/_app/place': {
+      id: '/_app/place'
+      path: '/place'
+      fullPath: '/place'
+      preLoaderRoute: typeof AppPlaceRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/plan': {
+      id: '/_app/plan'
+      path: '/plan'
+      fullPath: '/plan'
+      preLoaderRoute: typeof AppPlanRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/profile': {
+      id: '/_app/profile'
+      path: '/profile'
+      fullPath: '/profile'
+      preLoaderRoute: typeof AppProfileRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/recommendations': {
+      id: '/_app/recommendations'
+      path: '/recommendations'
+      fullPath: '/recommendations'
+      preLoaderRoute: typeof AppRecommendationsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/saved': {
+      id: '/_app/saved'
+      path: '/saved'
+      fullPath: '/saved'
+      preLoaderRoute: typeof AppSavedRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/settings': {
+      id: '/_app/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof AppSettingsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/travel-drafts': {
+      id: '/_app/travel-drafts'
+      path: '/travel-drafts'
+      fullPath: '/travel-drafts'
+      preLoaderRoute: typeof AppTravelDraftsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/api/chat': {
+      id: '/api/chat'
+      path: '/api/chat'
+      fullPath: '/api/chat'
+      preLoaderRoute: typeof ApiChatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/generate-itinerary': {
+      id: '/api/generate-itinerary'
+      path: '/api/generate-itinerary'
+      fullPath: '/api/generate-itinerary'
+      preLoaderRoute: typeof ApiGenerateItineraryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/google': {
+      id: '/api/google'
+      path: '/api/google'
+      fullPath: '/api/google'
+      preLoaderRoute: typeof ApiGoogleRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/place-photo': {
+      id: '/api/place-photo'
+      path: '/api/place-photo'
+      fullPath: '/api/place-photo'
+      preLoaderRoute: typeof ApiPlacePhotoRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/roamie': {
+      id: '/api/roamie'
+      path: '/api/roamie'
+      fullPath: '/api/roamie'
+      preLoaderRoute: typeof ApiRoamieRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/unsplash': {
+      id: '/api/unsplash'
+      path: '/api/unsplash'
+      fullPath: '/api/unsplash'
+      preLoaderRoute: typeof ApiUnsplashRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/auth/callback': {
+      id: '/auth/callback'
+      path: '/auth/callback'
+      fullPath: '/auth/callback'
+      preLoaderRoute: typeof AuthCallbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login/legal': {
+      id: '/login/legal'
+      path: '/legal'
+      fullPath: '/login/legal'
+      preLoaderRoute: typeof LoginLegalRouteImport
+      parentRoute: typeof LoginRoute
+    }
+    '/trip-invite/$token': {
+      id: '/trip-invite/$token'
+      path: '/trip-invite/$token'
+      fullPath: '/trip-invite/$token'
+      preLoaderRoute: typeof TripInviteTokenRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_app/saved/': {
@@ -766,32 +766,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSavedIndexRouteImport
       parentRoute: typeof AppSavedRoute
     }
-    '/api/subscription/webhook': {
-      id: '/api/subscription/webhook'
-      path: '/api/subscription/webhook'
-      fullPath: '/api/subscription/webhook'
-      preLoaderRoute: typeof ApiSubscriptionWebhookRouteImport
-      parentRoute: typeof rootRouteImport
+    '/_app/saved/$tripId': {
+      id: '/_app/saved/$tripId'
+      path: '/$tripId'
+      fullPath: '/saved/$tripId'
+      preLoaderRoute: typeof AppSavedTripIdRouteImport
+      parentRoute: typeof AppSavedRoute
     }
-    '/api/subscription/sync': {
-      id: '/api/subscription/sync'
-      path: '/api/subscription/sync'
-      fullPath: '/api/subscription/sync'
-      preLoaderRoute: typeof ApiSubscriptionSyncRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/place-photo/sign': {
-      id: '/api/place-photo/sign'
-      path: '/sign'
-      fullPath: '/api/place-photo/sign'
-      preLoaderRoute: typeof ApiPlacePhotoSignRouteImport
-      parentRoute: typeof ApiPlacePhotoRoute
-    }
-    '/api/analytics/events': {
-      id: '/api/analytics/events'
-      path: '/api/analytics/events'
-      fullPath: '/api/analytics/events'
-      preLoaderRoute: typeof ApiAnalyticsEventsRouteImport
+    '/api/account/delete': {
+      id: '/api/account/delete'
+      path: '/api/account/delete'
+      fullPath: '/api/account/delete'
+      preLoaderRoute: typeof ApiAccountDeleteRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/admin/dashboard': {
@@ -801,32 +787,46 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAdminDashboardRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/account/delete': {
-      id: '/api/account/delete'
-      path: '/api/account/delete'
-      fullPath: '/api/account/delete'
-      preLoaderRoute: typeof ApiAccountDeleteRouteImport
+    '/api/analytics/events': {
+      id: '/api/analytics/events'
+      path: '/api/analytics/events'
+      fullPath: '/api/analytics/events'
+      preLoaderRoute: typeof ApiAnalyticsEventsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/_app/saved/$tripId': {
-      id: '/_app/saved/$tripId'
-      path: '/$tripId'
-      fullPath: '/saved/$tripId'
-      preLoaderRoute: typeof AppSavedTripIdRouteImport
-      parentRoute: typeof AppSavedRoute
+    '/api/place-photo/sign': {
+      id: '/api/place-photo/sign'
+      path: '/sign'
+      fullPath: '/api/place-photo/sign'
+      preLoaderRoute: typeof ApiPlacePhotoSignRouteImport
+      parentRoute: typeof ApiPlacePhotoRoute
     }
-    '/_app/saved_/$tripId/packing': {
-      id: '/_app/saved_/$tripId/packing'
-      path: '/saved/$tripId/packing'
-      fullPath: '/saved/$tripId/packing'
-      preLoaderRoute: typeof AppSavedTripIdPackingRouteImport
-      parentRoute: typeof AppRoute
+    '/api/subscription/sync': {
+      id: '/api/subscription/sync'
+      path: '/api/subscription/sync'
+      fullPath: '/api/subscription/sync'
+      preLoaderRoute: typeof ApiSubscriptionSyncRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/subscription/webhook': {
+      id: '/api/subscription/webhook'
+      path: '/api/subscription/webhook'
+      fullPath: '/api/subscription/webhook'
+      preLoaderRoute: typeof ApiSubscriptionWebhookRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/_app/saved_/$tripId/expenses': {
       id: '/_app/saved_/$tripId/expenses'
       path: '/saved/$tripId/expenses'
       fullPath: '/saved/$tripId/expenses'
       preLoaderRoute: typeof AppSavedTripIdExpensesRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/saved_/$tripId/packing': {
+      id: '/_app/saved_/$tripId/packing'
+      path: '/saved/$tripId/packing'
+      fullPath: '/saved/$tripId/packing'
+      preLoaderRoute: typeof AppSavedTripIdPackingRouteImport
       parentRoute: typeof AppRoute
     }
   }
