@@ -1,7 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, Check, ChevronDown, Loader2, Trash2 } from "lucide-react";
 import { ProfileAvatar } from "@/components/profile/ProfileAvatar";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
+import { subscribeCapacitorKeyboard } from "@/lib/capacitor-keyboard-bridge";
+import {
+  isCapacitorNativeShell,
+  measureVisualViewportKeyboardInset,
+} from "@/lib/chat-keyboard-layout";
 import type { Locale } from "@/lib/i18n/types";
 import { formatTripWorkspaceTemplate, type TripExpensesCopy } from "@/lib/i18n/trip-workspace-copy";
 import { getIsoCurrencyExponent } from "@/lib/money/iso4217";
@@ -40,6 +45,8 @@ import {
 
 const TITLE_MAX = 80;
 const NOTE_MAX = 500;
+/** 備註框最高約 4 行：4 × 20px（leading-5）＋上下 py-2.5 */
+const NOTE_MAX_HEIGHT_PX = 100;
 
 type FormState = {
   amountText: string;
@@ -152,15 +159,71 @@ function PersonAvatar({ person, size = "h-8 w-8" }: { person: ExpensePerson; siz
   );
 }
 
+function isTextEntry(el: Element | null): el is HTMLElement {
+  return el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement;
+}
+
 export function ExpenseSheet(props: Props) {
   const { open, onOpenChange, expense, copy } = props;
   const isSettlement = expense?.kind === "settlement";
+  // Capacitor Keyboard 為 resize: "none"（鍵盤疊加、WebView 不縮）：以鍵盤高度墊高 Sheet 底部，
+  // 讓捲動區與底部按鈕都留在鍵盤上方（同 AddToTripSheet 的做法）。
+  const [keyboardInsetPx, setKeyboardInsetPx] = useState(0);
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) {
+      setKeyboardInsetPx(0);
+      return;
+    }
+    const isNative = isCapacitorNativeShell();
+    const applyInset = (px: number) => setKeyboardInsetPx(Math.max(0, Math.round(px)));
+    const removeCap = isNative
+      ? subscribeCapacitorKeyboard({ onShow: applyInset, onHide: () => applyInset(0) })
+      : null;
+
+    const vv = window.visualViewport;
+    const onVv = () => {
+      if (isNative || !vv) return;
+      const inset = Math.min(
+        measureVisualViewportKeyboardInset(),
+        Math.round(window.innerHeight * 0.55),
+      );
+      applyInset(inset > 50 ? inset : 0);
+    };
+    vv?.addEventListener("resize", onVv);
+    vv?.addEventListener("scroll", onVv);
+    onVv();
+
+    return () => {
+      removeCap?.();
+      vv?.removeEventListener("resize", onVv);
+      vv?.removeEventListener("scroll", onVv);
+    };
+  }, [open]);
+
+  // 鍵盤高度生效後，把正在輸入的欄位捲到可見範圍
+  useEffect(() => {
+    if (keyboardInsetPx <= 0) return;
+    const el = document.activeElement;
+    if (!isTextEntry(el) || !contentRef.current?.contains(el)) return;
+    const raf = requestAnimationFrame(() => el.scrollIntoView({ block: "nearest" }));
+    return () => cancelAnimationFrame(raf);
+  }, [keyboardInsetPx]);
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
+        ref={contentRef}
         side="bottom"
         closeLabel={copy.close}
         className="flex max-h-[92dvh] flex-col rounded-t-[1.75rem] border-0 bg-background px-0 pb-0"
+        style={keyboardInsetPx > 0 ? { paddingBottom: keyboardInsetPx } : undefined}
+        onFocusCapture={(e) => {
+          const el = e.target;
+          if (!isTextEntry(el)) return;
+          requestAnimationFrame(() => el.scrollIntoView({ block: "nearest" }));
+        }}
       >
         {isSettlement && expense ? (
           <SettlementDetail {...props} expense={expense} />
@@ -264,6 +327,15 @@ function ExpenseForm({
   const baseVersionRef = useRef<number | null>(expense?.version ?? null);
   const expenseRef = useRef(expense);
   expenseRef.current = expense;
+
+  // 備註：空白時單行高（與名稱欄同 h-10），輸入多行時自動長高，最多約 4 行後改為框內捲動
+  const noteRef = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const el = noteRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, NOTE_MAX_HEIGHT_PX)}px`;
+  }, [form.note, view]);
 
   // formKey 改變（版本衝突後載入最新版本）：以最新資料重設表單
   const lastFormKeyRef = useRef(formKey);
@@ -552,7 +624,7 @@ function ExpenseForm({
         {/* 名稱、日期 */}
         <div className="mt-5 grid grid-cols-[1fr_auto] gap-3">
           <label className="block min-w-0">
-            <span className="text-xs text-muted-foreground">{copy.titleLabel}</span>
+            <span className="block text-xs text-muted-foreground">{copy.titleLabel}</span>
             <input
               type="text"
               value={form.title}
@@ -564,13 +636,13 @@ function ExpenseForm({
             />
           </label>
           <label className="block">
-            <span className="text-xs text-muted-foreground">{copy.dateLabel}</span>
+            <span className="block text-xs text-muted-foreground">{copy.dateLabel}</span>
             <input
               type="date"
               value={form.date}
               onChange={(e) => update({ date: e.target.value })}
               aria-invalid={showError(dateError)}
-              className="mt-1 h-10 rounded-xl bg-secondary px-3 text-sm text-foreground outline-none"
+              className="mt-1 block h-10 w-full min-w-0 appearance-none rounded-xl bg-secondary px-3 text-left text-sm leading-10 text-foreground outline-none [&::-webkit-date-and-time-value]:text-left"
             />
           </label>
         </div>
@@ -587,7 +659,7 @@ function ExpenseForm({
           <div
             role="radiogroup"
             aria-label={copy.payerLabel}
-            className="no-scrollbar -mx-1 mt-2 flex gap-2 overflow-x-auto px-1 pb-1"
+            className="no-scrollbar -mx-1 mt-1 flex gap-2 overflow-x-auto px-1 py-1"
           >
             {candidates
               .filter((p) => !membersLoaded || p.isMember || p.userId === form.payerId)
@@ -787,8 +859,10 @@ function ExpenseForm({
             maxLength={NOTE_MAX}
             onChange={(e) => update({ note: e.target.value })}
             placeholder={copy.notePlaceholder}
-            rows={2}
-            className="mt-1 w-full resize-none rounded-xl bg-secondary px-3 py-2 text-sm text-foreground outline-none placeholder:text-muted-foreground"
+            rows={1}
+            ref={noteRef}
+            className="mt-1 block min-h-10 w-full resize-none overflow-y-auto rounded-xl bg-secondary px-3 py-2.5 text-sm leading-5 text-foreground outline-none placeholder:text-muted-foreground"
+            style={{ maxHeight: NOTE_MAX_HEIGHT_PX }}
           />
         </label>
       </div>

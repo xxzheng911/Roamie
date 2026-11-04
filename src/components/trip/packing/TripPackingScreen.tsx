@@ -59,11 +59,21 @@ import {
   type PackingIconKey,
 } from "./packing-model";
 import { packingDefaultNames, packingErrorMessage } from "./packing-text";
+import { packingSuggestionsFor } from "./packing-suggestions";
 
 /** 回到前景時重新讀取的最短間隔（同頁 30 秒內最多一次） */
 const FOREGROUND_REFETCH_MS = 30_000;
 const UNDO_TOAST_MS = 6_000;
 const MOVE_RELOAD_TIMEOUT_MS = 8000;
+// 標題列吸頂時蓋住狀態列：main.app-scroll 有 padding-top（狀態列高度），sticky 會停在 padding 下緣，
+// 捲動內容因而從 padding 區（狀態列）露出。以負 top 停在捲動容器最上緣，並以負 margin＋同量 padding
+// 把不透明背景延伸到狀態列；Duo 雙欄時 main 的 padding 為 --duo-app-top，取同一來源。
+const TRIP_SUBPAGE_TOP_INSET = "var(--duo-app-top, var(--safe-area-top, 0px))";
+const TRIP_SUBPAGE_HEADER_STYLE = {
+  top: `calc(-1 * ${TRIP_SUBPAGE_TOP_INSET})`,
+  marginTop: `calc(-1 * ${TRIP_SUBPAGE_TOP_INSET})`,
+  paddingTop: `calc(${TRIP_SUBPAGE_TOP_INSET} + 0.625rem)`,
+};
 
 // ── 快取更新輔助 ───────────────────────────────────────────────────────────
 function withItem(d: PackingData, row: PackingItem): PackingData {
@@ -136,6 +146,10 @@ export function TripPackingScreen({ tripId }: Props) {
   const [drafts, setDrafts] = useState<Readonly<Record<string, string>>>({});
   const [addingKey, setAddingKey] = useState<string | null>(null);
   const draftRequestIdsRef = useRef(new Map<string, { text: string; id: string }>());
+  // 建議標籤：送出中的標籤（分類 id＋名稱）與重試沿用的 client_request_id
+  const [addingSuggestions, setAddingSuggestions] = useState<ReadonlySet<string>>(() => new Set());
+  const addingSuggestionsRef = useRef(new Set<string>());
+  const suggestionRequestIdsRef = useRef(new Map<string, string>());
   const [itemSheet, setItemSheet] = useState<ItemSheetState>(CLOSED_ITEM_SHEET);
   const [savingItem, setSavingItem] = useState(false);
   const [deletingItem, setDeletingItem] = useState(false);
@@ -366,6 +380,65 @@ export function TripPackingScreen({ tripId }: Props) {
       if (mountedRef.current) setAddingKey(null);
     }
   };
+
+  // ── 建議標籤一鍵新增（不經過草稿輸入框；重試沿用同一個 client_request_id） ─────
+  const suggestionKeyOf = (categoryId: string, name: string) => `${categoryId}\u0000${name}`;
+
+  const addSuggestion = async (category: PackingCategory, name: string) => {
+    const key = suggestionKeyOf(category.id, name);
+    if (addingSuggestionsRef.current.has(key)) return;
+    addingSuggestionsRef.current.add(key);
+    setAddingSuggestions(new Set(addingSuggestionsRef.current));
+    let requestId = suggestionRequestIdsRef.current.get(key);
+    if (!requestId) {
+      requestId = newPackingRequestId();
+      suggestionRequestIdsRef.current.set(key, requestId);
+    }
+    try {
+      const current =
+        peekTripPacking(tripId)?.items.filter((i) => i.category_id === category.id) ?? [];
+      const row = await createPackingItem(tripId, {
+        category_id: category.id,
+        name,
+        quantity: 1,
+        note: null,
+        sort_index: nextPackingSortIndex(current),
+        client_request_id: requestId,
+      });
+      suggestionRequestIdsRef.current.delete(key);
+      patchCache((d) => withItem(d, row));
+    } catch (e) {
+      const code = tripPackingErrorCode(e);
+      console.warn("[TRIP_PACKING] add suggestion failed", code, e);
+      toast.error(packingErrorMessage(code, copy));
+      if (code === "packing_category_deleted" || code === "packing_category_not_found") {
+        suggestionRequestIdsRef.current.delete(key);
+        void reloadAfterWrite();
+      } else if (code === "packing_duplicate") {
+        // 舊 client_request_id 對應的那筆已被刪除：下次點擊改用新的 id
+        suggestionRequestIdsRef.current.delete(key);
+      }
+    } finally {
+      addingSuggestionsRef.current.delete(key);
+      if (mountedRef.current) setAddingSuggestions(new Set(addingSuggestionsRef.current));
+    }
+  };
+
+  // 重讀後物品已出現：該建議先前保留的 client_request_id 已用掉，清除以免刪除後再點卡在重複
+  useEffect(() => {
+    for (const key of [...suggestionRequestIdsRef.current.keys()]) {
+      if (addingSuggestionsRef.current.has(key)) continue;
+      const [categoryId, name] = key.split("\u0000");
+      const target = name.trim().toLowerCase();
+      if (
+        items.some(
+          (i) => i.category_id === categoryId && i.name.trim().toLowerCase() === target,
+        )
+      ) {
+        suggestionRequestIdsRef.current.delete(key);
+      }
+    }
+  }, [items]);
 
   // ── 物品編輯 Sheet ───────────────────────────────────────────────────
   const sheetItem = itemSheet.itemId
@@ -778,9 +851,56 @@ export function TripPackingScreen({ tripId }: Props) {
       </button>
     );
 
+  const renderSuggestions = (
+    category: PackingCategory,
+    label: string,
+    catItems: readonly PackingItem[],
+  ) => {
+    const names = packingSuggestionsFor(
+      locale,
+      category.default_key,
+      catItems.map((i) => i.name),
+    );
+    if (names.length === 0) return null;
+    return (
+      <div className="px-3 pb-1 pt-3">
+        <p className="text-xs text-muted-foreground">{copy.suggestionsLabel}</p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {names.map((name) => {
+            const busy = addingSuggestions.has(suggestionKeyOf(category.id, name));
+            return (
+              <button
+                key={name}
+                type="button"
+                onClick={() => void addSuggestion(category, name)}
+                disabled={busy}
+                aria-busy={busy || undefined}
+                aria-label={formatTripWorkspaceTemplate(copy.addSuggestionLabel, {
+                  item: name,
+                  name: label,
+                })}
+                className="inline-flex min-h-8 items-center gap-1 rounded-full border border-border bg-secondary px-3 py-1 text-xs text-foreground disabled:opacity-60"
+              >
+                {busy ? (
+                  <Loader2 className="h-3 w-3 shrink-0 animate-spin text-muted-foreground" />
+                ) : (
+                  <Plus className="h-3 w-3 shrink-0 text-muted-foreground" />
+                )}
+                {name}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="flex min-h-full flex-col">
-      <header className="sticky top-0 z-20 flex items-center gap-2 border-b border-border bg-background/95 px-3 py-2.5 backdrop-blur">
+      <header
+        className="sticky z-20 flex items-center gap-2 border-b border-border bg-background px-3 py-2.5"
+        style={TRIP_SUBPAGE_HEADER_STYLE}
+      >
         <button
           type="button"
           onClick={goBack}
@@ -945,6 +1065,7 @@ export function TripPackingScreen({ tripId }: Props) {
                             </ul>
                           ) : null}
                           <div className={catItems.length > 0 ? "border-t border-border" : ""}>
+                            {renderSuggestions(category, label, catItems)}
                             {renderAdder(category.id, category, label)}
                           </div>
                         </div>

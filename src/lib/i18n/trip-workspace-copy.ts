@@ -993,6 +993,8 @@ type TripPackingCopyKey =
   | "addItem"
   | "addItemPlaceholder"
   | "addItemLabel"
+  | "suggestionsLabel"
+  | "addSuggestionLabel"
   | "quantityBadge"
   | "itemSheetTitle"
   | "nameLabel"
@@ -1093,6 +1095,8 @@ const PACKING_COPY = {
     addItem: "新增物品",
     addItemPlaceholder: "輸入物品名稱，按 Enter 新增",
     addItemLabel: "新增到「{name}」的物品名稱",
+    suggestionsLabel: "建議",
+    addSuggestionLabel: "新增「{item}」到「{name}」",
     quantityBadge: "×{count}",
     itemSheetTitle: "編輯物品",
     nameLabel: "名稱",
@@ -1194,6 +1198,8 @@ const PACKING_COPY = {
     addItem: "Add item",
     addItemPlaceholder: "Item name, press Enter to add",
     addItemLabel: "New item name for “{name}”",
+    suggestionsLabel: "Suggestions",
+    addSuggestionLabel: "Add “{item}” to “{name}”",
     quantityBadge: "×{count}",
     itemSheetTitle: "Edit item",
     nameLabel: "Name",
@@ -1297,6 +1303,8 @@ const PACKING_COPY = {
     addItem: "持ち物を追加",
     addItemPlaceholder: "持ち物の名前を入力して Enter",
     addItemLabel: "「{name}」に追加する持ち物の名前",
+    suggestionsLabel: "おすすめ",
+    addSuggestionLabel: "「{item}」を「{name}」に追加",
     quantityBadge: "×{count}",
     itemSheetTitle: "持ち物を編集",
     nameLabel: "名前",
@@ -1401,6 +1409,8 @@ const PACKING_COPY = {
     addItem: "짐 추가",
     addItemPlaceholder: "짐 이름을 입력하고 Enter",
     addItemLabel: "“{name}”에 추가할 짐 이름",
+    suggestionsLabel: "추천",
+    addSuggestionLabel: "“{item}”을(를) “{name}”에 추가",
     quantityBadge: "×{count}",
     itemSheetTitle: "짐 편집",
     nameLabel: "이름",

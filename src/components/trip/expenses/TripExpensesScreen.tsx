@@ -54,6 +54,15 @@ import { PULL_TO_REFRESH_TRIGGER_PX, usePullToRefresh } from "./use-pull-to-refr
 const FOREGROUND_REFETCH_MS = 30_000;
 const UNDO_TOAST_MS = 6_000;
 const TITLE_MAX = 80;
+// 標題列吸頂時蓋住狀態列：main.app-scroll 有 padding-top（狀態列高度），sticky 會停在 padding 下緣，
+// 捲動內容因而從 padding 區（狀態列）露出。以負 top 停在捲動容器最上緣，並以負 margin＋同量 padding
+// 把不透明背景延伸到狀態列；Duo 雙欄時 main 的 padding 為 --duo-app-top，取同一來源。
+const TRIP_SUBPAGE_TOP_INSET = "var(--duo-app-top, var(--safe-area-top, 0px))";
+const TRIP_SUBPAGE_HEADER_STYLE = {
+  top: `calc(-1 * ${TRIP_SUBPAGE_TOP_INSET})`,
+  marginTop: `calc(-1 * ${TRIP_SUBPAGE_TOP_INSET})`,
+  paddingTop: `calc(${TRIP_SUBPAGE_TOP_INSET} + 0.625rem)`,
+};
 
 type Tab = "expenses" | "settle";
 
@@ -434,7 +443,10 @@ export function TripExpensesScreen({ tripId }: Props) {
 
   return (
     <div className="flex min-h-full flex-col">
-      <header className="sticky top-0 z-20 flex items-center gap-2 border-b border-border bg-background/95 px-3 py-2.5 backdrop-blur">
+      <header
+        className="sticky z-20 flex items-center gap-2 border-b border-border bg-background px-3 py-2.5"
+        style={TRIP_SUBPAGE_HEADER_STYLE}
+      >
         <button
           type="button"
           onClick={goBack}
