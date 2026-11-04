@@ -18,7 +18,6 @@ import { ProfileAvatar } from "@/components/profile/ProfileAvatar";
 import { useCover } from "@/hooks/use-cover";
 import { useI18n } from "@/hooks/use-i18n";
 import { ProfileFeedbackLinks } from "@/components/profile/ProfileFeedbackLinks";
-import { ROAMIE_BUILD_DEBUG } from "@/lib/app-bundle-version";
 import { getClientAuthSession, isAuthSessionMissingError } from "@/lib/auth-session";
 import { ImageSourceSheet } from "@/components/ImageSourceSheet";
 import { ProfileCover } from "@/components/ProfileCover";
@@ -1144,9 +1143,6 @@ function Profile() {
 
       <p className="mt-8 text-center text-[11px] leading-relaxed text-muted-foreground">
         {t("profile.footer")}
-      </p>
-      <p className="mt-2 text-center font-mono text-[10px] text-muted-foreground/70">
-        {ROAMIE_BUILD_DEBUG}
       </p>
 
       {user ? (
