@@ -103,8 +103,11 @@ import {
 } from "@/lib/ai/itinerary-validator/diversity-degradation";
 import {
   classifyDailyDiversityCategory,
+  isSelectedOnlyRelaxedEntry,
   resolveDailyDiversityLimits,
+  selectedOnlyAwareDiversityExcess,
   wouldViolateDailyDiversity,
+  type DailyDiversityAuthority,
 } from "@/lib/ai/daily-category-diversity";
 
 export type ItineraryReplanParams = {
@@ -128,6 +131,37 @@ function lockFromValidatorInput(
     selectedPlaceNames: [...(input.lockedPlaceNames ?? [])],
     placeIds: [...(input.lockedPlaceIds ?? [])],
   });
+}
+
+/**
+ * Selection gate (placeAuthority "selected_only"): locked stops are the user's own picks,
+ * so per-day family caps are relaxed for them only. Other paths → undefined (legacy caps).
+ */
+function selectedOnlyDiversityAuthority(
+  input: Omit<ItineraryValidatorInput, "plans"> | undefined,
+): DailyDiversityAuthority | undefined {
+  if (input?.placeAuthority !== "selected_only") return undefined;
+  return {
+    style: input.style,
+    userText: input.userText,
+    placeAuthority: "selected_only",
+    lockedPlaceIds: input.lockedPlaceIds,
+    lockedPlaceNames: input.lockedPlaceNames,
+  };
+}
+
+/** Cohesion moves respect the slow-travel day cap when the validator runs in slow mode. */
+function cohesionPace(
+  input: Omit<ItineraryValidatorInput, "plans"> | undefined,
+): "slow" | undefined {
+  return input?.slowTravel ? "slow" : undefined;
+}
+
+function selectedOnlyRelaxPredicate(
+  authority: DailyDiversityAuthority | undefined,
+): ((place: PlaceResult) => boolean) | undefined {
+  if (!authority) return undefined;
+  return (place) => isSelectedOnlyRelaxedEntry({ place, name: place.name }, authority);
 }
 
 const DAILY_SCHEDULE_RULE_CODES = new Set<string>([
@@ -549,8 +583,15 @@ function repairDailyCategoryDiversity(
   partialDays?: readonly number[],
   generationId?: string,
   plannedDate?: string,
+  selectedAuthority?: DailyDiversityAuthority,
 ): ComposedDayPlan[] {
   const limits = resolveDailyDiversityLimits({ style });
+  // Selection gate: same-family user picks may share a day (validator already treats that
+  // as a required_only warning). Only move stops when an AI/supplemental stop overflows,
+  // otherwise the diversity move would split geographically grouped user picks again.
+  const skipMoveForSelectedOnly =
+    selectedAuthority?.placeAuthority === "selected_only" &&
+    plans.every((plan) => selectedOnlyAwareDiversityExcess(plan.entries, selectedAuthority) === 0);
   const beforeViolations = plans.flatMap((plan) => {
     const families = new Set(
       plan.entries.map((entry) => classifyDailyDiversityCategory(entry.place)),
@@ -585,13 +626,15 @@ function repairDailyCategoryDiversity(
       ];
     });
   });
-  const moved = repairDailyDiversityByMove({
-    plans,
-    tripDays: days,
-    style,
-    lock,
-    telemetryRepairRound,
-  });
+  const moved = skipMoveForSelectedOnly
+    ? { plans: plans.map((plan) => ({ ...plan, entries: [...plan.entries] })), moved: 0 }
+    : repairDailyDiversityByMove({
+        plans,
+        tripDays: days,
+        style,
+        lock,
+        telemetryRepairRound,
+      });
   // Coverage may have been disturbed by moves — re-cover empty days.
   const covered = ensureAllDaysCovered({
     plans: moved.plans,
@@ -1127,6 +1170,8 @@ export function repairRedistributeAcrossDays(
   nearbyExtensions: string[] | undefined,
   force: boolean,
   lock: SelectedPlaceLock | null,
+  selectedAuthority?: DailyDiversityAuthority,
+  pace?: "slow",
 ): ComposedDayPlan[] {
   const counts = dayCountsOfPlans(plans);
   const max = Math.max(0, ...counts);
@@ -1165,6 +1210,8 @@ export function repairRedistributeAcrossDays(
       days,
       style,
       plannedDate,
+      relaxDiversityFor: selectedOnlyRelaxPredicate(selectedAuthority),
+      pace,
     });
     if (preservesRequiredEntries(redistributed)) current = redistributed;
   }
@@ -1205,6 +1252,7 @@ function applyAutoRepairPass(
   ]).places;
   const previousDayCounts = dayCountsOfPlans(current);
   const needsCoverage = shouldRepairDayCoverage(reasons, previousDayCounts);
+  const selectedAuthority = selectedOnlyDiversityAuthority(diversityAuthority);
 
   logAiPipeline(
     "[ITINERARY_AUTO_REPAIR_START]",
@@ -1246,12 +1294,15 @@ function applyAutoRepairPass(
     partialDays,
     generationId,
     plannedDate,
+    selectedAuthority,
   );
   current = repairCrossDayGeographicCohesion(current, {
     generationId,
     stage: "post_diversity_move",
     plannedDate,
     logDiagnostics: false,
+    diversityAuthority: selectedAuthority,
+    pace: cohesionPace(diversityAuthority),
   });
   current = repairNonNavigableStops(current, mergedPool, days, style, lock);
   current = repairNightlifeTiming(current, days);
@@ -1318,6 +1369,8 @@ function applyAutoRepairPass(
       nearbyExtensions,
       softBalance || attempt >= 3 || needsCoverage,
       lock,
+      selectedAuthority,
+      cohesionPace(diversityAuthority),
     );
     current = repairEmptyDays(current, days, partialDays, lock);
     current = repairCrossDayGeographicCohesion(current, {
@@ -1325,6 +1378,8 @@ function applyAutoRepairPass(
       stage: "post_redistribution",
       plannedDate,
       logDiagnostics: false,
+      diversityAuthority: selectedAuthority,
+      pace: cohesionPace(diversityAuthority),
     });
     current = applyFinalDayRouteOrdering(current, {
       generationId,
@@ -1360,6 +1415,7 @@ function applyAutoRepairPass(
     partialDays,
     generationId,
     plannedDate,
+    selectedAuthority,
   );
   current = repairEmptyDays(current, days, partialDays, lock);
   current = repairNightlifeTiming(current, days);
@@ -1378,6 +1434,19 @@ function applyAutoRepairPass(
         return { start: budget.dayStartTime, end: budget.dayEndTime };
       },
       isClosedAt: (place, time) => isClearlyClosedForSchedule(place, time),
+    });
+  }
+  if (selectedAuthority) {
+    // Selection gate: the same-day reorder / long-leg / schedule-balance steps above can
+    // split user picks that already shared an area. Re-group them as the last membership
+    // step (cohesion only commits strictly cheaper, timeline-feasible moves/swaps).
+    current = repairCrossDayGeographicCohesion(current, {
+      generationId,
+      stage: "post_rebuild",
+      plannedDate,
+      logDiagnostics: false,
+      diversityAuthority: selectedAuthority,
+      pace: cohesionPace(diversityAuthority),
     });
   }
   current = normalizeCompleteDayMap(
@@ -1732,6 +1801,8 @@ export function replanUntilItineraryValid(
       generationId: params.generationId,
       stage: "post_required_repair",
       plannedDate: params.plannedDate,
+      diversityAuthority: selectedOnlyDiversityAuthority(params.validatorInput),
+      pace: cohesionPace(params.validatorInput),
     });
     plans = applyFinalDayRouteOrdering(plans, {
       generationId: params.generationId,
@@ -1850,6 +1921,10 @@ export function replanUntilItineraryValid(
           days: params.days,
           style: params.style,
           plannedDate: params.plannedDate,
+          relaxDiversityFor: selectedOnlyRelaxPredicate(
+            selectedOnlyDiversityAuthority(params.validatorInput),
+          ),
+          pace: cohesionPace(params.validatorInput),
         });
         const requiredEntries = plans.flatMap((plan) =>
           plan.entries.filter((entry) => isLockedEntry(entry, selectedLock)),
@@ -1870,6 +1945,8 @@ export function replanUntilItineraryValid(
           generationId: params.generationId,
           stage: "post_redistribution",
           plannedDate: params.plannedDate,
+          diversityAuthority: selectedOnlyDiversityAuthority(params.validatorInput),
+          pace: cohesionPace(params.validatorInput),
         });
         plans = applyFinalDayRouteOrdering(plans, {
           generationId: params.generationId,

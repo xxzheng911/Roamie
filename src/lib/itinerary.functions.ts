@@ -1195,9 +1195,26 @@ export const generateItinerary = createServerFn({ method: "POST" })
 
     let finalStops = coalesceItineraryItems(ai.itinerary);
     let finalTimelineNormalization: TimelineNormalizationObservation | undefined;
+    // Selection gate: every locked stop is user-picked, so cohesion may group same-family
+    // picks on one day. AI/supplemental stops keep the normal per-day family cap.
+    const cohesionDiversityAuthority =
+      data.placeAuthority === "selected_only"
+        ? {
+            style: resolvePlannerStyleKey(data.style),
+            userText: [data.interests, data.conversationSummary].filter(Boolean).join("\n"),
+            placeAuthority: "selected_only" as const,
+            lockedPlaceIds: requiredSelectedPlaces
+              .map((place) => place.googlePlaceId?.trim())
+              .filter((id): id is string => Boolean(id)),
+            lockedPlaceNames: requiredSelectedPlaces.map((place) => place.placeName ?? place.name),
+          }
+        : undefined;
     const routeFinalStops = (stage: ItineraryRouteOrderStage): void => {
       let composedPlans = composedPlansFromItineraryItems(finalStops, data.days, startDate);
       if (
+        // AI path: the model's day split is not geography-checked anywhere else when the
+        // validator is off, so always run the unmerged-cluster cohesion repair once here.
+        (stage === "initial" && !usedDeterministic) ||
         stage === "post_required_repair" ||
         stage === "post_redistribution" ||
         stage === "post_rebuild" ||
@@ -1219,6 +1236,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
           plannedDate: startDate,
           pace: effectivePace,
           normalizationOutcome,
+          diversityAuthority: cohesionDiversityAuthority,
         });
         if (normalizationOutcome) finalTimelineNormalization = normalizationOutcome;
         // Cross-day moves are not schedule-aware: re-anchor meals on days whose stops changed
@@ -2104,6 +2122,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
           plan.entries.map((entry) => ({ place: entry.place, day: plan.day })),
         ),
         data.days,
+        { fitToDays: false },
       );
       console.info("[ITINERARY_CROSS_DAY_GEOGRAPHIC_VALIDATION]", {
         generationId,

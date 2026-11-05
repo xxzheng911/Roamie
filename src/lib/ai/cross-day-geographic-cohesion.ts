@@ -3,17 +3,28 @@ const MAX_NORMALIZATION_FAILURES = 4;
 type SlotRejectionCounts = { evaluated: number; order: number; used: number; closed: number; window: number };
 export type NormalizationFailure = SlotRejectionCounts & { day: number; failedTime?: string };
 import type { ComposedDayPlan, DayPlanEntry } from "@/lib/ai/ai-day-plan-source";
-import { minItemsPerDayForTrip } from "@/lib/ai/ai-day-plan-source";
-import { maxEffectivePlacesPerDay, type PlannerPaceHint } from "@/lib/ai/planner-day-route-assembly";
+import {
+  maxEffectivePlacesPerDay,
+  minEffectivePlacesPerDay,
+  type PlannerPaceHint,
+} from "@/lib/ai/planner-day-route-assembly";
 import { clusterItemsByGeography, type GeoAccessor } from "@/lib/ai/geographic-clustering";
 import { isClearlyClosedAtSlot } from "@/lib/ai/itinerary-validator/place-checks";
-import { dailyDiversityFamilyCounts, resolveDailyDiversityLimits } from "@/lib/ai/daily-category-diversity";
+import {
+  dailyDiversityFamilyCounts,
+  isSelectedOnlyRelaxedEntry,
+  resolveDailyDiversityLimits,
+  SELECTED_ONLY_MIN_PER_DAY,
+  selectedOnlyAwareDiversityExcess,
+  type DailyDiversityAuthority,
+} from "@/lib/ai/daily-category-diversity";
 import { LEGAL_DAY_TIME_SLOTS } from "@/lib/ai/day-time-slots";
 import { resolveNightlifeClassification } from "@/lib/ai/nightlife-classification";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { distanceMeters } from "@/lib/geo-distance";
 
 export type CrossDayCohesionStage =
+  | "initial"
   | "post_required_repair"
   | "post_diversity_move"
   | "post_coverage_move"
@@ -39,6 +50,12 @@ export type CrossDayCohesionContext = {
   pace?: PlannerPaceHint;
   logDiagnostics?: boolean;
   normalizationOutcome?: TimelineNormalizationObservation;
+  /**
+   * Selection gate only (placeAuthority "selected_only"): user-picked stops are not
+   * held to the per-day family cap when moved toward their geographic cluster.
+   * Absent → legacy "mixed" cap counting for every stop.
+   */
+  diversityAuthority?: DailyDiversityAuthority;
 };
 
 const FIXED_DAY_RE =
@@ -100,7 +117,13 @@ function dayCost(entries: readonly DayPlanEntry[]): number {
   }, 0);
 }
 
-function diversityOverflow(entries: readonly DayPlanEntry[]): number {
+function diversityOverflow(
+  entries: readonly DayPlanEntry[],
+  authority?: DailyDiversityAuthority,
+): number {
+  if (authority?.placeAuthority === "selected_only") {
+    return selectedOnlyAwareDiversityExcess(entries, authority);
+  }
   const counts = dailyDiversityFamilyCounts(entries.map((entry) => entry.place));
   const limits = resolveDailyDiversityLimits({ style: "mixed" });
   return Object.entries(limits).reduce(
@@ -396,6 +419,24 @@ function publishNormalizationOutcome(
   outcome.affectedDays = uniqueDays(invoked.map((item) => item.day));
 }
 
+/** Upper bound on swap/move rounds in repairCrossDayGeographicCohesion. */
+const MAX_COHESION_ROUNDS = 4;
+
+/** Insert at the stop's own clock position so a morning stop is not pushed to evening. */
+function insertByClock(entries: readonly DayPlanEntry[], entry: DayPlanEntry): DayPlanEntry[] {
+  const entryClock = clockMinutes(entry.time);
+  const insertAt =
+    entryClock == null
+      ? -1
+      : entries.findIndex((candidate) => {
+          const clock = clockMinutes(candidate.time);
+          return clock != null && clock > entryClock;
+        });
+  return insertAt < 0
+    ? [...entries, entry]
+    : [...entries.slice(0, insertAt), entry, ...entries.slice(insertAt)];
+}
+
 function bucketDistance(value: number): string {
   if (value < 250) return "lt_250m";
   if (value < 750) return "250_749m";
@@ -427,61 +468,181 @@ export function repairCrossDayGeographicCohesion(
   }
   const { clusters } = clusterItemsByGeography(located, plans.length, ACCESSOR, { fitToDays: false });
   const maxPerDay = maxEffectivePlacesPerDay(context.pace);
-  const minPerDay = minItemsPerDayForTrip(plans.length);
+  // Pace route minimum (3 / slow 2). The slot-template minimum (7) is always above
+  // maxPerDay, which made every cross-day move impossible and left only swaps.
+  const minPerDay = minEffectivePlacesPerDay(context.pace);
+  const authority = context.diversityAuthority;
+  // Selection gate: a day made only of user picks may drop to 2 stops (any pace) so a
+  // same-area group can share one day. The validator only warns on sparse selected_only days.
+  const sourceMinimum = (entries: readonly DayPlanEntry[]): number =>
+    authority?.placeAuthority === "selected_only" &&
+    entries.length > 0 &&
+    entries.every((candidate) => isSelectedOnlyRelaxedEntry(candidate, authority))
+      ? SELECTED_ONLY_MIN_PER_DAY
+      : minPerDay;
   let repairApplied = false;
+  const selectedOnly = authority?.placeAuthority === "selected_only";
+  const clusterOf = new Map<string, number>();
+  clusters.forEach((cluster, index) => {
+    for (const item of cluster.items) clusterOf.set(hashEntry(item.entry), index);
+  });
 
-  for (const cluster of clusters) {
-    const clusterHashes = new Set(cluster.items.map((item) => hashEntry(item.entry)));
-    const membersByDay = plans.map((plan) => ({
-      plan,
-      members: plan.entries.filter((entry) => clusterHashes.has(hashEntry(entry))),
-    })).filter((item) => item.members.length);
-    if (membersByDay.length <= 1) continue;
-    const target = [...membersByDay].sort((a, b) => b.members.length - a.members.length || a.plan.day - b.plan.day)[0]!;
+  /**
+   * Selection gate only. Commit "entry: source → target" together with "refill: third → source"
+   * when the source alone would drop below its minimum. The refill must be a non-meal stop
+   * whose cluster still has a member on the source day, the third day must stay at or above
+   * its own minimum, and the three touched days must strictly improve in total cost without
+   * more diversity overflow, with every touched timeline still assignable.
+   */
+  const tryRefillMove = (
+    sourcePlan: ComposedDayPlan,
+    targetPlan: ComposedDayPlan,
+    entry: DayPlanEntry,
+    nextSource: readonly DayPlanEntry[],
+    nextTarget: readonly DayPlanEntry[],
+  ): boolean => {
+    const remainingClusters = new Set(
+      nextSource.map((candidate) => clusterOf.get(hashEntry(candidate))).filter((id) => id != null),
+    );
+    const entryCluster = clusterOf.get(hashEntry(entry));
+    let best: { donor: ComposedDayPlan; source: DayPlanEntry[]; donorNext: DayPlanEntry[]; after: number } | null = null;
+    for (const donor of plans) {
+      if (donor === sourcePlan || donor === targetPlan) continue;
+      if (donor.entries.length - 1 < sourceMinimum(donor.entries)) continue;
+      const before =
+        dayCost(sourcePlan.entries) + dayCost(targetPlan.entries) + dayCost(donor.entries);
+      const diversityBefore =
+        diversityOverflow(sourcePlan.entries, authority) +
+        diversityOverflow(targetPlan.entries, authority) +
+        diversityOverflow(donor.entries, authority);
+      for (const refill of donor.entries) {
+        const refillCluster = clusterOf.get(hashEntry(refill));
+        if (refillCluster == null || refillCluster === entryCluster) continue;
+        if (!remainingClusters.has(refillCluster)) continue;
+        if (mealWindow(refill.label ?? "") != null) continue;
+        if (!legalOnDay(refill, sourcePlan.day, context)) continue;
+        const refilledSource = insertByClock(nextSource, refill);
+        const donorNext = donor.entries.filter((candidate) => candidate !== refill);
+        const after = dayCost(refilledSource) + dayCost(nextTarget) + dayCost(donorNext);
+        const diversityAfter =
+          diversityOverflow(refilledSource, authority) +
+          diversityOverflow(nextTarget, authority) +
+          diversityOverflow(donorNext, authority);
+        if (!(after + 1 < before) || diversityAfter > diversityBefore) continue;
+        if (best && after >= best.after) continue;
+        best = { donor, source: refilledSource, donorNext, after };
+      }
+    }
+    if (!best) return false;
+    if (
+      !timelinesFit(best.source, sourcePlan.day, nextTarget, targetPlan.day, context) ||
+      !resolveRecipientDayTimeline(best.donorNext, dateForDay(context.plannedDate, best.donor.day)).safe
+    ) {
+      return false;
+    }
+    sourcePlan.entries = best.source;
+    targetPlan.entries = [...nextTarget];
+    best.donor.entries = best.donorNext;
+    return true;
+  };
 
-    for (const source of membersByDay.filter((item) => item.plan.day !== target.plan.day)) {
-      for (const entry of [...source.members]) {
-        if (!legalOnDay(entry, target.plan.day, context)) continue;
-        const sourceIndex = source.plan.entries.indexOf(entry);
-        if (sourceIndex < 0) continue;
-        const before = dayCost(source.plan.entries) + dayCost(target.plan.entries);
-        const diversityBefore = diversityOverflow(source.plan.entries) + diversityOverflow(target.plan.entries);
-        if (target.plan.entries.length < maxPerDay && source.plan.entries.length > minPerDay) {
-          const nextSource = source.plan.entries.filter((candidate) => candidate !== entry);
-          const nextTarget = [...target.plan.entries, entry];
-          const after = dayCost(nextSource) + dayCost(nextTarget);
-          const diversityAfter = diversityOverflow(nextSource) + diversityOverflow(nextTarget);
-          if (after + 1 < before && diversityAfter <= diversityBefore) {
+  /**
+   * One pass over every split cluster.
+   * "swap": exchange a stray member with a non-member of the cluster's main day (counts unchanged).
+   * "move": relocate a stray member that no swap could place, keeping both days inside
+   * [pace minimum, pace maximum]. Meal-slot stops are never moved alone, so a day does
+   * not lose its lunch/dinner anchor and the target does not stack a second one.
+   */
+  const runPass = (mode: "swap" | "move"): boolean => {
+    let passChanged = false;
+    for (const cluster of clusters) {
+      const clusterHashes = new Set(cluster.items.map((item) => hashEntry(item.entry)));
+      const membersByDay = plans.map((plan) => ({
+        plan,
+        members: plan.entries.filter((entry) => clusterHashes.has(hashEntry(entry))),
+      })).filter((item) => item.members.length);
+      if (membersByDay.length <= 1) continue;
+      const target = [...membersByDay].sort((a, b) => b.members.length - a.members.length || a.plan.day - b.plan.day)[0]!;
+
+      for (const source of membersByDay.filter((item) => item.plan.day !== target.plan.day)) {
+        for (const entry of [...source.members]) {
+          if (!legalOnDay(entry, target.plan.day, context)) continue;
+          const sourceIndex = source.plan.entries.indexOf(entry);
+          if (sourceIndex < 0) continue;
+          const before = dayCost(source.plan.entries) + dayCost(target.plan.entries);
+          const diversityBefore =
+            diversityOverflow(source.plan.entries, authority) +
+            diversityOverflow(target.plan.entries, authority);
+          if (mode === "move") {
+            if (mealWindow(entry.label ?? "") != null) continue;
+            if (target.plan.entries.length + 1 > maxPerDay) continue;
+            const nextSource = source.plan.entries.filter((candidate) => candidate !== entry);
+            const nextTarget = insertByClock(target.plan.entries, entry);
+            if (source.plan.entries.length - 1 < sourceMinimum(source.plan.entries)) {
+              // Selection gate only — paired move: the source would fall below its minimum,
+              // so refill it with a stray from a third day whose cluster sits on the source day.
+              if (
+                selectedOnly &&
+                tryRefillMove(source.plan, target.plan, entry, nextSource, nextTarget)
+              ) {
+                passChanged = true;
+              }
+              continue;
+            }
+            const after = dayCost(nextSource) + dayCost(nextTarget);
+            const diversityAfter =
+              diversityOverflow(nextSource, authority) + diversityOverflow(nextTarget, authority);
+            if (
+              after + 1 < before &&
+              diversityAfter <= diversityBefore &&
+              timelinesFit(nextSource, source.plan.day, nextTarget, target.plan.day, context)
+            ) {
+              source.plan.entries = nextSource;
+              target.plan.entries = nextTarget;
+              passChanged = true;
+            }
+            continue;
+          }
+          let bestSwap: { entry: DayPlanEntry; after: number } | null = null;
+          for (const swap of target.plan.entries) {
+            if (clusterHashes.has(hashEntry(swap)) || !legalOnDay(swap, source.plan.day, context)) continue;
+            const nextSource = source.plan.entries.map((candidate) => candidate === entry ? swap : candidate);
+            const nextTarget = target.plan.entries.map((candidate) => candidate === swap ? entry : candidate);
+            const after = dayCost(nextSource) + dayCost(nextTarget);
+            const diversityAfter =
+              diversityOverflow(nextSource, authority) + diversityOverflow(nextTarget, authority);
+            if (after + 1 < before && diversityAfter <= diversityBefore && (!bestSwap || after < bestSwap.after)) bestSwap = { entry: swap, after };
+          }
+          if (bestSwap) {
+            const swapEntry = bestSwap.entry;
+            const nextSource = source.plan.entries.map((candidate) => candidate === entry ? swapEntry : candidate);
+            const nextTarget = target.plan.entries.map((candidate) => candidate === swapEntry ? entry : candidate);
             if (timelinesFit(nextSource, source.plan.day, nextTarget, target.plan.day, context)) {
               source.plan.entries = nextSource;
               target.plan.entries = nextTarget;
-              repairApplied = true;
-              continue;
+              passChanged = true;
             }
-          }
-        }
-        let bestSwap: { entry: DayPlanEntry; after: number } | null = null;
-        for (const swap of target.plan.entries) {
-          if (clusterHashes.has(hashEntry(swap)) || !legalOnDay(swap, source.plan.day, context)) continue;
-          const nextSource = source.plan.entries.map((candidate) => candidate === entry ? swap : candidate);
-          const nextTarget = target.plan.entries.map((candidate) => candidate === swap ? entry : candidate);
-          const after = dayCost(nextSource) + dayCost(nextTarget);
-          const diversityAfter = diversityOverflow(nextSource) + diversityOverflow(nextTarget);
-          if (after + 1 < before && diversityAfter <= diversityBefore && (!bestSwap || after < bestSwap.after)) bestSwap = { entry: swap, after };
-        }
-        if (bestSwap) {
-          const swapEntry = bestSwap.entry;
-          const nextSource = source.plan.entries.map((candidate) => candidate === entry ? swapEntry : candidate);
-          const nextTarget = target.plan.entries.map((candidate) => candidate === swapEntry ? entry : candidate);
-          if (timelinesFit(nextSource, source.plan.day, nextTarget, target.plan.day, context)) {
-            source.plan.entries = nextSource;
-            target.plan.entries = nextTarget;
-            repairApplied = true;
           }
         }
       }
     }
+    return passChanged;
+  };
+  // Swaps first (balanced counts), then moves only for members no swap could co-locate,
+  // then one more swap pass for room the moves opened up. AI-recommended trips run this
+  // once. The selection gate repeats swap+move rounds while a move committed, so a split
+  // that needs two steps (paired refill, then the stray move) can still be undone. Every
+  // committed swap/move strictly lowers the touched days' total cost and changes nothing
+  // else, and MAX_COHESION_ROUNDS caps the loop regardless.
+  const rounds = selectedOnly ? MAX_COHESION_ROUNDS : 1;
+  let lastMoved = false;
+  for (let round = 0; round < rounds; round += 1) {
+    const swapped = runPass("swap");
+    lastMoved = runPass("move");
+    if (swapped || lastMoved) repairApplied = true;
+    if (!lastMoved) break;
   }
+  if (lastMoved && runPass("swap")) repairApplied = true;
 
   for (const plan of plans) {
     const before = entriesBeforeRepair.get(plan.day) ?? [];

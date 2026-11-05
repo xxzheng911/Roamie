@@ -336,7 +336,54 @@ export type DailyDiversityAuthority = {
   userText?: string;
   lockedPlaceIds?: readonly string[];
   lockedPlaceNames?: readonly string[];
+  /** Selection gate: every locked stop was picked by the user, not by AI. */
+  placeAuthority?: "selected_only";
 };
+
+/**
+ * Selection gate: a day made only of user picks may hold as few as this many stops
+ * (any pace) when stops are regrouped by geography. Validator treats it as a warning.
+ */
+export const SELECTED_ONLY_MIN_PER_DAY = 2;
+
+/**
+ * Selection-gate relaxation: a user-picked stop (placeAuthority "selected_only" and
+ * listed in lockedPlaceIds/lockedPlaceNames) is not held to the per-day family cap.
+ * AI-chosen or supplemental stops keep the normal cap.
+ */
+export function isSelectedOnlyRelaxedEntry(
+  entry: { place: PlaceResult; name?: string },
+  authority: DailyDiversityAuthority | null | undefined,
+): boolean {
+  return Boolean(
+    authority?.placeAuthority === "selected_only" && requiredDailyDiversityEntry(entry, authority),
+  );
+}
+
+/** Per-day family excess counting only stops that are not user-picked under selected_only. */
+export function selectedOnlyAwareDiversityExcess(
+  entries: readonly { place: PlaceResult; name?: string }[],
+  authority: DailyDiversityAuthority,
+): number {
+  const limits = resolveDailyDiversityLimits(authority);
+  const counted = entries
+    .filter((entry) => !isSelectedOnlyRelaxedEntry(entry, authority))
+    .map((entry) => entry.place);
+  const relaxed = entries
+    .filter((entry) => isSelectedOnlyRelaxedEntry(entry, authority))
+    .map((entry) => entry.place);
+  const countedByFamily = dailyDiversityFamilyCounts(counted);
+  const relaxedByFamily = dailyDiversityFamilyCounts(relaxed);
+  let excess = 0;
+  for (const [family, count] of Object.entries(countedByFamily)) {
+    const limit = resolveCategoryLimit(family as DailyDiversityCategory, limits);
+    if (!Number.isFinite(limit)) continue;
+    // User-picked stops occupy family capacity first; AI stops may only fill what is left.
+    const remaining = Math.max(0, limit - (relaxedByFamily[family] ?? 0));
+    excess += Math.max(0, count - remaining);
+  }
+  return excess;
+}
 
 export function requiredDailyDiversityEntry(
   entry: { place: PlaceResult; name?: string },

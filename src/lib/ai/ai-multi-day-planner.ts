@@ -49,6 +49,7 @@ import {
   applyPlannerRouteAndCapacityAssembly,
   buildDayPreferredPools,
   placeDistanceM,
+  maxEffectivePlacesPerDay,
   passesDayRouteConstraint,
   resolveNearbyExtensionDay,
   type PlannerPaceHint,
@@ -58,8 +59,11 @@ import {
   classifyDailyDiversityCategory,
   formatDailyDiversityFamilySummary,
   resolveDailyDiversityLimits,
+  SELECTED_ONLY_MIN_PER_DAY,
   wouldViolateDailyDiversity,
 } from "@/lib/ai/daily-category-diversity";
+import { clusterItemsByGeography, type GeoAccessor } from "@/lib/ai/geographic-clustering";
+import { distanceMeters } from "@/lib/geo-distance";
 
 export const MAX_TRIP_DUPLICATE_RATE = 0.2;
 /** 進入 Planner 前：候選池每天至少 6 個（4 天 = 至少 24） */
@@ -196,12 +200,127 @@ function entryFromPlace(
   };
 }
 
+const REDISTRIBUTE_GEO_ACCESSOR: GeoAccessor<{ place: PlaceResult; index: number }> = {
+  coords: ({ place }) =>
+    place.lat != null && place.lng != null && Number.isFinite(place.lat) && Number.isFinite(place.lng)
+      ? { lat: place.lat, lng: place.lng }
+      : null,
+  id: ({ place, index }) => resolveTripPlaceId(place) || `idx:${index}`,
+  name: ({ place }) => place.name ?? "",
+  address: ({ place }) => place.address ?? "",
+  weight: ({ place }) => place.userRatingCount ?? 0,
+};
+/** Splitting one same-area cluster across two days costs far more than any count imbalance. */
+const REDISTRIBUTE_CLUSTER_SPLIT_COST = 1_000;
+
+/**
+ * Order the pool cluster by cluster along a route, then cut it into `days` contiguous
+ * groups. Cuts prefer cluster boundaries; among those, the most even counts win.
+ * Each day keeps [minimum, maximum] stops, or exactly `fixedCounts[d]` when given
+ * (geography then only decides which stops share a day, never how many).
+ * Returns null when there is too little coordinate data to cluster.
+ */
+function planGeographicRedistributionGroups(
+  pool: readonly PlaceResult[],
+  days: number,
+  minPerDay: number,
+  maxPerDay: number,
+  fixedCounts?: readonly number[],
+): { counts: number[]; dayOf: Map<PlaceResult, number> } | null {
+  if (days < 2 || pool.length < days) return null;
+  const items = pool.map((place, index) => ({ place, index }));
+  const { clusters, unlocated } = clusterItemsByGeography(items, days, REDISTRIBUTE_GEO_ACCESSOR, {
+    fitToDays: false,
+  });
+  if (clusters.length < 2) return null;
+
+  // Route order over cluster centers, starting from the cluster farthest from the overall center.
+  const center = {
+    lat: clusters.reduce((sum, c) => sum + c.centerLatitude, 0) / clusters.length,
+    lng: clusters.reduce((sum, c) => sum + c.centerLongitude, 0) / clusters.length,
+  };
+  const at = (c: (typeof clusters)[number]) => ({ lat: c.centerLatitude, lng: c.centerLongitude });
+  const remaining = [...clusters];
+  let startIndex = 0;
+  remaining.forEach((cluster, index) => {
+    if (distanceMeters(at(cluster), center) > distanceMeters(at(remaining[startIndex]!), center)) {
+      startIndex = index;
+    }
+  });
+  const route = remaining.splice(startIndex, 1);
+  while (remaining.length) {
+    const last = route[route.length - 1]!;
+    let best = 0;
+    remaining.forEach((cluster, index) => {
+      if (distanceMeters(at(last), at(cluster)) < distanceMeters(at(last), at(remaining[best]!))) {
+        best = index;
+      }
+    });
+    route.push(remaining.splice(best, 1)[0]!);
+  }
+
+  const sequence: { place: PlaceResult; group: number }[] = [];
+  route.forEach((cluster, group) => {
+    for (const item of [...cluster.items].sort((a, b) => a.index - b.index)) {
+      sequence.push({ place: item.place, group });
+    }
+  });
+  unlocated.forEach((item, offset) => sequence.push({ place: item.place, group: route.length + offset }));
+
+  const n = sequence.length;
+  const target = n / days;
+  const INF = Number.POSITIVE_INFINITY;
+  // cost[d][k]: best cost for the first k stops split into d days.
+  const cost = Array.from({ length: days + 1 }, () => new Array<number>(n + 1).fill(INF));
+  const cut = Array.from({ length: days + 1 }, () => new Array<number>(n + 1).fill(-1));
+  cost[0]![0] = 0;
+  for (let d = 1; d <= days; d += 1) {
+    const sizeMin = Math.max(1, fixedCounts ? fixedCounts[d - 1]! : minPerDay);
+    const sizeMax = fixedCounts ? fixedCounts[d - 1]! : maxPerDay;
+    for (let k = 0; k <= n; k += 1) {
+      for (let size = sizeMin; size <= sizeMax && size <= k; size += 1) {
+        const start = k - size;
+        const prior = cost[d - 1]![start]!;
+        if (!Number.isFinite(prior)) continue;
+        const splitCost =
+          start > 0 && sequence[start - 1]!.group === sequence[start]!.group
+            ? REDISTRIBUTE_CLUSTER_SPLIT_COST
+            : 0;
+        const value = prior + splitCost + (size - target) ** 2;
+        if (value < cost[d]![k]!) {
+          cost[d]![k] = value;
+          cut[d]![k] = start;
+        }
+      }
+    }
+  }
+  if (!Number.isFinite(cost[days]![n]!)) return null;
+
+  const counts = new Array<number>(days).fill(0);
+  const dayOf = new Map<PlaceResult, number>();
+  let end = n;
+  for (let d = days; d >= 1; d -= 1) {
+    const start = cut[d]![end]!;
+    counts[d - 1] = end - start;
+    for (let i = start; i < end; i += 1) dayOf.set(sequence[i]!.place, d - 1);
+    end = start;
+  }
+  return { counts, dayOf };
+}
+
 /** 候選不足時：將 Place Pool 平均分散至所有天，但每天最多 7 slot（不可把整個 pool 塞進 dayPlan） */
 export function redistributePlacesEvenly(params: {
   places: PlaceResult[];
   days: number;
   style: TripStyleKey;
   plannedDate?: string;
+  /**
+   * Selection gate only: user-picked stops are not held to the per-day family cap,
+   * so same-area picks of one family (e.g. two cafés) can stay on one day.
+   */
+  relaxDiversityFor?: (place: PlaceResult) => boolean;
+  /** Caps a selection-gate day at this pace's route maximum (slow 4). */
+  pace?: PlannerPaceHint;
 }): ComposedDayPlan[] {
   const safeDays = Math.max(1, params.days);
   const slotsPerDay = minItemsPerDayForTrip(safeDays);
@@ -216,18 +335,34 @@ export function redistributePlacesEvenly(params: {
   const base = Math.min(slotsPerDay, Math.floor(pool.length / safeDays));
   const extra = Math.min(slotsPerDay * safeDays - base * safeDays, pool.length % safeDays);
   // Spread remainder across middle/later days — never bias Day 1 as the overflow sink.
-  const perDayCounts = Array.from({ length: safeDays }, () => base);
+  let perDayCounts = Array.from({ length: safeDays }, () => base);
   for (let e = 0; e < extra; e += 1) {
     const idx =
       safeDays <= 1 ? 0 : Math.min(safeDays - 1, Math.floor(((e + 1) * safeDays) / (extra + 1)));
     perDayCounts[idx] = Math.min(slotsPerDay, (perDayCounts[idx] ?? base) + 1);
   }
+  // Selection gate (every stop is a user pick): geography first — keep each same-area
+  // cluster on one day, a day may hold 2, and never more than the pace route maximum.
+  // Otherwise (AI-recommended pools) the even split above is kept as-is; geography only
+  // decides which stops share a day for those fixed counts.
+  const allUserPicked =
+    Boolean(params.relaxDiversityFor) && pool.every((place) => params.relaxDiversityFor!(place));
+  const geoGroups = allUserPicked
+    ? planGeographicRedistributionGroups(
+        pool,
+        safeDays,
+        Math.max(1, Math.min(base, SELECTED_ONLY_MIN_PER_DAY)),
+        Math.min(slotsPerDay, maxEffectivePlacesPerDay(params.pace)),
+      )
+    : planGeographicRedistributionGroups(pool, safeDays, 1, slotsPerDay, perDayCounts);
+  if (geoGroups) perDayCounts = geoGroups.counts;
 
   logAiPipeline(
     "[AI_PLANNER_REDISTRIBUTE]",
     `pool=${pool.length}`,
     `days=${safeDays}`,
     `counts=${perDayCounts.join(",")}`,
+    `geographyFirst=${Boolean(geoGroups)}`,
   );
 
   const plans: ComposedDayPlan[] = [];
@@ -239,6 +374,7 @@ export function redistributePlacesEvenly(params: {
     const entries: DayPlanEntry[] = [];
     for (let i = 0; i < count && remaining.length > 0; i += 1) {
       const eligibleCandidates = remaining.map((candidate, candidateIndex) => ({ candidate, candidateIndex })).filter(({ candidate }) => {
+        if (params.relaxDiversityFor?.(candidate)) return true;
         const accepted = wouldViolateDailyDiversity(
           entries.map((entry) => entry.place),
           candidate,
@@ -271,6 +407,11 @@ export function redistributePlacesEvenly(params: {
         return accepted;
       });
       eligibleCandidates.sort((left, right) => {
+        if (geoGroups) {
+          const leftOwn = geoGroups.dayOf.get(left.candidate) === day - 1 ? 0 : 1;
+          const rightOwn = geoGroups.dayOf.get(right.candidate) === day - 1 ? 0 : 1;
+          if (leftOwn !== rightOwn) return leftOwn - rightOwn;
+        }
         if (!entries.length) return left.candidateIndex - right.candidateIndex;
         const nearest = (candidate: PlaceResult): number => Math.min(
           ...entries.map((entry) => {

@@ -311,6 +311,7 @@ export type CrossDayGeographicValidation = {
 export function validateCrossDayGeographicAllocation(
   entries: CrossDayValidationEntry[],
   tripDays: number,
+  opts?: Pick<ClusterGeographyOptions, "fitToDays">,
 ): CrossDayGeographicValidation {
   const reasons: string[] = [];
   const dayByPlaceId = new Map<string, number>();
@@ -318,9 +319,12 @@ export function validateCrossDayGeographicAllocation(
     dayByPlaceId.set(resolveTripPlaceId(entry.place), entry.day);
   }
 
+  // fitToDays=false keeps natural density clusters, so a same-area group is not hidden
+  // inside a merged >6-stop day cluster (which the size guard below would skip).
   const { clusters, radiusMeters } = clusterPlacesByGeography(
     entries.map((e) => e.place),
     tripDays,
+    opts?.fitToDays === false ? { fitToDays: false } : undefined,
   );
 
   let splitClusterCount = 0;

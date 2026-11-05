@@ -510,10 +510,13 @@ export function buildMixedItineraryWithDiagnostics(
     preferredDayLoad[best] += 1;
   }
 
+  // Seed with the full pace capacity, not the per-day target: a same-area cluster larger
+  // than the target would otherwise be split across days before route assembly sees it.
+  // Assembly still enforces the per-day minimum afterwards.
   const seedAssignment = assignDiversityAwareSeedDays({
     candidates: seedCandidates,
     dayCount,
-    dailyScenicCapacity: dailyScenicTarget,
+    dailyScenicCapacity,
     geographicDayCenters,
   });
   const dayByKey = seedAssignment.dayByKey;
