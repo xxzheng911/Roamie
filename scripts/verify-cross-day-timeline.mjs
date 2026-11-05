@@ -658,7 +658,10 @@ function assertRolledBack(name, plans) {
     time: entry.time,
   })));
   const observed = observe(plans);
-  assert.equal(observed.outcome.status, "not_called", name);
+  const membership = observed.plans
+    .map((plan) => `D${plan.day}=${plan.entries.map((entry) => `${entry.place.id}@${entry.time}`).join(",")}`)
+    .join(" ");
+  assert.equal(observed.outcome.status, "not_called", `${name}: ${membership}`);
   assert.equal(observed.outcome.failures, undefined, name);
   assert.deepEqual(observed.plans.map((plan) => plan.entries.map((entry) => ({
     id: entry.place.id,
@@ -667,7 +670,16 @@ function assertRolledBack(name, plans) {
   assertSamePlaces(plans, observed.plans, name);
 }
 
-assertRolledBack("impossible third lunch", [
+// The impossible change (a third lunch / fifth night market landing on Day 1) must never be
+// committed. Since cross-day moves are enabled at the pace minimum, the original fixtures also
+// contain an unrelated legal improvement: the lone AWAY stop on Day 1 can move to an AWAY day
+// (5 → 6 stops, medium max 6). So each case is checked twice:
+//   1. strict rollback — Days 2 and 3 are filled to the pace maximum, the impossible change is the only
+//      improving one, and nothing may change at all (same as the original assertion);
+//   2. original fixture — the legal AWAY move may commit, but the impossible stop stays on its
+//      own day with its clock, Day 1 never gains the extra meal/night stop, and every touched
+//      day still has a policy-legal timeline.
+const thirdLunchDays = (extraAway) => [
   clusterDay(1, HOME, AWAY, [
     { id: "RollMorning", origin: HOME, index: 0, time: "09:30" },
     { id: "RollLunchA", origin: HOME, index: 1, time: "12:00", meal: "午餐" },
@@ -680,6 +692,7 @@ assertRolledBack("impossible third lunch", [
     { id: "RollAwayB", origin: AWAY, index: 2, time: "11:00" },
     { id: "RollThirdLunch", origin: HOME, index: 5, time: "12:00", meal: "午餐" },
     { id: "RollAwayC", origin: AWAY, index: 3, time: "14:00" },
+    ...(extraAway ? [{ id: "RollAwayK", origin: AWAY, index: 3.5, time: "15:30" }] : []),
     { id: "RollAwayD", origin: AWAY, index: 4, time: "17:00" },
   ]),
   clusterDay(3, HOME, AWAY, [
@@ -687,23 +700,26 @@ assertRolledBack("impossible third lunch", [
     { id: "RollAwayF", origin: AWAY, index: 6, time: "11:00" },
     { id: "RollAwayG", origin: AWAY, index: 7, time: "14:00" },
     { id: "RollAwayH", origin: AWAY, index: 8, time: "16:00" },
+    ...(extraAway ? [{ id: "RollAwayJ", origin: AWAY, index: 8.5, time: "17:30" }] : []),
     { id: "RollAwayI", origin: AWAY, index: 9, time: "19:00" },
   ]),
-]);
+];
 
-assertRolledBack("impossible fifth night market", [
+const nightMarketExtra = { primaryType: "night_market", types: ["night_market"] };
+const fifthNightDays = (extraAway) => [
   clusterDay(1, HOME, AWAY, [
-    { id: "NightA", origin: HOME, index: 0, time: "18:00", label: "夜間", extra: { primaryType: "night_market", types: ["night_market"] } },
-    { id: "NightB", origin: HOME, index: 1, time: "19:00", label: "夜間", extra: { primaryType: "night_market", types: ["night_market"] } },
-    { id: "NightC", origin: HOME, index: 2, time: "20:00", label: "夜間", extra: { primaryType: "night_market", types: ["night_market"] } },
-    { id: "NightD", origin: HOME, index: 3, time: "20:30", label: "夜間", extra: { primaryType: "night_market", types: ["night_market"] } },
+    { id: "NightA", origin: HOME, index: 0, time: "18:00", label: "夜間", extra: nightMarketExtra },
+    { id: "NightB", origin: HOME, index: 1, time: "19:00", label: "夜間", extra: nightMarketExtra },
+    { id: "NightC", origin: HOME, index: 2, time: "20:00", label: "夜間", extra: nightMarketExtra },
+    { id: "NightD", origin: HOME, index: 3, time: "20:30", label: "夜間", extra: nightMarketExtra },
     { id: "NightAway", origin: AWAY, index: 0, time: "10:00" },
   ]),
   clusterDay(2, HOME, AWAY, [
     { id: "NightAwayA", origin: AWAY, index: 1, time: "09:30" },
     { id: "NightAwayB", origin: AWAY, index: 2, time: "11:00" },
-    { id: "NightFifth", origin: HOME, index: 5, time: "19:00", label: "夜間", extra: { primaryType: "night_market", types: ["night_market"] } },
+    { id: "NightFifth", origin: HOME, index: 5, time: "19:00", label: "夜間", extra: nightMarketExtra },
     { id: "NightAwayC", origin: AWAY, index: 3, time: "14:00" },
+    ...(extraAway ? [{ id: "NightAwayK", origin: AWAY, index: 3.5, time: "15:30" }] : []),
     { id: "NightAwayD", origin: AWAY, index: 4, time: "17:00" },
   ]),
   clusterDay(3, HOME, AWAY, [
@@ -711,9 +727,47 @@ assertRolledBack("impossible fifth night market", [
     { id: "NightAwayF", origin: AWAY, index: 6, time: "11:00" },
     { id: "NightAwayG", origin: AWAY, index: 7, time: "14:00" },
     { id: "NightAwayH", origin: AWAY, index: 8, time: "16:00" },
+    ...(extraAway ? [{ id: "NightAwayJ", origin: AWAY, index: 8.5, time: "17:30" }] : []),
     { id: "NightAwayI", origin: AWAY, index: 9, time: "19:00" },
   ]),
-]);
+];
+
+assertRolledBack("impossible third lunch (target day full)", thirdLunchDays(true));
+assertRolledBack("impossible fifth night market (target day full)", fifthNightDays(true));
+
+function assertImpossibleNotCommitted(name, plans, { stayId, stayDay, day1Pattern, day1Max }) {
+  const observed = observe(plans);
+  assertSamePlaces(plans, observed.plans, name);
+  assert.notEqual(observed.outcome.status, "no_safe_slot", name);
+  const stayEntry = day(observed.plans, stayDay).entries.find((entry) => entry.place.id === stayId);
+  assert.ok(stayEntry, `${name}: ${stayId} left Day ${stayDay}`);
+  const original = day(plans, stayDay).entries.find((entry) => entry.place.id === stayId);
+  assert.equal(stayEntry.time, original.time, `${name}: ${stayId} clock changed`);
+  const day1Count = day(observed.plans, 1).entries.filter((entry) => day1Pattern(entry)).length;
+  assert.ok(day1Count <= day1Max, `${name}: Day 1 has ${day1Count} (max ${day1Max})`);
+  for (const plan of observed.plans) {
+    const before = day(plans, plan.day).entries.map((entry) => entry.place.id).sort().join("|");
+    const after = plan.entries.map((entry) => entry.place.id).sort().join("|");
+    if (before !== after) assertPolicyClocks(plan, `${name} day ${plan.day}`);
+  }
+  assert.equal(timelineConflicts(observed.plans).length, 0, name);
+  return observed;
+}
+
+const thirdLunch = assertImpossibleNotCommitted("impossible third lunch", thirdLunchDays(false), {
+  stayId: "RollThirdLunch",
+  stayDay: 2,
+  day1Pattern: (entry) => /午餐/.test(entry.label),
+  day1Max: 2,
+});
+assert.equal(ids(thirdLunch.plans, 1).includes("RollAway"), false, "legal AWAY move still allowed");
+const fifthNight = assertImpossibleNotCommitted("impossible fifth night market", fifthNightDays(false), {
+  stayId: "NightFifth",
+  stayDay: 2,
+  day1Pattern: (entry) => entry.place.primaryType === "night_market",
+  day1Max: 4,
+});
+assert.equal(ids(fifthNight.plans, 1).includes("NightAway"), false, "legal AWAY move still allowed");
 
 const orderingPressure = observe([
   clusterDay(1, HOME, AWAY, [
@@ -781,14 +835,28 @@ const anchored = place("AnchoredReservation", HOME, 8);
 const anchorPlans = macauPlans();
 anchorPlans[1].entries[2] = stop(anchored, "12:00", "午餐 reservation");
 const anchorBefore = ids(anchorPlans, 2);
+// Cross-day moves are enabled at the pace minimum, so a legal non-meal AWAY stop (Umpton) may
+// now move INTO Day 2. The fixed-day intent is unchanged: the anchored stop and every other
+// original Day 2 stop stay on Day 2, the anchor keeps its clock, and no meal is added to Day 2.
+function assertAnchorDayKept(repaired, anchorId, before, label) {
+  const after = ids(repaired, 2);
+  for (const id of before) assert.equal(after.includes(id), true, `${label}: ${id} left Day 2 (${after.join(",")})`);
+  assert.equal(day(repaired, 2).entries.find((entry) => entry.place.id === anchorId).time, "12:00", `${label}: anchor clock`);
+  for (const other of [1, 3]) assert.equal(ids(repaired, other).includes(anchorId), false, `${label}: anchor on Day ${other}`);
+  const addedMeals = day(repaired, 2).entries.filter(
+    (entry) => !before.includes(entry.place.id) && /午餐|晚餐|早餐|lunch|dinner|breakfast/i.test(entry.label),
+  );
+  assert.equal(addedMeals.length, 0, `${label}: meal stacked onto Day 2`);
+  assert.equal(timelineConflicts(repaired).length, 0, label);
+}
 const anchorRepaired = run(anchorPlans);
-assert.deepEqual(ids(anchorRepaired, 2), anchorBefore, "fixed-day meal stays on its day");
+assertAnchorDayKept(anchorRepaired, "AnchoredReservation", anchorBefore, "fixed-day meal stays on its day");
 
 const dedicated = place("DedicatedNearby", HOME, 9, { destinationScope: "nearby_extension" });
 const dedicatedPlans = macauPlans();
 dedicatedPlans[1].entries[2] = stop(dedicated, "12:00", "午餐");
 const dedicatedBefore = ids(dedicatedPlans, 2);
-assert.deepEqual(ids(run(dedicatedPlans), 2), dedicatedBefore, "nearby dedicated stop stays on its day");
+assertAnchorDayKept(run(dedicatedPlans), "DedicatedNearby", dedicatedBefore, "nearby dedicated stop stays on its day");
 
 const duplicateTimeline = validationOf([{
   day: 1,

@@ -24,6 +24,10 @@
 //   R6 真實 App.tsx 外殼（public-routes 讓 /trip-invite/{token} 繞過 onboarding）：已登入使用者的
 //      「加入行程」必須可按且可送出；未登入顯示「登入後加入」（對照：非繞過路徑同一頁面可加入）
 //   R7 無外部請求、無瀏覽器例外
+// #TS-INVITE-APPSTORE（App Store 導流）：
+//   N4e inviteDownloadApp 四語系；N13a～d 真實 router＋SSR <HeadContent/> 的 apple-itunes-app meta（格式、token 編碼、
+//   app-argument 可被 parseTripInviteTokenFromUrl 解回、只出現在 /trip-invite/$token）；
+//   R17b／j／k／k2／l／m／h2／g2／i2 下載連結的順序、顯示條件（與 App 連結一致）、href、處理中隱藏、SSR、版面
 //
 // 不讀 .env、不連網（瀏覽器只連 127.0.0.1 fixture server）。
 // 執行：node scripts/verify-trip-invite-stage3.mjs
@@ -140,11 +144,28 @@ function restoreNavigator() {
 resetState();
 const M = await freshModules();
 const TOKEN = "Ab3_-xY9" + "k".repeat(35); // 43 字元 base64url（與 create_trip_invite 產生格式相同）
+// 畫面不得出現邀請網址（R8／R9／R16 用前綴判斷，與 query 無關）
 const URL_PREFIX = "https://roamie.tw/trip-invite/";
+// #TS-INVITE-LINK：邀請連結加上 LINE 官方參數，讓 LINE 交給系統瀏覽器（再觸發 Universal Link）
+const LINE_EXTERNAL_QUERY = "?openExternalBrowser=1";
+/** 期望的邀請連結（逐字）：https://roamie.tw/trip-invite/{encodeURIComponent(token)}?openExternalBrowser=1 */
+const inviteUrl = (t) => URL_PREFIX + encodeURIComponent(t) + LINE_EXTERNAL_QUERY;
 const TRICKY_TITLE = "東京 & 大阪 #1\n第二行 100% a+b?c=d";
 
-await check("N1 buildTripInviteUrl＝https://roamie.tw/trip-invite/{token}；trip-collab 無 Math.random／直接 INSERT trip_invites", () => {
-  assert.equal(M.collab.buildTripInviteUrl(TOKEN), URL_PREFIX + TOKEN);
+await check("N1 buildTripInviteUrl＝https://roamie.tw/trip-invite/{token}?openExternalBrowser=1（逐字）；trip-collab 無 Math.random／直接 INSERT trip_invites", () => {
+  assert.equal(M.collab.buildTripInviteUrl(TOKEN), "https://roamie.tw/trip-invite/" + TOKEN + "?openExternalBrowser=1");
+  assert.equal(M.collab.buildTripInviteUrl(TOKEN), inviteUrl(TOKEN));
+  const u = new URL(M.collab.buildTripInviteUrl(TOKEN));
+  assert.equal(u.origin, "https://roamie.tw");
+  assert.equal(u.pathname, "/trip-invite/" + TOKEN, "token 必須在路徑、不得跑進 query");
+  assert.deepEqual([...u.searchParams], [["openExternalBrowser", "1"]], "query 只能有 openExternalBrowser=1");
+  assert.equal(u.hash, "");
+  // 特殊字元 token：路徑段完整編碼，query 不被 token 污染
+  const odd = "a/b?c#d e&f%g+h=i";
+  const ou = new URL(M.collab.buildTripInviteUrl(odd));
+  assert.equal(ou.pathname, "/trip-invite/" + encodeURIComponent(odd));
+  assert.deepEqual([...ou.searchParams], [["openExternalBrowser", "1"]], "特殊字元 token 汙染 query：" + ou.href);
+  assert.equal(ou.hash, "");
   assert.equal(M.collab.TRIP_INVITE_WEB_ORIGIN, "https://roamie.tw");
   const src = read("src/lib/trip/trip-collab.ts");
   assert.doesNotMatch(src, /Math\.random/, "trip-collab.ts 仍使用 Math.random");
@@ -153,7 +174,7 @@ await check("N1 buildTripInviteUrl＝https://roamie.tw/trip-invite/{token}；tri
 });
 
 function messageFor(title) {
-  return `${M.collab.buildTripInviteShareText(title)}\n${URL_PREFIX}${TOKEN}`;
+  return `${M.collab.buildTripInviteShareText(title)}\n${inviteUrl(TOKEN)}`;
 }
 await check("N2a LINE：https://line.me/R/share?text=＋完整編碼（中文、&、#、換行、%、+、?）", () => {
   resetState();
@@ -164,7 +185,12 @@ await check("N2a LINE：https://line.me/R/share?text=＋完整編碼（中文、
   assert.equal(decodeURIComponent(raw), messageFor(TRICKY_TITLE));
   assert.equal(new URL(url).searchParams.get("text"), messageFor(TRICKY_TITLE), "URLSearchParams 解析（+ 不得變空白）");
   assert.ok(decodeURIComponent(raw).includes("「東京 & 大阪 #1\n第二行 100% a+b?c=d」"), decodeURIComponent(raw));
-  assert.ok(decodeURIComponent(raw).endsWith("\n" + URL_PREFIX + TOKEN));
+  assert.ok(decodeURIComponent(raw).endsWith("\n" + inviteUrl(TOKEN)));
+  // 分享內文中的連結（解碼後）可被 App 解析回同一個 token，且 LINE 參數完整保留（不被雙重編碼）
+  const sharedLink = decodeURIComponent(raw).split("\n").at(-1);
+  assert.equal(M.deepLink.parseTripInviteTokenFromUrl(sharedLink), TOKEN);
+  assert.equal(new URL(sharedLink).searchParams.get("openExternalBrowser"), "1", sharedLink);
+  assert.equal(decodeURIComponent(raw).split("openExternalBrowser").length - 1, 1, "LINE 參數應恰出現一次");
   assert.ok(decodeURIComponent(M.collab.buildLineShareUrl(TOKEN, "   ").slice(29)).includes("「Roamie」"), "空白標題退回 Roamie");
 });
 await check("N2b 訊息：iOS sms:&body=、其他 sms:?body=；body 編碼正確", () => {
@@ -241,7 +267,66 @@ await check("N3d tripInvitePathFromToken 會編碼 token", () => {
   info("https://roamie.tw:8443/trip-invite/x… → " + JSON.stringify(M.deepLink.parseTripInviteTokenFromUrl("https://roamie.tw:8443/trip-invite/" + TOKEN)) + "（非預設埠也會被接受）");
 });
 
+// ── N3e～N3g（#TS-INVITE-LINK）：帶 ?openExternalBrowser=1 的新連結；舊連結（無 query）照樣可用 ──
+const ODD_TOKENS = [TOKEN, "a/b?c#d e&f%g+h=i", "東京+大阪", "x%2Fy"];
+await check("N3e parseTripInviteTokenFromUrl：新連結（含 www、尾斜線、併其他 query、hash、roamie://）與舊連結取到同一 token；build→parse 對特殊字元 token 可逆", () => {
+  const cases = [
+    ["https://roamie.tw/trip-invite/" + TOKEN + "?openExternalBrowser=1", TOKEN],
+    ["https://roamie.tw/trip-invite/" + TOKEN, TOKEN],
+    ["https://www.roamie.tw/trip-invite/" + TOKEN + "?openExternalBrowser=1", TOKEN],
+    ["https://roamie.tw/trip-invite/" + TOKEN + "/?openExternalBrowser=1", TOKEN],
+    ["https://roamie.tw/trip-invite/" + TOKEN + "?openExternalBrowser=1&utm_source=line", TOKEN],
+    ["https://roamie.tw/trip-invite/" + TOKEN + "?utm_source=line&openExternalBrowser=1#join", TOKEN],
+    ["roamie://trip-invite/" + TOKEN + "?openExternalBrowser=1", TOKEN],
+  ];
+  const bad = cases.map(([u, want]) => [u, M.deepLink.parseTripInviteTokenFromUrl(u), want]).filter(([, got, want]) => got !== want);
+  assert.deepEqual(bad, []);
+  for (const t of ODD_TOKENS) {
+    assert.equal(M.deepLink.parseTripInviteTokenFromUrl(M.collab.buildTripInviteUrl(t)), t, "build→parse 不可逆：" + t);
+  }
+  // query 不得讓其他網域／多段路徑被接受
+  for (const u of ["https://evil.com/trip-invite/" + TOKEN + "?openExternalBrowser=1", "https://roamie.tw/trip-invite/" + TOKEN + "/x?openExternalBrowser=1", "https://roamie.tw/trip-invite/?openExternalBrowser=1"]) {
+    assert.equal(M.deepLink.parseTripInviteTokenFromUrl(u), null, u);
+  }
+});
+
 const LOCALES = ["zh-TW", "en", "ja", "ko"];
+// N3f 用到下方的 pub（public-routes），故延後到 N6 之後執行
+async function runN3f() {
+let routerLib = null;
+try {
+  routerLib = await import("@tanstack/react-router");
+} catch (e) {
+  info("無法載入 @tanstack/react-router：" + String(e?.message ?? e));
+}
+async function matchInviteRoute(href) {
+  const { createRootRoute, createRoute, createRouter, createMemoryHistory } = routerLib;
+  const rootRoute = createRootRoute({});
+  const invite = createRoute({ getParentRoute: () => rootRoute, path: "/trip-invite/$token" });
+  const other = createRoute({ getParentRoute: () => rootRoute, path: "/" });
+  const router = createRouter({ routeTree: rootRoute.addChildren([invite, other]), history: createMemoryHistory({ initialEntries: [href] }) });
+  await router.load();
+  const leaf = router.state.matches.at(-1);
+  return { routeId: leaf?.routeId, token: leaf?.params?.token, pathname: router.state.location.pathname, search: router.state.location.search };
+}
+await check("N3f 網頁路由（真實 @tanstack/react-router 比對 /trip-invite/$token）：帶 ?openExternalBrowser=1 與舊連結取到同一 token；public-routes 以 pathname 判斷仍繞過 onboarding", async () => {
+  assert.ok(routerLib, "無法載入 @tanstack/react-router");
+  const routeSrc = read("src/routes/trip-invite.$token.tsx");
+  assert.match(routeSrc, /createFileRoute\("\/trip-invite\/\$token"\)/, "路由路徑改變，本測試的路徑需同步");
+  for (const t of ODD_TOKENS) {
+    for (const href of [new URL(M.collab.buildTripInviteUrl(t)).href.slice("https://roamie.tw".length), "/trip-invite/" + encodeURIComponent(t)]) {
+      const r = await matchInviteRoute(href);
+      assert.equal(r.routeId, "/trip-invite/$token", href + " → " + JSON.stringify(r));
+      assert.equal(r.token, t, href + " → token " + JSON.stringify(r.token));
+      assert.equal(pub.isTripInvitePublicPath(r.pathname), true, "pathname 未被當成邀請頁：" + r.pathname);
+      if (href.includes("?")) assert.equal(String(r.search?.openExternalBrowser), "1", "search 解析：" + JSON.stringify(r.search));
+    }
+  }
+  // App.tsx／__root beforeLoad 只取 pathname（不含 query）判斷公開路由
+  assert.match(read("src/App.tsx"), /useRouterState\(\{ select: \(state\) => state\.location\.pathname \}\)/);
+  assert.match(read("src/routes/__root.tsx"), /const path = location\.pathname\.replace\(\/\\\/\+\$\/, ""\) \|\| "\/";\s*if \(isAdminAuthBoundaryRoute\(path\)\) return;\s*if \(isPublicOnboardingBypassPath\(path\)\) return;/);
+});
+}
 const REQUIRED_KEYS = [
   "inviteMembers", "inviteLinkTitle", "inviteLinkLoading", "inviteOptionCopy", "inviteOptionLine", "inviteOptionMessages",
   "inviteOptionEmail", "inviteOptionMore", "inviteCopied", "inviteCopyManual", "inviteShareText", "inviteEmailSubject",
@@ -276,6 +361,38 @@ await check("N4b 指定文案：zh-TW 邀請連結／邀請成員／已複製邀
   assert.equal(zh.inviteLoginToJoin, "登入後加入");
   assert.equal(zh.removedFromTrip, "你已不在此行程中");
   assert.equal(M.copy.getTripWorkspaceCopy("ja").inviteOptionCopy, "リンクをコピー");
+});
+await check("N4d 「在 Roamie App 開啟」文案：四語系 inviteOpenInApp／inviteOpenInAppHint 皆非空、已翻譯；zh-TW 逐字", () => {
+  const zh = M.copy.getTripWorkspaceCopy("zh-TW");
+  assert.equal(zh.inviteOpenInApp, "在 Roamie App 開啟");
+  assert.ok(zh.inviteOpenInAppHint?.trim(), "zh-TW hint 空白");
+  for (const loc of LOCALES) {
+    const c = M.copy.getTripWorkspaceCopy(loc);
+    for (const k of ["inviteOpenInApp", "inviteOpenInAppHint"]) assert.ok(typeof c[k] === "string" && c[k].trim(), `${loc}.${k} 缺少或空白`);
+    assert.ok(c.inviteOpenInApp.includes("Roamie"), loc + " 未提到 Roamie：" + c.inviteOpenInApp);
+    assert.notEqual(c.inviteOpenInApp, c.inviteOpenInAppHint, loc);
+    if (loc !== "zh-TW") {
+      assert.notEqual(c.inviteOpenInApp, zh.inviteOpenInApp, loc + " inviteOpenInApp 未翻譯");
+      assert.notEqual(c.inviteOpenInAppHint, zh.inviteOpenInAppHint, loc + " inviteOpenInAppHint 未翻譯");
+    }
+  }
+});
+// #TS-INVITE-APPSTORE：沒裝 App 的 iPhone 使用者可前往 App Store 下載
+await check("N4e 「下載 Roamie App」文案：四語系 inviteDownloadApp 皆存在、非空、提到 Roamie、已翻譯，且與 App 連結／提示不同；zh-TW 逐字", () => {
+  const zh = M.copy.getTripWorkspaceCopy("zh-TW");
+  assert.equal(zh.inviteDownloadApp, "還沒安裝？下載 Roamie App");
+  const seen = new Set();
+  for (const loc of LOCALES) {
+    const c = M.copy.getTripWorkspaceCopy(loc);
+    assert.ok(typeof c.inviteDownloadApp === "string" && c.inviteDownloadApp.trim(), `${loc}.inviteDownloadApp 缺少或空白`);
+    assert.equal(c.inviteDownloadApp, c.inviteDownloadApp.trim(), loc + " 前後有空白");
+    assert.ok(c.inviteDownloadApp.includes("Roamie"), loc + " 未提到 Roamie：" + c.inviteDownloadApp);
+    assert.notEqual(c.inviteDownloadApp, c.inviteOpenInApp, loc);
+    assert.notEqual(c.inviteDownloadApp, c.inviteOpenInAppHint, loc);
+    if (loc !== "zh-TW") assert.ok(/App Store/.test(c.inviteDownloadApp), loc + " 未提到 App Store：" + c.inviteDownloadApp);
+    seen.add(c.inviteDownloadApp);
+  }
+  assert.equal(seen.size, LOCALES.length, "inviteDownloadApp 有語系未翻譯（文案重複）");
 });
 await check("N4c 面板：五個選項、無 Threads/X；標籤寬 72px＋最多兩行", () => {
   const sheet = read("src/components/trip/TripInviteSheet.tsx");
@@ -315,6 +432,40 @@ await check("N5b AASA 路由註冊於 /.well-known/apple-app-site-association；
   if (!/applinks:www\.roamie\.tw/.test(ent)) info("App.entitlements 沒有 applinks:www.roamie.tw：www 連結會以網頁開啟（App 內 parser 仍可解析）");
 });
 
+/** Apple AASA 比對（components：「/」glob 比對 pathname、「?」若存在才限制 query、exclude 排除；舊版 paths 只比對 path） */
+function aasaGlob(pattern, s) {
+  const re = new RegExp("^" + pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$");
+  return re.test(s);
+}
+function aasaMatches(detail, href) {
+  const u = new URL(href);
+  for (const c of detail.components ?? []) {
+    if (c["/"] != null && !aasaGlob(c["/"], u.pathname)) continue;
+    if (c["?"] != null) {
+      const q = c["?"];
+      if (typeof q === "string" ? !aasaGlob(q, u.search.slice(1)) : !Object.entries(q).every(([k, v]) => u.searchParams.has(k) && aasaGlob(v, u.searchParams.get(k)))) continue;
+    }
+    if (c["#"] != null && !aasaGlob(c["#"], u.hash.slice(1))) continue;
+    return !c.exclude;
+  }
+  return false;
+}
+await check("N5c AASA：帶 ?openExternalBrowser=1 的新連結與舊連結都在 Universal Link 範圍（components 不限制 query；paths 也涵蓋）；其他路徑不涵蓋", async () => {
+  const GET = M.AasaRoute?.options?.server?.handlers?.GET;
+  const body = JSON.parse(await (await GET({ request: new Request("https://roamie.tw/.well-known/apple-app-site-association") })).text());
+  const d = body.applinks.details[0];
+  for (const t of ODD_TOKENS) {
+    const neu = M.collab.buildTripInviteUrl(t);
+    assert.equal(aasaMatches(d, neu), true, "新連結不在 AASA components 範圍：" + neu);
+    assert.equal(aasaMatches(d, "https://roamie.tw/trip-invite/" + encodeURIComponent(t)), true, "舊連結不在 AASA 範圍");
+    assert.ok(d.paths.some((p) => aasaGlob(p, new URL(neu).pathname)), "legacy paths 未涵蓋：" + neu);
+  }
+  for (const c of d.components) assert.ok(!("?" in c) && !c.exclude, "components 有 query 限制或 exclude，可能擋掉 openExternalBrowser：" + JSON.stringify(c));
+  for (const u of ["https://roamie.tw/saved/x?openExternalBrowser=1", "https://roamie.tw/?openExternalBrowser=1", "https://roamie.tw/trip-invites/x"]) {
+    assert.equal(aasaMatches(d, u), false, "AASA 不應涵蓋：" + u);
+  }
+});
+
 const pub = await import(pathToFileURL(path.join(root, "src/lib/public-routes.ts")).href);
 const PUBLIC_ALLOW = ["/trip-invite/" + TOKEN, "/trip-invite/" + TOKEN + "/", "/trip-invite/abc", "/support", "/privacy", "/terms", "/login/legal", "/support/"];
 const PUBLIC_DENY = [
@@ -352,6 +503,7 @@ await check("N6d 拆分：isPublicLegalPath 只含法務頁；isTripInvitePublic
   }
   for (const p of PUBLIC_DENY) assert.equal(pub.isTripInvitePublicPath(p), false, p);
 });
+await runN3f();
 
 // ── N9：login.tsx（真實 Route.options.beforeLoad）不受邀請頁聯集影響（#TW3-T2 e） ──
 const LG = "globalThis.__tw3login";
@@ -466,7 +618,7 @@ await check("N7a iOS 未安裝 @capacitor/share：不 crash、退回複製恰 1 
       console.warn = warn;
     }
     assert.equal(result, "copied");
-    assert.deepEqual(globalThis.__tw3.copies, [URL_PREFIX + TOKEN]);
+    assert.deepEqual(globalThis.__tw3.copies, [inviteUrl(TOKEN)]);
     assert.equal(native, 0);
     assert.equal(navShare, 0);
     // 複製失敗 → manual（面板顯示手動複製提示），仍不丟例外
@@ -500,7 +652,7 @@ await check("N7b iOS 已安裝 Share：原生 share 恰 1 次（title/text/url�
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], "Share");
   assert.equal(calls[0][1], "share");
-  assert.equal(calls[0][2].url, URL_PREFIX + TOKEN);
+  assert.equal(calls[0][2].url, inviteUrl(TOKEN));
   assert.equal(calls[0][2].title, "東京");
   assert.equal(calls[0][2].text, X.collab.buildTripInviteShareText("東京"));
   assert.deepEqual(globalThis.__tw3.copies, []);
@@ -516,7 +668,7 @@ await check("N7c Web：navigator.share 可用→shared；AbortError→cancelled�
     const shares = [];
     setNavigator({ share: async (d) => void shares.push(d), canShare: () => true });
     assert.equal(await X.collab.shareTripInvite(TOKEN, "T"), "shared");
-    assert.deepEqual(shares, [{ title: "T", text: X.collab.buildTripInviteShareText("T"), url: URL_PREFIX + TOKEN }]);
+    assert.deepEqual(shares, [{ title: "T", text: X.collab.buildTripInviteShareText("T"), url: inviteUrl(TOKEN) }]);
     assert.deepEqual(globalThis.__tw3.copies, []);
     setNavigator({ share: async () => { const e = new Error("x"); e.name = "AbortError"; throw e; }, canShare: () => true });
     assert.equal(await X.collab.shareTripInvite(TOKEN, "T"), "cancelled");
@@ -1143,6 +1295,158 @@ await check("N10e 加入邀請頁：accept／preview 的 network 錯誤訊息＝
   info(`accept 回中文訊息：線上 → 「${online.message}」；navigator.onLine=false → 「${offline.message}」（code=${offline.code}）`);
 });
 
+// ── N12（#TS-INVITE-LINK）：「在 Roamie App 開啟」的 SSR／hydration 安全性（原始碼層；行為見 R17h） ──
+await check("N12 open-in-app 判斷只在 useEffect：初始 state=false、shouldOfferOpenInApp 只在掛載 effect 呼叫一次；render 期間不讀 navigator／window", () => {
+  const src = read("src/routes/trip-invite.$token.tsx");
+  assert.match(src, /const \[offerOpenInApp, setOfferOpenInApp\] = useState\(false\);/, "初始值必須固定為 false（SSR 與首次 client render 一致）");
+  const calls = [...src.matchAll(/shouldOfferOpenInApp\(\)/g)].length;
+  assert.equal(calls, 2, "shouldOfferOpenInApp 應只有定義＋effect 內一次呼叫，實際出現 " + calls + " 次");
+  assert.match(src, /useEffect\(\(\) => \{\s*setOfferOpenInApp\(shouldOfferOpenInApp\(\)\);\s*\}, \[\]\);/, "判斷不在掛載 effect 內");
+  const comp = src.slice(src.indexOf("function TripInviteAcceptPage"));
+  const renderBody = comp.replace(/useEffect\(\(\) => \{[\s\S]*?\n {2}\}, \[[^\]]*\]\);/g, "").replace(/useCallback\(\([^)]*\) => \{[\s\S]*?\n {2}\}, \[[^\]]*\]\);/g, "");
+  assert.doesNotMatch(renderBody, /navigator\.|detectPlatform\(/, "render 期間讀取 navigator／detectPlatform（SSR 不一致風險）");
+});
+
+// ── N13（#TS-INVITE-APPSTORE）：iOS Safari Smart App Banner（<meta name="apple-itunes-app">） ──
+// 真實 @tanstack/react-router（createRouter＋memory history＋router.load()）跑真實 trip-invite Route 的 head，
+// 再以 renderToString(<RouterProvider>)＋<HeadContent/> 取得 SSR 輸出的 <meta>。頁面元件以外的相依以替身取代（head 不依賴它們）。
+const APP_STORE_ID_EXPECTED = "6772861982";
+const APP_STORE_URL_EXPECTED = "https://apps.apple.com/app/id" + APP_STORE_ID_EXPECTED;
+const headMocks = {
+  "@/hooks/use-i18n": `export const useI18n=()=>({locale:'zh-TW',t:(k)=>k});`,
+  sonner: `export const toast={success(){},error(){}};`,
+  "@/components/MobileFrame": `export const MobileFrame=(p)=>p.children;`,
+  "@/components/media/FadeInImage": `export const FadeInImage=()=>null;`,
+  "@/hooks/use-auth": `export const useAuth=()=>({session:null,loading:false});`,
+  "@/lib/auth-action": `export const requireAuthForAction=()=>false;`,
+  "@/lib/trip/trip-collab": `export const acceptTripInvite=async()=>null;export const clearStashedTripInviteToken=()=>{};
+export const getTripInvitePreview=async()=>null;export const stashTripInviteToken=()=>{};export const tripInviteErrorCode=()=>null;export const tripInviteStateFromErrorCode=()=>null;`,
+  "@/lib/itinerary-storage": `export const SAVED_TRIPS_CHANGED_EVENT='roamie:saved-trips-changed';`,
+  "@/lib/saved-trip/display": `export const resolveDisplayCoverImage=()=>null;`,
+  "@/lib/picker-utils": `export const formatDateRangeSlash=()=>'';`,
+  "@/services/platform": `export const detectPlatform=()=>({isCapacitor:false});`,
+};
+const headEntry = `
+import {renderToString} from 'react-dom/server';
+import {createRootRoute,createRoute,createRouter,createMemoryHistory,HeadContent,Outlet,RouterProvider} from '@tanstack/react-router';
+import {Route as InviteRoute} from '@/routes/trip-invite.$token';
+import {APP_STORE_ID,APP_STORE_URL} from '@/constants/app';
+export {APP_STORE_ID,APP_STORE_URL};
+export const inviteHead=InviteRoute.options.head;
+export async function renderHead(href){
+  const rootRoute=createRootRoute({head:()=>({meta:[{name:'description',content:'root'}]}),component:()=> <><HeadContent/><Outlet/></>});
+  const home=createRoute({getParentRoute:()=>rootRoute,path:'/',component:()=> <p>home</p>});
+  const saved=createRoute({getParentRoute:()=>rootRoute,path:'/saved/$tripId',component:()=> <p>saved</p>});
+  const invite=createRoute({getParentRoute:()=>rootRoute,path:'/trip-invite/$token',head:InviteRoute.options.head,component:()=> <p>invite</p>});
+  const router=createRouter({routeTree:rootRoute.addChildren([home,saved,invite]),history:createMemoryHistory({initialEntries:[href]})});
+  await router.load();
+  const html=renderToString(<RouterProvider router={router}/>);
+  return {html,matches:router.state.matches.map((m)=>({routeId:m.routeId,params:m.params,meta:m.meta||[]}))};
+}`;
+const headBundle = path.join(tmp, "head-bundle.mjs");
+let H = null;
+let headBuildError = null;
+try {
+  await build({
+    stdin: { contents: headEntry, resolveDir: root, loader: "tsx" },
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    logLevel: "silent",
+    outfile: headBundle,
+    jsx: "automatic",
+    alias: { "@": path.join(root, "src") },
+    loader: { ".svg": "dataurl", ".png": "dataurl", ".css": "empty" },
+    define: { "import.meta.env": '{"DEV":true,"PROD":false,"MODE":"development"}', "process.env.NODE_ENV": '"development"' },
+    plugins: [mockPlugin(headMocks)],
+    banner: { js: "import { createRequire as __cr } from 'module'; const require = __cr(import.meta.url);" },
+  });
+  H = await import(pathToFileURL(headBundle).href);
+} catch (e) {
+  headBuildError = e;
+}
+const ITUNES_RE = /^app-id=(\d+), app-argument=(\S+)$/;
+const itunesMetaTags = (html) => [...html.matchAll(/<meta\b[^>]*>/g)].map((m) => m[0]).filter((t) => /name="apple-itunes-app"/.test(t));
+const unescapeAttr = (s) => s.replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#x27;|&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+const headCases = [];
+if (H) {
+  for (const token of [TOKEN, "a/b?c#d e&f%g+h=i", "東京+大阪"]) {
+    const href = "/trip-invite/" + encodeURIComponent(token);
+    headCases.push({ token, href, out: await H.renderHead(href).catch((e) => ({ error: String(e?.stack ?? e) })) });
+  }
+}
+await check("N13a 常數：APP_STORE_ID＝6772861982、APP_STORE_URL＝https://apps.apple.com/app/id6772861982（https、apps.apple.com、無 query／hash）", () => {
+  assert.equal(headBuildError, null, "head bundle 建置失敗：" + String(headBuildError?.message ?? headBuildError));
+  assert.equal(H.APP_STORE_ID, APP_STORE_ID_EXPECTED);
+  assert.equal(H.APP_STORE_URL, APP_STORE_URL_EXPECTED);
+  const u = new URL(H.APP_STORE_URL);
+  assert.equal(u.protocol, "https:");
+  assert.equal(u.host, "apps.apple.com");
+  assert.equal(u.pathname, "/app/id" + APP_STORE_ID_EXPECTED);
+  assert.equal(u.search + u.hash, "");
+});
+await check("N13b 真實 router＋SSR：/trip-invite/{token} 的 <head> 恰 1 個 apple-itunes-app，內容＝app-id=6772861982, app-argument=https://roamie.tw/trip-invite/{encodeURIComponent(token)}（含 / ? # 空白 & % + = 中文）", () => {
+  assert.equal(headBuildError, null, "head bundle 建置失敗");
+  for (const { token, href, out } of headCases) {
+    assert.equal(out.error, undefined, href + " render 失敗：" + out.error);
+    const inviteMatch = out.matches.find((m) => m.routeId === "/trip-invite/$token");
+    assert.ok(inviteMatch, href + " 未命中 /trip-invite/$token");
+    assert.equal(inviteMatch.params.token, token, href + " router 解出的 token 與原 token 不同");
+    const metas = out.matches.flatMap((m) => m.meta).filter((m) => m?.name === "apple-itunes-app");
+    assert.equal(metas.length, 1, href + " router meta 數 " + metas.length);
+    const expected = `app-id=${APP_STORE_ID_EXPECTED}, app-argument=https://roamie.tw/trip-invite/${encodeURIComponent(token)}`;
+    assert.equal(metas[0].content, expected);
+    const tags = itunesMetaTags(out.html);
+    assert.equal(tags.length, 1, href + " SSR HTML 的 apple-itunes-app 數 " + tags.length + "：" + tags.join(" "));
+    const content = unescapeAttr(/content="([^"]*)"/.exec(tags[0])?.[1] ?? "");
+    assert.equal(content, expected, href + " SSR content");
+    const m = ITUNES_RE.exec(content);
+    assert.ok(m, "格式不符 Apple 規格（app-id=…, app-argument=…）：" + content);
+    assert.equal(m[1], APP_STORE_ID_EXPECTED);
+    const arg = new URL(m[2]);
+    assert.equal(arg.origin, "https://roamie.tw");
+    assert.equal(arg.pathname, "/trip-invite/" + encodeURIComponent(token), "token 未編碼或被改動");
+    assert.equal(arg.search + arg.hash, "", "app-argument 被 token 汙染出 query／hash：" + m[2]);
+    assert.doesNotMatch(m[2].slice("https://roamie.tw/trip-invite/".length), /[/?# &+=,]/, "token 段含未編碼字元：" + m[2]);
+  }
+});
+await check("N13c app-argument 經 App 端 parseTripInviteTokenFromUrl 取回原 token（與頁面網址解析結果相同）", () => {
+  assert.equal(headBuildError, null, "head bundle 建置失敗");
+  assert.ok(headCases.length === 3);
+  for (const { token, href, out } of headCases) {
+    const content = out.matches.flatMap((m) => m.meta).find((m) => m?.name === "apple-itunes-app")?.content ?? "";
+    const arg = ITUNES_RE.exec(content)?.[2];
+    assert.ok(arg, href + " 無 app-argument");
+    assert.equal(M.deepLink.parseTripInviteTokenFromUrl(arg), token, "App 無法從 app-argument 取回 token：" + arg);
+    assert.equal(M.deepLink.parseTripInviteTokenFromUrl("https://roamie.tw" + href), token);
+  }
+});
+const headOther = [];
+if (H) for (const href of ["/", "/saved/" + "abc"]) headOther.push({ href, out: await H.renderHead(href).catch((e) => ({ error: String(e?.stack ?? e) })) });
+await check("N13d 只有邀請頁有 apple-itunes-app：同一 router 的 / 與 /saved/$tripId 沒有；src/ 與 public/ 只有 trip-invite.$token.tsx 宣告；__root head 沒有", () => {
+  assert.equal(headBuildError, null, "head bundle 建置失敗");
+  for (const { href, out } of headOther) {
+    assert.equal(out.error, undefined, href + " render 失敗：" + out.error);
+    assert.ok(out.html.includes('content="root"'), href + " HeadContent 未輸出（對照組無效）");
+    assert.deepEqual(itunesMetaTags(out.html), [], href + " 出現 apple-itunes-app");
+    assert.deepEqual(out.matches.flatMap((m) => m.meta).filter((m) => m?.name === "apple-itunes-app"), [], href);
+  }
+  const hits = [];
+  const walk = (dir) => {
+    if (!fs.existsSync(dir)) return;
+    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, ent.name);
+      if (ent.isDirectory()) walk(p);
+      else if (/\.(tsx?|html|json|mjs|js)$/.test(ent.name) && fs.readFileSync(p, "utf8").includes("apple-itunes-app")) hits.push(path.relative(root, p));
+    }
+  };
+  walk(path.join(root, "src"));
+  walk(path.join(root, "public"));
+  for (const f of ["index.html"]) if (fs.existsSync(path.join(root, f)) && read(f).includes("apple-itunes-app")) hits.push(f);
+  assert.deepEqual(hits, ["src/routes/trip-invite.$token.tsx"]);
+  assert.doesNotMatch(read("src/routes/__root.tsx"), /apple-itunes-app/);
+});
+
 // ───────────────────────── Part R：瀏覽器真實 render ─────────────────────────
 const chromeBin = [
   process.env.CHROME_BIN,
@@ -1159,7 +1463,9 @@ export const useRouterState=({select})=>select({location:{pathname:${W}.path}});
 export const createFileRoute=(p)=>(o)=>({path:p,options:o,useParams:()=>({token:${W}.token})});`,
   "@/hooks/use-i18n": `export const useI18n=()=>({locale:${W}.locale,t:(k)=>k});export const I18nProvider=({children})=>children;`,
   sonner: `export const toast={success:(m)=>${W}.toasts.push('success:'+m),error:(m)=>${W}.toasts.push('error:'+m)};`,
-  "@/components/MobileFrame": `export const MobileFrame=({children})=><div data-frame="">{children}</div>;`,
+  // 版面量測（R17g）改用真實 MobileFrame（h-[100dvh] overflow-hidden 外框）；其他案例維持最小替身
+  "@/components/MobileFrame": `import {MobileFrame as RealFrame} from ${JSON.stringify(path.join(root, "src/components/MobileFrame.tsx"))};
+export const MobileFrame=(p)=>(${W}&&${W}.realFrame)?<RealFrame {...p}/>:<div data-frame="">{p.children}</div>;`,
   "@/lib/auth-action": `export const requireAuthForAction=(a)=>{${W}.authRequired.push(a);return false;};`,
   "@/integrations/supabase/client": `export const supabase={
   rpc:(name,args)=>{${W}.rpc.push([name,args]);return ${W}.rpcImpl(name,args);},
@@ -1177,7 +1483,10 @@ export const updateClientAuthSessionCache=()=>{};export const markClientAuthSess
   "@/lib/auth-restore": `export const AUTH_RESTORE_TIMEOUT={nativeMs:5000};`,
   "@/lib/clear-auth-state": `export const clearAuthState=async()=>{};`,
   "@/lib/supabase-auth-storage": `export const warmSupabaseAuthStorage=async()=>{};export const resetWarmSupabaseAuthStorage=()=>{};`,
-  "@/services/platform": `export const detectPlatform=()=>({isCapacitor:false,isIOS:false,isNative:false,kind:'web'});`,
+  // 與 src/services/platform detectPlatform 相同語意：讀 window.Capacitor（R17 以 Capacitor 原生殼覆寫；預設＝web）
+  "@/services/platform": `export const detectPlatform=()=>{const cap=window.Capacitor;const p=(cap&&cap.getPlatform&&cap.getPlatform())||'web';
+const isCap=Boolean(cap&&cap.isNativePlatform?cap.isNativePlatform():(p==='ios'||p==='android'));
+return {kind:p==='ios'?'ios':p==='android'?'android':'web',isNative:isCap,isIOS:p==='ios',isAndroid:p==='android',isCapacitor:isCap};};`,
   "@/lib/startup-path": `export const isLoginColdStartPath=()=>false;export const readBrowserPathname=()=>${W}.path;`,
   "@/lib/onboarding-storage": `export const isOnboardingCompletedSync=()=>false;export const isOnboardingHydrated=()=>true;`,
   "@/lib/copy-to-clipboard": `export async function copyTextToClipboard(){return 'copied';}`,
@@ -1194,12 +1503,23 @@ export const updateClientAuthSessionCache=()=>{};export const markClientAuthSess
   "@/lib/startup-boot-state": `export const logAppRemountSource=()=>{};export const shouldLogAppMounted=()=>false;`,
 };
 
-const webEntry = `import React,{StrictMode} from 'react';import {createRoot} from 'react-dom/client';import {flushSync} from 'react-dom';
+const webEntry = `import React,{StrictMode} from 'react';import {createRoot,hydrateRoot} from 'react-dom/client';import {flushSync} from 'react-dom';
+import {renderToString} from 'react-dom/server';
 import {App} from '@/App';
 import {AuthProvider} from '@/hooks/use-auth';
 import {Route} from '@/routes/trip-invite.$token';
+import {getTripWorkspaceCopy} from '@/lib/i18n/trip-workspace-copy';
+const getTripCopy=()=>getTripWorkspaceCopy(${W}.locale);
 console.info=()=>{};console.debug=()=>{};console.log=()=>{};
 Object.defineProperty(Navigator.prototype,'onLine',{configurable:true,get:()=>!(window.__tw&&window.__tw.offline)});
+// #TS-INVITE-LINK：每次 mount 可指定 userAgent／maxTouchPoints／Capacitor 原生殼（未指定＝headless Chrome 原值）
+const ORIG_UA=navigator.userAgent;const ORIG_MTP=navigator.maxTouchPoints;const ORIG_CAP=window.Capacitor;
+Object.defineProperty(Navigator.prototype,'userAgent',{configurable:true,get:()=>(window.__tw&&window.__tw.ua!=null)?window.__tw.ua:ORIG_UA});
+Object.defineProperty(Navigator.prototype,'maxTouchPoints',{configurable:true,get:()=>(window.__tw&&window.__tw.mtp!=null)?window.__tw.mtp:ORIG_MTP});
+function applyCapacitor(native){
+  if(native){window.Capacitor=Object.assign(Object.create(ORIG_CAP||{}),{getPlatform:()=>'ios',isNativePlatform:()=>true});return;}
+  if(ORIG_CAP===undefined)delete window.Capacitor;else window.Capacitor=ORIG_CAP;
+}
 const Page=Route.options.component;
 let rootEl=null;
 function deferred(){let r,j;const p=new Promise((a,b)=>{r=a;j=b;});return {p,r,j};}
@@ -1208,18 +1528,62 @@ window.mount=(o)=>{
   sessionStorage.clear();
   const accept=[];
   ${W}={nav:[],toasts:[],authRequired:[],rpc:[],from:[],offline:!!o.offline,locale:o.locale||'zh-TW',token:o.token,path:o.path||('/trip-invite/'+o.token),
+    ua:o.ua??null,mtp:o.mtp??null,realFrame:!!o.realFrame,
     session:o.loggedIn?{access_token:'t',user:{id:'user-1'}}:null,accept,
     rpcImpl:(name,args)=>{
       if(name==='get_trip_invite_preview'){const pe=(o.previewErrors||[]).shift();return Promise.resolve(pe?{data:null,error:pe}:{data:[o.preview],error:null});}
       if(name==='accept_trip_invite'){const d=deferred();accept.push(d);return d.p;}
       return Promise.resolve({data:null,error:null});
     }};
+  applyCapacitor(!!o.capacitor);
   document.getElementById('root').innerHTML='';
-  rootEl=createRoot(document.getElementById('root'));
   const tree=o.shell==='app'?<App><Page/></App>:<AuthProvider><Page/></AuthProvider>;
+  if(o.hydrate){
+    // 模擬 SSR：同一棵樹先 renderToString（不跑 effect），再 hydrateRoot；記錄 hydration 錯誤
+    ${W}.recoverable=[];
+    const html=renderToString(<StrictMode>{tree}</StrictMode>);
+    ${W}.ssrHtml=html;
+    document.getElementById('root').innerHTML=html;
+    rootEl=hydrateRoot(document.getElementById('root'),<StrictMode>{tree}</StrictMode>,{onRecoverableError:(e)=>${W}.recoverable.push(String(e&&e.message||e))});
+    return true;
+  }
+  rootEl=createRoot(document.getElementById('root'));
   flushSync(()=>rootEl.render(<StrictMode>{tree}</StrictMode>));
   return true;
 };
+// 只在版面量測時載入編譯後的 Tailwind（其他案例沿用無樣式 fixture）
+window.setCss=(on)=>new Promise((res)=>{const old=document.getElementById('tw-css');if(old)old.remove();if(!on)return res(true);
+  const l=document.createElement('link');l.id='tw-css';l.rel='stylesheet';l.href='/app.css';l.onload=()=>res(true);l.onerror=()=>res(false);document.head.appendChild(l);});
+const rectOf=(el)=>{if(!el)return null;const r=el.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height};};
+window.openInApp=()=>{const links=[...document.querySelectorAll('#root a')].filter(a=>/^roamie:/i.test(a.getAttribute('href')||''));
+  const c=getTripCopy();
+  return {count:links.length,hrefs:links.map(a=>a.getAttribute('href')),texts:links.map(a=>a.textContent.trim()),
+    hint:[...document.querySelectorAll('#root p')].some(p=>p.textContent.trim()===c.inviteOpenInAppHint),
+    textHasLabel:document.getElementById('root').textContent.includes(c.inviteOpenInApp),
+    order:links.length?[...links[0].parentElement.children].map(e=>e.tagName+':'+e.textContent.trim()):[],
+    store:window.storeLinks()};};
+// #TS-INVITE-APPSTORE：App Store 下載連結（以 href 網域判斷，文字另行比對）
+window.storeLinks=()=>{const c=getTripCopy();const ls=[...document.querySelectorAll('#root a')].filter(a=>/apps\\.apple\\.com/i.test(a.getAttribute('href')||''));
+  return {count:ls.length,hrefs:ls.map(a=>a.getAttribute('href')),texts:ls.map(a=>a.textContent.trim()),targets:ls.map(a=>a.getAttribute('target')),
+    parents:ls.map(a=>a.parentElement.tagName+':'+[...a.parentElement.childNodes].map(n=>n.nodeType===1?n.tagName:'#'+n.nodeType).join(',')),
+    textHasLabel:document.getElementById('root').textContent.includes(c.inviteDownloadApp)};};
+window.clickStore=()=>{const a=[...document.querySelectorAll('#root a')].find(x=>/apps\\.apple\\.com/i.test(x.getAttribute('href')||''));if(!a)return 'missing';
+  const stop=(e)=>e.preventDefault();window.addEventListener('click',stop);try{flushSync(()=>a.click());}finally{window.removeEventListener('click',stop);}return 'clicked';};
+window.clickOpenInApp=()=>{const a=[...document.querySelectorAll('#root a')].find(x=>/^roamie:/i.test(x.getAttribute('href')||''));if(!a)return 'missing';
+  const stop=(e)=>e.preventDefault();window.addEventListener('click',stop);try{flushSync(()=>a.click());}finally{window.removeEventListener('click',stop);}return 'clicked';};
+window.layout=()=>{const vw=window.innerWidth,vh=window.innerHeight;const de=document.documentElement;
+  const btns=[...document.querySelectorAll('#root button')];const link=[...document.querySelectorAll('#root a')].find(x=>/^roamie:/i.test(x.getAttribute('href')||''));
+  const c=getTripCopy();const hint=[...document.querySelectorAll('#root p')].find(p=>p.textContent.trim()===c.inviteOpenInAppHint);
+  const frame=document.querySelector('.mobile-frame-inner');
+  const overflowX=[...document.querySelectorAll('#root *')].filter(e=>{const r=e.getBoundingClientRect();return r.width>0&&(r.right>vw+0.5||r.left<-0.5);}).map(e=>e.tagName+'.'+String(e.className).slice(0,40));
+  const clipped=[...document.querySelectorAll('#root button, #root a, #root p, #root h1')].filter(e=>getComputedStyle(e).textOverflow!=='ellipsis'&&e.scrollWidth>e.clientWidth+1).map(e=>e.tagName+':'+e.textContent.trim().slice(0,30));
+  return {vw,vh,docScrollW:de.scrollWidth,docScrollH:de.scrollHeight,frame:rectOf(frame),frameScrollH:frame?frame.scrollHeight:null,frameClientH:frame?frame.clientHeight:null,
+    buttons:btns.map(b=>({text:b.textContent.trim(),...rectOf(b)})),link:rectOf(link),hint:rectOf(hint),overflowX,clipped,
+    store:(()=>{const a=[...document.querySelectorAll('#root a')].find(x=>/apps\\.apple\\.com/i.test(x.getAttribute('href')||''));if(!a)return null;const p=a.parentElement;const cs=getComputedStyle(p);
+      return {text:a.textContent.trim(),want:c.inviteDownloadApp,rect:rectOf(a),lines:[...a.getClientRects()].map(r=>({top:r.top,bottom:r.bottom,left:r.left,right:r.right})),p:rectOf(p),
+        pScrollW:p.scrollWidth,pClientW:p.clientWidth,pScrollH:p.scrollHeight,pClientH:p.clientHeight,ellipsis:cs.textOverflow==='ellipsis'||getComputedStyle(a).textOverflow==='ellipsis',
+        whiteSpace:cs.whiteSpace,overflow:cs.overflow,visible:cs.visibility!=='hidden'&&cs.display!=='none'&&rectOf(a).height>0};})(),
+    cssLoaded:!!document.getElementById('tw-css')&&getComputedStyle(btns[0]||document.body).borderRadius!=='0px'};};
 window.resolveAccept=(i,v)=>{${W}.accept[i].r(v);return true;};
 // 模擬登入完成：session 寫入（getAuthenticatedUserId 讀它）並對有效訂閱發出 SIGNED_IN
 window.signIn=()=>{${W}.session={access_token:'t-login',user:{id:'user-1'}};const live=(${W}.authSubs||[]).filter(s=>s.sub.active);live.forEach(s=>s.cb('SIGNED_IN',${W}.session));return live.length;};
@@ -1633,7 +1997,7 @@ async function runDetailChecks({ evaluate, sleep, port, call }) {
         assert.deepEqual(opts.map((t) => b(sheet.state, t)?.disabled ?? "missing"), opts.map(() => false), "TripInviteSheet 選項應可用");
         assert.equal(sheet.state.create, 2, "開啟 TripInviteSheet 又呼叫 create：" + sheet.state.create);
         assert.equal(sheet.copyClick, "clicked");
-        assert.deepEqual(copied.copies, [URL_PREFIX + "TOK" + n], "複製出的連結應為重試取得的連結：" + JSON.stringify(copied.copies));
+        assert.deepEqual(copied.copies, [inviteUrl("TOK" + n)], "複製出的連結應為重試取得的連結：" + JSON.stringify(copied.copies));
         assert.deepEqual(copied.toasts, ["success:" + ZH.inviteCopied]);
         assert.equal(copied.create, 2);
       }
@@ -2205,7 +2569,23 @@ async function runBrowser() {
     define: { "import.meta.env": '{"DEV":true,"PROD":false,"MODE":"development"}', "process.env.NODE_ENV": '"development"' },
     plugins: [mockPlugin(detailMocks)],
   });
+  // R17g 版面量測用：以目前 styles.css 編譯 Tailwind（去掉 Google Fonts @import，不連外）
+  let twCss = "";
+  try {
+    const { compile } = await import("@tailwindcss/node");
+    const { Scanner } = await import("@tailwindcss/oxide");
+    const cssSrc = read("src/styles.css").replace(/^@import url\([^\n]*\n/m, "");
+    const compiler = await compile(cssSrc, { base: path.join(root, "src"), onDependency() {} });
+    twCss = compiler.build(new Scanner({ sources: compiler.sources }).scan());
+  } catch (e) {
+    info("Tailwind 編譯失敗（R17g 將失敗）：" + String(e?.message ?? e).slice(0, 300));
+  }
   const server = http.createServer((req, res) => {
+    if (req.url === "/app.css") {
+      res.setHeader("Content-Type", "text/css");
+      res.end(twCss);
+      return;
+    }
     if (req.url === "/app.js" || req.url === "/detail.js") {
       res.setHeader("Content-Type", "application/javascript");
       res.end(fs.readFileSync(path.join(tmp, req.url.slice(1))));
@@ -2503,6 +2883,309 @@ async function runBrowser() {
           assert.deepEqual(a.buttons, aBase.buttons);
         });
       }
+    }
+    // ── R17（#TS-INVITE-LINK）：「在 Roamie App 開啟」只在網頁版 iOS 手機／平板顯示；不影響既有按鈕與流程 ──
+    {
+      const ZHc = M.copy.getTripWorkspaceCopy("zh-TW");
+      const UA = {
+        iphone: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1",
+        iphoneLine: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Safari Line/14.19.0",
+        iphoneChrome: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/130.0.6723.90 Mobile/15E148 Safari/604.1",
+        ipadLegacy: "Mozilla/5.0 (iPad; CPU OS 16_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+        macSafari: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15",
+        android: "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36",
+        androidTablet: "Mozilla/5.0 (Linux; Android 14; SM-X910) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        windows: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        wkWebView: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
+      };
+      const ENV = [
+        ["iPhone Safari", { ua: UA.iphone, mtp: 5 }, true],
+        ["iPhone LINE 內建瀏覽器", { ua: UA.iphoneLine, mtp: 5 }, true],
+        ["iPhone Chrome（CriOS）", { ua: UA.iphoneChrome, mtp: 5 }, true],
+        ["iPad（iPadOS 桌面 UA＋maxTouchPoints=5）", { ua: UA.macSafari, mtp: 5 }, true],
+        ["iPad（舊版 iPad UA）", { ua: UA.ipadLegacy, mtp: 5 }, true],
+        ["Mac Safari 桌機（maxTouchPoints=0）", { ua: UA.macSafari, mtp: 0 }, false],
+        ["Mac 桌機（maxTouchPoints=1）", { ua: UA.macSafari, mtp: 1 }, false],
+        ["Android 手機", { ua: UA.android, mtp: 5 }, false],
+        ["Android 平板", { ua: UA.androidTablet, mtp: 10 }, false],
+        ["Windows 桌機", { ua: UA.windows, mtp: 0 }, false],
+        ["Windows 觸控筆電", { ua: UA.windows, mtp: 10 }, false],
+        ["headless Chrome 原始 UA", {}, false],
+        ["Capacitor iOS App（WKWebView iPhone UA）", { ua: UA.wkWebView, mtp: 5, capacitor: true }, false],
+        ["Capacitor iOS App（Safari 風格 iPhone UA）", { ua: UA.iphone, mtp: 5, capacitor: true }, false],
+        ["Capacitor iPad App（桌面 UA＋觸控）", { ua: UA.macSafari, mtp: 5, capacitor: true }, false],
+      ];
+      const BASE_BUTTONS = [{ text: ZHc.inviteJoin, disabled: false }, { text: ZHc.inviteNotNow, disabled: false }];
+      const results = [];
+      for (const [label, env, want] of ENV) {
+        const s = await mount({ token: TOKEN, loggedIn: true, preview: VALID, ...env });
+        const o = await evaluate("window.openInApp()");
+        results.push([label, env, want, s, o]);
+      }
+      await check("R17a 顯示條件：iPhone（Safari／LINE／Chrome）與 iPad（含桌面 UA＋觸控）顯示恰 1 個；Mac／Android／Windows／headless／Capacitor App 皆不顯示", () => {
+        const bad = results
+          .filter(([, , want, , o]) => o.count !== (want ? 1 : 0) || o.textHasLabel !== want || o.hint !== want)
+          .map(([label, , want, , o]) => `${label}：期望${want ? "顯示" : "不顯示"}，實際 count=${o.count} label=${o.textHasLabel} hint=${o.hint}`);
+        assert.deepEqual(bad, []);
+      });
+      await check("R17b 不論顯示與否，原本的按鈕（加入行程／暫時不要）文字、順序、可按狀態完全相同；新連結排在兩顆按鈕之後、提示在連結之後", () => {
+        for (const [label, , want, s, o] of results) {
+          assert.deepEqual(s.buttons, BASE_BUTTONS, label + "：按鈕被改動 " + JSON.stringify(s.buttons));
+          assert.equal(s.h1, "京都楓葉之旅", label);
+          if (want) {
+            assert.deepEqual(o.order, ["BUTTON:" + ZHc.inviteJoin, "BUTTON:" + ZHc.inviteNotNow, "A:" + ZHc.inviteOpenInApp, "P:" + ZHc.inviteOpenInAppHint, "P:" + ZHc.inviteDownloadApp], label + "：順序 " + JSON.stringify(o.order));
+            assert.deepEqual(o.texts, [ZHc.inviteOpenInApp]);
+            assert.deepEqual(o.store.parents, ["P:A"], label + "：下載連結應是最後一個 <p> 內唯一的 <a> " + JSON.stringify(o.store.parents));
+          }
+        }
+      });
+      // #TS-INVITE-APPSTORE：下載連結與「在 Roamie App 開啟」同條件顯示
+      await check("R17j 下載連結顯示條件與 App 連結一致：iPhone／iPad 顯示恰 1 個；Mac／Android／Windows／headless／Capacitor App 皆不顯示（含文字）", () => {
+        const bad = results
+          .filter(([, , want, , o]) => o.store.count !== o.count || o.store.count !== (want ? 1 : 0) || o.store.textHasLabel !== want)
+          .map(([label, , want, , o]) => `${label}：期望${want ? "顯示" : "不顯示"}，實際 store=${o.store.count} app=${o.count} label=${o.store.textHasLabel}`);
+        assert.deepEqual(bad, []);
+      });
+      await check("R17k 下載連結 href＝https://apps.apple.com/app/id6772861982（逐字、不帶 token）；文字＝inviteDownloadApp", () => {
+        for (const [label, , want, , o] of results) {
+          if (!want) continue;
+          assert.deepEqual(o.store.hrefs, [APP_STORE_URL_EXPECTED], label);
+          assert.deepEqual(o.store.texts, [ZHc.inviteDownloadApp], label);
+        }
+      });
+
+      // R17c href 編碼
+      const ODD = "a/b?c#d e&f%g+h=i";
+      const storeHrefsByToken = [];
+      const hrefOf = async (token) => {
+        await mount({ token, loggedIn: true, preview: VALID, ua: UA.iphone, mtp: 5 });
+        const o = await evaluate("window.openInApp()");
+        storeHrefsByToken.push([token, o.store.hrefs]);
+        return o.hrefs;
+      };
+      const plainHrefs = await hrefOf(TOKEN);
+      const oddHrefs = await hrefOf(ODD);
+      const cjkHrefs = await hrefOf("東京+大阪");
+      await check("R17c href＝roamie://trip-invite/{encodeURIComponent(token)}；特殊字元（/ ? # 空白 & % + = 中文）皆編碼，App 端 parser 解回原 token", () => {
+        assert.deepEqual(plainHrefs, ["roamie://trip-invite/" + TOKEN]);
+        assert.deepEqual(oddHrefs, ["roamie://trip-invite/" + encodeURIComponent(ODD)]);
+        assert.doesNotMatch(oddHrefs[0].slice("roamie://trip-invite/".length), /[/?# &+=]/, "token 段含未編碼字元：" + oddHrefs[0]);
+        assert.deepEqual(cjkHrefs, ["roamie://trip-invite/" + encodeURIComponent("東京+大阪")]);
+        for (const [h, t] of [[plainHrefs[0], TOKEN], [oddHrefs[0], ODD], [cjkHrefs[0], "東京+大阪"]]) {
+          assert.equal(M.deepLink.parseTripInviteTokenFromUrl(h), t, "App 端無法解析 " + h);
+        }
+      });
+      await check("R17k2 下載連結 href 不受 token 影響（一般／特殊字元／中文 token 皆為同一個 App Store 網址）", () => {
+        assert.equal(storeHrefsByToken.length, 3);
+        for (const [t, hrefs] of storeHrefsByToken) assert.deepEqual(hrefs, [APP_STORE_URL_EXPECTED], "token=" + t);
+      });
+
+      // R17d～f 流程：iPhone（有連結）與桌機（無連結）跑同一套操作，逐步比較
+      const flow = async (env) => {
+        const out = {};
+        out.s0 = await mount({ token: TOKEN, loggedIn: true, preview: VALID, ...env });
+        out.linkClick = await evaluate("window.clickOpenInApp()");
+        await sleep(40);
+        out.afterLink = await st();
+        out.storeClick = await evaluate("window.clickStore()");
+        await sleep(40);
+        out.afterStore = await st();
+        out.join = await click(ZHc.inviteJoin);
+        await sleep(30);
+        out.joining = await st();
+        out.joiningLink = await evaluate("window.openInApp()");
+        await evaluate(`window.resolveAccept(0, {data:${JSON.stringify(TRIP_ID)},error:null})`);
+        await sleep(60);
+        out.done = await st();
+        await mount({ token: TOKEN, loggedIn: true, preview: VALID, ...env });
+        out.notNow = await click(ZHc.inviteNotNow);
+        await sleep(30);
+        out.left = await st();
+        const g = await mount({ token: TOKEN, loggedIn: false, preview: VALID, ...env });
+        out.guest = g;
+        out.guestLink = await evaluate("window.openInApp()");
+        out.login = await click(ZHc.inviteLoginToJoin);
+        await sleep(30);
+        out.guestAfter = await st();
+        return out;
+      };
+      const ios = await flow({ ua: UA.iphone, mtp: 5 });
+      const desk = await flow({ ua: UA.windows, mtp: 0 });
+      const pick = (s) => ({ buttons: s.buttons, acceptCalls: s.acceptCalls, nav: s.nav, toasts: s.toasts, authRequired: s.authRequired, stash: s.stash });
+      await check("R17d 點「在 Roamie App 開啟」只是一般連結：不呼叫 accept／preview 以外的 RPC、不導向、不要求登入、不清除 stash", () => {
+        assert.equal(ios.linkClick, "clicked");
+        assert.deepEqual(ios.afterLink.acceptCalls, []);
+        assert.deepEqual(ios.afterLink.nav, []);
+        assert.deepEqual(ios.afterLink.authRequired, []);
+        assert.deepEqual(ios.afterLink.toasts, []);
+        assert.equal(ios.afterLink.stash, TOKEN, "點連結後 stash 被清除（回到網頁時登入導回會失效）");
+        assert.deepEqual(ios.afterLink.rpc.filter((r) => r !== "get_trip_invite_preview"), []);
+        assert.equal(desk.linkClick, "missing", "桌機不應有連結");
+      });
+      await check("R17e 加入流程與桌機完全相同：accept 恰 1 次、處理中按鈕停用、導向 /saved/{id}?view=overview、清除 stash", () => {
+        assert.equal(ios.join, "clicked");
+        assert.deepEqual(pick(ios.joining), pick(desk.joining), "處理中狀態不同");
+        assert.deepEqual(ios.joining.acceptCalls, [{ invite_token: TOKEN }]);
+        assert.deepEqual(pick(ios.done), pick(desk.done), "完成後狀態不同");
+        assert.deepEqual(ios.done.nav, [{ to: "/saved/$tripId", params: { tripId: TRIP_ID }, search: { view: "overview" }, replace: true }]);
+        assert.equal(ios.done.stash, null);
+        info("加入處理中 iPhone 的 App 連結數：" + ios.joiningLink.count + "（按鈕 disabled 時連結仍可點）");
+      });
+      await check("R17f 「暫時不要」與未登入「登入後加入」流程與桌機相同；未登入時 iPhone 也顯示 App 連結", () => {
+        assert.equal(ios.notNow, "clicked");
+        assert.deepEqual(pick(ios.left), pick(desk.left));
+        assert.deepEqual(ios.left.nav, [{ to: "/", replace: true }]);
+        assert.equal(ios.left.stash, null);
+        assert.deepEqual(ios.guest.buttons, desk.guest.buttons);
+        assert.deepEqual(ios.guest.buttons, [{ text: ZHc.inviteLoginToJoin, disabled: false }, { text: ZHc.inviteNotNow, disabled: false }]);
+        assert.equal(ios.guestLink.count, 1, "未登入的 iPhone 使用者應看到 App 連結");
+        assert.equal(ios.login, "clicked");
+        assert.deepEqual(pick(ios.guestAfter), pick(desk.guestAfter));
+        assert.deepEqual(ios.guestAfter.authRequired, ["collaboration"]);
+      });
+      await check("R17l 下載連結：處理中隱藏（與 App 連結同時消失）；未登入 iPhone 也顯示；點擊只是一般連結（不呼叫 RPC、不導向、不要求登入、不清 stash、不 toast）；桌機沒有", () => {
+        assert.equal(ios.joiningLink.count, 0, "加入處理中 App 連結仍顯示");
+        assert.equal(ios.joiningLink.store.count, 0, "加入處理中下載連結仍顯示");
+        assert.equal(ios.s0.buttons.length, 2);
+        assert.equal(ios.guestLink.store.count, 1, "未登入 iPhone 應顯示下載連結");
+        assert.deepEqual(ios.guestLink.store.hrefs, [APP_STORE_URL_EXPECTED]);
+        assert.equal(ios.storeClick, "clicked");
+        assert.deepEqual(ios.afterStore.acceptCalls, []);
+        assert.deepEqual(ios.afterStore.nav, []);
+        assert.deepEqual(ios.afterStore.authRequired, []);
+        assert.deepEqual(ios.afterStore.toasts, []);
+        assert.equal(ios.afterStore.stash, TOKEN, "點下載連結後 stash 被清除（裝完回網頁登入導回會失效）");
+        assert.deepEqual(ios.afterStore.rpc.filter((r) => r !== "get_trip_invite_preview"), []);
+        assert.deepEqual(ios.afterStore.buttons, ios.afterLink.buttons, "點下載連結後按鈕狀態改變");
+        assert.equal(desk.storeClick, "missing", "桌機不應有下載連結");
+        assert.equal(desk.guestLink.store.count, 0);
+      });
+      // 非有效狀態：App 連結與下載連結都只放在有效邀請的按鈕區（兩者一致）
+      const nonValidStore = [];
+      for (const preview of [{ ...VALID, state: "full", member_count: 20 }, { state: "revoked", trip_title: null, date_start: null, date_end: null, cover_url: null, inviter_display_name: null, member_count: null }]) {
+        await mount({ token: TOKEN, loggedIn: true, preview, ua: UA.iphone, mtp: 5 });
+        const o = await evaluate("window.openInApp()");
+        nonValidStore.push([preview.state, o.count, o.store.count]);
+        info(`iPhone ${preview.state} 狀態 → App 連結數 ${o.count}、下載連結數 ${o.store.count}`);
+      }
+      await check("R17m 非有效狀態（full／revoked）：下載連結數與 App 連結數一致", () => {
+        for (const [state, app, store] of nonValidStore) assert.equal(store, app, state);
+      });
+
+      // R17h SSR／hydration：iPhone UA 的伺服端 HTML 與桌機相同、不含 roamie://；hydrate 無錯誤，掛載後才出現連結
+      const h1 = await mount({ token: TOKEN, loggedIn: true, preview: VALID, ua: UA.iphone, mtp: 5, hydrate: true });
+      const ssrIos = await evaluate(`${W}.ssrHtml`);
+      const recIos = await evaluate(`${W}.recoverable`);
+      const linkAfterHydrate = await evaluate("window.openInApp()");
+      await mount({ token: TOKEN, loggedIn: true, preview: VALID, ua: UA.windows, mtp: 0, hydrate: true });
+      const ssrDesk = await evaluate(`${W}.ssrHtml`);
+      await mount({ token: TOKEN, loggedIn: true, preview: VALID, ua: UA.iphone, mtp: 5, capacitor: true, hydrate: true });
+      const ssrCap = await evaluate(`${W}.ssrHtml`);
+      await check("R17h SSR／hydration：iPhone／桌機／Capacitor 的 renderToString 輸出逐字相同且不含 roamie://；hydrateRoot 無 recoverable error；effect 後 iPhone 才出現連結", () => {
+        assert.ok(ssrIos.length > 0, "renderToString 空白");
+        assert.doesNotMatch(ssrIos, /roamie:/i);
+        assert.equal(ssrIos, ssrDesk, "SSR 輸出依 UA 不同 → hydration mismatch 風險");
+        assert.equal(ssrIos, ssrCap, "SSR 輸出依 Capacitor 不同");
+        assert.deepEqual(recIos, [], "hydration 錯誤：" + JSON.stringify(recIos));
+        assert.equal(h1.h1, "京都楓葉之旅", "hydrate 後未載入行程卡");
+        assert.equal(linkAfterHydrate.count, 1, "hydrate＋effect 後 iPhone 應顯示連結");
+      });
+      await check("R17h2 SSR／hydration：伺服端 HTML 不含下載連結（與 App 連結同在 effect 後出現）；hydrate 後 iPhone 恰 1 個下載連結", () => {
+        assert.doesNotMatch(ssrIos, /apps\.apple\.com/i);
+        assert.ok(!ssrIos.includes(ZHc.inviteDownloadApp), "SSR 輸出含下載文案");
+        assert.deepEqual(recIos, []);
+        assert.equal(linkAfterHydrate.store.count, 1, "hydrate＋effect 後 iPhone 應顯示下載連結");
+        assert.deepEqual(linkAfterHydrate.store.hrefs, [APP_STORE_URL_EXPECTED]);
+      });
+
+      // R17g 版面：真實 MobileFrame＋編譯後 Tailwind；各 viewport 無水平溢出、連結與按鈕同寬對齊、不重疊，且在外框可見範圍內
+      const cssOk = await evaluate("window.setCss(true)");
+      const VIEWPORTS = [
+        [320, 568, UA.iphone], [320, 460, UA.iphone], [375, 667, UA.iphone], [375, 553, UA.iphone], [390, 844, UA.iphone], [390, 664, UA.iphone],
+        [430, 932, UA.iphone], [768, 1024, UA.macSafari], [1024, 1366, UA.macSafari], [1180, 820, UA.macSafari],
+      ];
+      const LONG = { ...VALID, trip_title: "京都楓葉之旅・嵐山竹林與清水寺夜楓特別篇（十一月下旬）", cover_url: "data:image/gif;base64,R0lGODlhAQABAAAAACw=" };
+      const layouts = [];
+      for (const [w, h, ua] of VIEWPORTS) {
+        await call("Emulation.setDeviceMetricsOverride", { width: w, height: h, deviceScaleFactor: 2, mobile: false });
+        for (const locale of ["zh-TW", "ja", "ko", "en"]) {
+          await mount({ token: TOKEN, loggedIn: true, preview: LONG, ua, mtp: 5, realFrame: true, locale });
+          await sleep(60);
+          const withLink = await evaluate("window.layout()");
+          await mount({ token: TOKEN, loggedIn: true, preview: LONG, ua: UA.windows, mtp: 0, realFrame: true, locale });
+          await sleep(60);
+          const without = await evaluate("window.layout()");
+          layouts.push({ w, h, locale, withLink, without });
+        }
+      }
+      await call("Emulation.clearDeviceMetricsOverride");
+      await evaluate("window.setCss(false)");
+      await check("R17g 版面（" + VIEWPORTS.map(([w, h]) => w + "×" + h).join("、") + "；zh-TW／ja／ko／en）：無水平溢出、文字不被截斷、連結與按鈕同寬對齊不重疊、提示在連結下方", () => {
+        assert.ok(cssOk, "Tailwind CSS 未載入");
+        const bad = [];
+        for (const { w, h, locale, withLink: L } of layouts) {
+          const tag = `${w}×${h} ${locale}`;
+          if (!L.cssLoaded) bad.push(tag + "：CSS 未套用");
+          if (!L.link || !L.hint) { bad.push(tag + "：找不到連結或提示"); continue; }
+          if (L.docScrollW > L.vw) bad.push(`${tag}：文件水平溢出 scrollWidth=${L.docScrollW}>${L.vw}`);
+          if (L.overflowX.length) bad.push(`${tag}：元素超出視窗 ${L.overflowX.slice(0, 3).join(",")}`);
+          if (L.clipped.length) bad.push(`${tag}：文字水平截斷 ${L.clipped.join(",")}`);
+          const [join, notNow] = L.buttons;
+          if (Math.abs(L.link.width - join.width) > 1 || Math.abs(L.link.left - join.left) > 1) bad.push(`${tag}：連結與按鈕寬度／左緣不同 link=${L.link.width}@${L.link.left} btn=${join.width}@${join.left}`);
+          if (L.link.top < notNow.bottom - 0.5) bad.push(`${tag}：連結與「暫時不要」重疊`);
+          if (L.hint.top < L.link.bottom - 0.5) bad.push(`${tag}：提示與連結重疊`);
+          if (L.link.height < 40) bad.push(`${tag}：連結點擊高度 ${L.link.height} < 40`);
+        }
+        assert.deepEqual(bad, []);
+      });
+      // 垂直：外框（h-[100dvh] overflow-hidden、不可捲動）內是否看得到；與無連結的基準比較，只追究「新加的元素造成」的裁切
+      const vClip = [];
+      for (const { w, h, locale, withLink: L, without: B } of layouts) {
+        const frameBottom = Math.min(L.frame?.bottom ?? L.vh, L.vh);
+        const linkHidden = L.link && L.hint && L.hint.bottom > frameBottom + 0.5;
+        const baseHidden = B.buttons.length && B.buttons.at(-1).bottom > Math.min(B.frame?.bottom ?? B.vh, B.vh) + 0.5;
+        const joinHidden = L.buttons[0] && L.buttons[0].bottom > frameBottom + 0.5;
+        layouts.find((x) => x.w === w && x.h === h && x.locale === locale).v = { linkHidden, baseHidden, joinHidden, hintBottom: L.hint?.bottom, frameBottom, frameScrollH: L.frameScrollH, frameClientH: L.frameClientH };
+        if (linkHidden && !baseHidden) vClip.push(`${w}×${h} ${locale}：提示底 ${L.hint.bottom.toFixed(0)} > 外框可見底 ${frameBottom.toFixed(0)}（scrollH ${L.frameScrollH} > clientH ${L.frameClientH}，外框 overflow-hidden 無法捲動）${joinHidden ? "；連「加入行程」也被裁切" : ""}`);
+      }
+      for (const { w, h, locale, v } of layouts) if (locale === "ja") info(`垂直 ${w}×${h} ja：提示底 ${v.hintBottom?.toFixed(0)}／外框可見底 ${v.frameBottom.toFixed(0)}（frame scrollH ${v.frameScrollH}／clientH ${v.frameClientH}）`);
+      for (const { w, h, locale, v } of layouts) if (v.baseHidden) info(`${w}×${h} ${locale}：基準（無連結）已被裁切（既有問題，非本次新增）`);
+      await check("R17i 垂直：新增的連結＋提示在所有 viewport 都落在外框可見範圍內（基準本來就裁切者除外）", () => {
+        assert.deepEqual(vClip, []);
+      });
+      // #TS-INVITE-APPSTORE：下載連結版面
+      await check("R17g2 下載連結版面（同 R17g viewport×四語系）：文字逐字完整、在提示下方不重疊、每一行都在視窗與段落內（無水平溢出）、段落無截斷（無 ellipsis／scrollWidth／scrollHeight 溢出）、可見", () => {
+        const bad = [];
+        for (const { w, h, locale, withLink: L, without: B } of layouts) {
+          const tag = `${w}×${h} ${locale}`;
+          const S = L.store;
+          if (B.store) bad.push(tag + "：桌機（無 App 連結）卻有下載連結");
+          if (!S) { bad.push(tag + "：找不到下載連結"); continue; }
+          if (S.text !== S.want) bad.push(`${tag}：文字不符「${S.text}」≠「${S.want}」`);
+          if (!S.visible) bad.push(tag + "：不可見");
+          if (S.ellipsis) bad.push(tag + "：使用 ellipsis");
+          if (S.pScrollW > S.pClientW + 1) bad.push(`${tag}：段落水平截斷 scrollW=${S.pScrollW}>clientW=${S.pClientW}`);
+          if (S.pScrollH > S.pClientH + 1) bad.push(`${tag}：段落垂直截斷 scrollH=${S.pScrollH}>clientH=${S.pClientH}`);
+          if (L.hint && S.rect.top < L.hint.bottom - 0.5) bad.push(`${tag}：下載連結與提示重疊 top=${S.rect.top} < hint.bottom=${L.hint.bottom}`);
+          for (const r of S.lines) {
+            if (r.left < -0.5 || r.right > L.vw + 0.5) bad.push(`${tag}：下載連結超出視窗 ${r.left}～${r.right}／${L.vw}`);
+            if (r.left < S.p.left - 0.5 || r.right > S.p.right + 0.5) bad.push(`${tag}：下載連結超出段落 ${r.left}～${r.right}／${S.p.left}～${S.p.right}`);
+          }
+          const [join] = L.buttons;
+          if (Math.abs(S.p.width - join.width) > 1 || Math.abs(S.p.left - join.left) > 1) bad.push(`${tag}：下載段落與按鈕寬度／左緣不同`);
+          if (L.docScrollW > L.vw) bad.push(`${tag}：文件水平溢出`);
+        }
+        assert.deepEqual(bad, []);
+      });
+      const storeVClip = [];
+      for (const { w, h, locale, withLink: L, v } of layouts) {
+        if (!L.store) continue;
+        if (L.store.rect.bottom > v.frameBottom + 0.5 && !v.baseHidden) storeVClip.push(`${w}×${h} ${locale}：下載連結底 ${L.store.rect.bottom.toFixed(0)} > 外框可見底 ${v.frameBottom.toFixed(0)}`);
+      }
+      for (const { w, h, locale, withLink: L, v } of layouts) if (locale === "ja" && L.store) info(`垂直 ${w}×${h} ja：下載連結底 ${L.store.rect.bottom.toFixed(0)}／外框可見底 ${v.frameBottom.toFixed(0)}；連結高 ${L.store.rect.height.toFixed(0)}px、行數 ${L.store.lines.length}`);
+      await check("R17i2 垂直：下載連結在所有 viewport 都落在外框可見範圍內（基準本來就裁切者除外）", () => {
+        assert.deepEqual(storeVClip, []);
+      });
     }
     await runDetailChecks({ evaluate, sleep, port: server.address().port, call });
     await check("R7 無外部請求、無瀏覽器例外／console.error", () => {
