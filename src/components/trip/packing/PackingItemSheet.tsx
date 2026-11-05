@@ -1,6 +1,11 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { Loader2, Minus, Plus, Trash2 } from "lucide-react";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
+import { subscribeCapacitorKeyboard } from "@/lib/capacitor-keyboard-bridge";
+import {
+  isCapacitorNativeShell,
+  measureVisualViewportKeyboardInset,
+} from "@/lib/chat-keyboard-layout";
 import type { TripPackingCopy } from "@/lib/i18n/trip-workspace-copy";
 import type { PackingCategory, PackingItem, PackingItemPatch } from "@/lib/trip/trip-packing";
 import { cn } from "@/lib/utils";
@@ -34,14 +39,115 @@ type Props = {
   onDelete: (item: PackingItem) => void;
 };
 
+function isTextEntry(el: EventTarget | Element | null): el is HTMLElement {
+  return el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement;
+}
+
+/** 只捲動表單內容區（不用 scrollIntoView，避免連帶捲動 WebView／視窗），讓欄位與其 label 都在可見範圍 */
+function revealInScroller(el: HTMLElement) {
+  const scroller = el.closest<HTMLElement>("[data-packing-scroll]");
+  if (!scroller) return;
+  const margin = 12;
+  const box = scroller.getBoundingClientRect();
+  if (box.height <= 0) return;
+  const top = (el.closest("label") ?? el).getBoundingClientRect().top;
+  const bottom = el.getBoundingClientRect().bottom;
+  if (top < box.top + margin) {
+    scroller.scrollTop -= box.top + margin - top;
+  } else if (bottom > box.bottom - margin) {
+    // 往下捲，但不讓 label 被推出上緣
+    scroller.scrollTop += Math.min(bottom - (box.bottom - margin), top - (box.top + margin));
+  }
+}
+
 export function PackingItemSheet(props: Props) {
   const { open, onOpenChange, copy, item } = props;
+  // 與 ExpenseSheet 相同：Capacitor Keyboard 為 resize: "none"，鍵盤開啟時把 Sheet 底部移到鍵盤上緣，
+  // 最大高度改為「可視高度 − 鍵盤 − 上方安全區」。WebView 若已因鍵盤縮小，只補尚未縮掉的差額。
+  const [keyboardInsetPx, setKeyboardInsetPx] = useState(0);
+  const [viewportH, setViewportH] = useState(0);
+  const baseViewportHRef = useRef(0);
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) {
+      setKeyboardInsetPx(0);
+      return;
+    }
+    baseViewportHRef.current = window.innerHeight;
+    setViewportH(window.innerHeight);
+    const onWinResize = () => {
+      // 基準高度只增不減：WebView 可能比 keyboardWillShow 先縮，不可把縮後高度當基準（會重複墊高）
+      baseViewportHRef.current = Math.max(baseViewportHRef.current, window.innerHeight);
+      setViewportH(window.innerHeight);
+    };
+    window.addEventListener("resize", onWinResize);
+    const isNative = isCapacitorNativeShell();
+    const applyInset = (px: number) => {
+      const next = Math.max(0, Math.round(px));
+      if (next <= 0)
+        baseViewportHRef.current = Math.max(baseViewportHRef.current, window.innerHeight);
+      setViewportH(window.innerHeight);
+      setKeyboardInsetPx(next);
+    };
+    const removeCap = isNative
+      ? subscribeCapacitorKeyboard({ onShow: applyInset, onHide: () => applyInset(0) })
+      : null;
+
+    const vv = window.visualViewport;
+    const onVv = () => {
+      if (isNative || !vv) return;
+      const inset = Math.min(
+        measureVisualViewportKeyboardInset(),
+        Math.round(window.innerHeight * 0.55),
+      );
+      applyInset(inset > 50 ? inset : 0);
+    };
+    vv?.addEventListener("resize", onVv);
+    vv?.addEventListener("scroll", onVv);
+    onVv();
+
+    return () => {
+      removeCap?.();
+      window.removeEventListener("resize", onWinResize);
+      vv?.removeEventListener("resize", onVv);
+      vv?.removeEventListener("scroll", onVv);
+    };
+  }, [open]);
+
+  // 鍵盤高度生效後，把正在輸入的欄位捲到可見範圍
+  useEffect(() => {
+    if (keyboardInsetPx <= 0) return;
+    const el = document.activeElement;
+    if (!isTextEntry(el) || !contentRef.current?.contains(el)) return;
+    const raf = requestAnimationFrame(() => revealInScroller(el));
+    return () => cancelAnimationFrame(raf);
+  }, [keyboardInsetPx, viewportH]);
+
+  const viewportShrinkPx = Math.max(0, baseViewportHRef.current - viewportH);
+  const keyboardBottomPx = Math.max(0, keyboardInsetPx - viewportShrinkPx);
+  const keyboardStyle: CSSProperties | undefined =
+    keyboardInsetPx > 0
+      ? {
+          bottom: keyboardBottomPx,
+          maxHeight: `min(92dvh, calc(${Math.max(0, viewportH - keyboardBottomPx)}px - env(safe-area-inset-top, 0px) - 0.5rem))`,
+        }
+      : undefined;
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
+        ref={contentRef}
         side="bottom"
         closeLabel={copy.close}
-        className="flex max-h-[92dvh] flex-col rounded-t-[1.75rem] border-0 bg-background px-0 pb-0"
+        className="group/packing flex max-h-[92dvh] flex-col rounded-t-[1.75rem] border-0 bg-background px-0 pb-0"
+        style={keyboardStyle}
+        data-keyboard-open={keyboardInsetPx > 0 ? "" : undefined}
+        onFocusCapture={(e) => {
+          const el = e.target;
+          if (!isTextEntry(el)) return;
+          requestAnimationFrame(() => revealInScroller(el));
+        }}
       >
         <SheetTitle className="px-5 text-base font-medium">{copy.itemSheetTitle}</SheetTitle>
         <SheetDescription className="sr-only">{item?.name ?? copy.itemSheetTitle}</SheetDescription>
@@ -97,7 +203,10 @@ function ItemForm({
 
   return (
     <>
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-4 pt-4">
+      <div
+        data-packing-scroll
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-4 pt-4"
+      >
         {conflictNotice ? (
           <p
             role="status"
@@ -202,7 +311,7 @@ function ItemForm({
           {deleting ? copy.deleting : copy.delete}
         </button>
       </div>
-      <div className="border-t border-border px-5 pb-[calc(env(safe-area-inset-bottom)+1rem)] pt-3">
+      <div className="border-t border-border px-5 pb-[calc(env(safe-area-inset-bottom)+1rem)] pt-3 group-data-[keyboard-open]/packing:pb-3">
         <button
           type="button"
           onClick={submit}
