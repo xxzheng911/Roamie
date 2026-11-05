@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useRouter } from "@tanstack/react-router";
 import { Loader2 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
@@ -134,6 +135,32 @@ function PlaceDetailPageContent() {
       }
     };
   }, []);
+
+  // 每次進入（含切換地點，key 變動會 remount）都從頂端開始。
+  // router 的 scrollRestoration 以結構選擇器（nth-child 路徑）記錄捲動，`.place-detail-route`
+  // 與上一頁或上一個地點的捲動容器路徑相同時，會在 onRendered 把舊位置套到這裡（停在交通方式）。
+  // onRendered 在本元件 layout effect 之後才觸發，所以掛載時先歸零，再於第一次 onRendered 後歸零一次。
+  const router = useRouter();
+  const detailScrollRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const resetToTop = () => {
+      const el = detailScrollRef.current;
+      if (el) {
+        el.scrollTop = 0;
+        el.scrollLeft = 0;
+      }
+    };
+    resetToTop();
+    let unsubscribe: (() => void) | null = router.subscribe("onRendered", () => {
+      resetToTop();
+      unsubscribe?.();
+      unsubscribe = null;
+    });
+    return () => {
+      unsubscribe?.();
+      unsubscribe = null;
+    };
+  }, [router]);
   const search = Route.useSearch();
   const navigate = Route.useNavigate();
   const { t, locale } = useI18n();
@@ -631,6 +658,8 @@ function PlaceDetailPageContent() {
     if (loading) {
       return (
         <div
+          ref={detailScrollRef}
+          data-scroll-restoration-id="place-detail-route"
           className={`place-detail-route flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-y-contain${duoSingleClass}`}
         >
           <ExploreSubpageHeader title={t("map.placeDetail")} onBack={handleBack} />
@@ -662,6 +691,8 @@ function PlaceDetailPageContent() {
 
   return (
     <div
+      ref={detailScrollRef}
+      data-scroll-restoration-id="place-detail-route"
       className={`place-detail-route flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-y-contain${duoRootClass}`}
     >
       <ExploreSubpageHeader title={t("map.placeDetail")} onBack={handleBack} />

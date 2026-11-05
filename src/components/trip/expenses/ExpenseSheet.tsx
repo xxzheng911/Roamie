@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { ArrowRight, Check, ChevronDown, Loader2, Trash2 } from "lucide-react";
 import { ProfileAvatar } from "@/components/profile/ProfileAvatar";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
@@ -163,21 +163,59 @@ function isTextEntry(el: Element | null): el is HTMLElement {
   return el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement;
 }
 
+/** 只捲動表單內容區（不用 scrollIntoView，避免連帶捲動 WebView／視窗），讓欄位與其 label 都在可見範圍 */
+function revealInScroller(el: HTMLElement) {
+  const scroller = el.closest<HTMLElement>("[data-expense-scroll]");
+  if (!scroller) return;
+  const margin = 12;
+  const box = scroller.getBoundingClientRect();
+  if (box.height <= 0) return;
+  const top = (el.closest("label") ?? el).getBoundingClientRect().top;
+  const bottom = el.getBoundingClientRect().bottom;
+  if (top < box.top + margin) {
+    scroller.scrollTop -= box.top + margin - top;
+  } else if (bottom > box.bottom - margin) {
+    // 往下捲，但不讓 label 被推出上緣
+    scroller.scrollTop += Math.min(bottom - (box.bottom - margin), top - (box.top + margin));
+  }
+}
+
 export function ExpenseSheet(props: Props) {
   const { open, onOpenChange, expense, copy } = props;
   const isSettlement = expense?.kind === "settlement";
-  // Capacitor Keyboard 為 resize: "none"（鍵盤疊加、WebView 不縮）：以鍵盤高度墊高 Sheet 底部，
-  // 讓捲動區與底部按鈕都留在鍵盤上方（同 AddToTripSheet 的做法）。
+  // Capacitor Keyboard 為 resize: "none"（鍵盤疊加、WebView 不縮）：鍵盤開啟時把整個 Sheet 底部
+  // 移到鍵盤上緣（bottom＝鍵盤高度），最大高度改為「可視高度 − 鍵盤 − 上方安全區」，
+  // 不再用 paddingBottom 吃掉 flex-1 捲動區，捲動區與底部按鈕都留在鍵盤上方。
+  // 實機若 WebView 仍因鍵盤縮小（innerHeight 變小，bottom-0 已在鍵盤上緣），只補「尚未被縮掉」的差額，
+  // 避免重複墊高（舊版 paddingBottom＋縮小的 viewport 會把內容區壓到 0）。
   const [keyboardInsetPx, setKeyboardInsetPx] = useState(0);
+  const [viewportH, setViewportH] = useState(0);
+  const baseViewportHRef = useRef(0);
+  const keyboardRawRef = useRef(0);
   const contentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) {
+      keyboardRawRef.current = 0;
       setKeyboardInsetPx(0);
       return;
     }
+    baseViewportHRef.current = window.innerHeight;
+    setViewportH(window.innerHeight);
+    const onWinResize = () => {
+      if (keyboardRawRef.current <= 0) baseViewportHRef.current = window.innerHeight;
+      setViewportH(window.innerHeight);
+    };
+    window.addEventListener("resize", onWinResize);
     const isNative = isCapacitorNativeShell();
-    const applyInset = (px: number) => setKeyboardInsetPx(Math.max(0, Math.round(px)));
+    const applyInset = (px: number) => {
+      const next = Math.max(0, Math.round(px));
+      keyboardRawRef.current = next;
+      if (next <= 0)
+        baseViewportHRef.current = Math.max(baseViewportHRef.current, window.innerHeight);
+      setViewportH(window.innerHeight);
+      setKeyboardInsetPx(next);
+    };
     const removeCap = isNative
       ? subscribeCapacitorKeyboard({ onShow: applyInset, onHide: () => applyInset(0) })
       : null;
@@ -197,6 +235,7 @@ export function ExpenseSheet(props: Props) {
 
     return () => {
       removeCap?.();
+      window.removeEventListener("resize", onWinResize);
       vv?.removeEventListener("resize", onVv);
       vv?.removeEventListener("scroll", onVv);
     };
@@ -207,9 +246,20 @@ export function ExpenseSheet(props: Props) {
     if (keyboardInsetPx <= 0) return;
     const el = document.activeElement;
     if (!isTextEntry(el) || !contentRef.current?.contains(el)) return;
-    const raf = requestAnimationFrame(() => el.scrollIntoView({ block: "nearest" }));
+    const raf = requestAnimationFrame(() => revealInScroller(el));
     return () => cancelAnimationFrame(raf);
-  }, [keyboardInsetPx]);
+  }, [keyboardInsetPx, viewportH]);
+
+  // 鍵盤開啟：Sheet 底部貼鍵盤上緣，高度上限＝可視高度 − 鍵盤 − 上方安全區與留白
+  const viewportShrinkPx = Math.max(0, baseViewportHRef.current - viewportH);
+  const keyboardBottomPx = Math.max(0, keyboardInsetPx - viewportShrinkPx);
+  const keyboardStyle: CSSProperties | undefined =
+    keyboardInsetPx > 0
+      ? {
+          bottom: keyboardBottomPx,
+          maxHeight: `min(92dvh, calc(${Math.max(0, viewportH - keyboardBottomPx)}px - env(safe-area-inset-top, 0px) - 0.5rem))`,
+        }
+      : undefined;
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -218,11 +268,11 @@ export function ExpenseSheet(props: Props) {
         side="bottom"
         closeLabel={copy.close}
         className="flex max-h-[92dvh] flex-col rounded-t-[1.75rem] border-0 bg-background px-0 pb-0"
-        style={keyboardInsetPx > 0 ? { paddingBottom: keyboardInsetPx } : undefined}
+        style={keyboardStyle}
         onFocusCapture={(e) => {
           const el = e.target;
           if (!isTextEntry(el)) return;
-          requestAnimationFrame(() => el.scrollIntoView({ block: "nearest" }));
+          requestAnimationFrame(() => revealInScroller(el));
         }}
       >
         {isSettlement && expense ? (
@@ -582,7 +632,10 @@ function ExpenseForm({
         {expense ? copy.sheetEditTitle : copy.sheetAddTitle}
       </SheetTitle>
       <SheetDescription className="sr-only">{copy.amountLabel}</SheetDescription>
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-4 pt-4">
+      <div
+        data-expense-scroll
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-4 pt-4"
+      >
         {conflictNotice ? (
           <p
             role="status"

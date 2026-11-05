@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Loader2, Minus, Plus, Trash2 } from "lucide-react";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import type { TripPackingCopy } from "@/lib/i18n/trip-workspace-copy";
@@ -13,6 +13,8 @@ import {
   PACKING_QUANTITY_MAX,
   PACKING_QUANTITY_MIN,
 } from "./packing-model";
+
+const NOTE_MAX_HEIGHT_PX = 100;
 
 type Props = {
   open: boolean;
@@ -67,6 +69,14 @@ function ItemForm({
   const [categoryId, setCategoryId] = useState(item.category_id);
   const [note, setNote] = useState(item.note ?? "");
   const [submitted, setSubmitted] = useState(false);
+  // 備註單行起始（「選填」垂直置中），輸入多行時自動長高
+  const noteRef = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const el = noteRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, NOTE_MAX_HEIGHT_PX)}px`;
+  }, [note]);
 
   const nameValid = isValidPackingName(name, PACKING_ITEM_NAME_MAX);
   const noteValid = charLength(note.trim()) <= PACKING_ITEM_NOTE_MAX;
@@ -174,8 +184,10 @@ function ItemForm({
             value={note}
             onChange={(e) => setNote(e.target.value)}
             placeholder={copy.notePlaceholder}
-            rows={2}
-            className="mt-1 w-full resize-none rounded-xl bg-secondary px-3 py-2 text-sm text-foreground outline-none placeholder:text-muted-foreground"
+            rows={1}
+            ref={noteRef}
+            className="mt-1 block min-h-10 w-full resize-none overflow-y-auto rounded-xl bg-secondary px-3 py-2.5 text-sm leading-5 text-foreground outline-none placeholder:text-muted-foreground"
+            style={{ maxHeight: NOTE_MAX_HEIGHT_PX }}
           />
         </label>
         {!noteValid ? <p className="mt-1 text-xs text-destructive">{copy.validationNote}</p> : null}
