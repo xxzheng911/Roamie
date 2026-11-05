@@ -203,7 +203,8 @@ export function ExpenseSheet(props: Props) {
     baseViewportHRef.current = window.innerHeight;
     setViewportH(window.innerHeight);
     const onWinResize = () => {
-      if (keyboardRawRef.current <= 0) baseViewportHRef.current = window.innerHeight;
+      // 基準高度只增不減：WebView 可能比 keyboardWillShow 先縮，不可把縮後高度當基準（會重複墊高）
+      baseViewportHRef.current = Math.max(baseViewportHRef.current, window.innerHeight);
       setViewportH(window.innerHeight);
     };
     window.addEventListener("resize", onWinResize);
@@ -267,8 +268,9 @@ export function ExpenseSheet(props: Props) {
         ref={contentRef}
         side="bottom"
         closeLabel={copy.close}
-        className="flex max-h-[92dvh] flex-col rounded-t-[1.75rem] border-0 bg-background px-0 pb-0"
+        className="group/expense flex max-h-[92dvh] flex-col rounded-t-[1.75rem] border-0 bg-background px-0 pb-0"
         style={keyboardStyle}
+        data-keyboard-open={keyboardInsetPx > 0 ? "" : undefined}
         onFocusCapture={(e) => {
           const el = e.target;
           if (!isTextEntry(el)) return;
@@ -920,7 +922,7 @@ function ExpenseForm({
         </label>
       </div>
 
-      <div className="border-t border-border px-5 pb-[calc(env(safe-area-inset-bottom)+1rem)] pt-3">
+      <div className="border-t border-border px-5 pb-[calc(env(safe-area-inset-bottom)+1rem)] pt-3 group-data-[keyboard-open]/expense:pb-3">
         {submitError ? (
           <p
             role="alert"
