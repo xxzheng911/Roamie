@@ -18,6 +18,8 @@ type Props = PlaceImageInput &
     /** 進入 viewport 才載入（預設 true） */
     lazy?: boolean;
     perfPage?: string;
+    /** 主圖實際載入失敗時通知（例如過期的 Google photo name） */
+    onImageError?: (failedSrc: string) => void;
   };
 
 /** 附近地點卡片圖：Google → Unsplash → Roamie 預設；viewport lazy */
@@ -29,6 +31,7 @@ export function PlaceImage({
   priority = false,
   lazy = true,
   perfPage,
+  onImageError,
   ...input
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -59,6 +62,7 @@ export function PlaceImage({
           loading={loading}
           className="h-full w-full"
           imgClassName={imgClassName}
+          onSourceError={onImageError}
         />
       )}
     </div>

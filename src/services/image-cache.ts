@@ -19,6 +19,17 @@ export function isSignedPlacePhotoCapabilityUrl(url: string | null | undefined):
   }
 }
 
+/** 未簽名 /api/place-photo（無 signature）會被 Worker 401，不得直接當 <img src> 或預載。 */
+export function isUnsignedPlacePhotoProxyUrl(url: string | null | undefined): boolean {
+  if (!url || !url.includes("/api/place-photo")) return false;
+  try {
+    const parsed = new URL(url, "https://roamie.invalid");
+    return parsed.pathname.endsWith("/api/place-photo") && !parsed.searchParams.get("signature");
+  } catch {
+    return !/[?&]signature=/.test(url);
+  }
+}
+
 /** Server rejects expires < now. Missing or non-integer expires cannot be prefetched. */
 export function isExpiredSignedPlacePhotoUrl(url: string, nowMs = Date.now()): boolean {
   if (!isSignedPlacePhotoCapabilityUrl(url)) return false;
@@ -155,6 +166,7 @@ export function prefetchImageUrl(url: string): Promise<void> {
   const safe = preferJpegPngImageUrl(url);
   if (!safe || typeof globalThis.Image !== "function") return Promise.resolve();
   if (isExpiredSignedPlacePhotoUrl(url) || isExpiredSignedPlacePhotoUrl(safe)) return Promise.resolve();
+  if (isUnsignedPlacePhotoProxyUrl(safe)) return Promise.resolve();
 
   const existing = inflightPrefetch.get(safe);
   if (existing) return existing;
@@ -231,6 +243,13 @@ export function prefetchPlaceCoverUrls(
     if (!url || isSignedPlacePhotoCapabilityUrl(url)) continue;
     if (item.placeId?.trim()) {
       setCachedImage(cacheKey("home-place-cover", item.placeId.trim()), url);
+    }
+    if (isUnsignedPlacePhotoProxyUrl(url)) {
+      // 未簽名 proxy 直接預載必 401：改走同寬度簽名（與首頁卡片 480 共用快取／inflight）再預載。
+      const unsignedPhoto = extractGooglePlacePhotoName(url) || photo;
+      if (unsignedPhoto) signAndPrefetch(unsignedPhoto);
+      n += 1;
+      continue;
     }
     void prefetchImageUrl(url);
     n += 1;

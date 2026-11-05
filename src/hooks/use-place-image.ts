@@ -4,6 +4,7 @@ import { getPlaceImage } from "@/services/placeImageService";
 import { extractGooglePlacePhotoName, resolvePlaceImageUrl } from "@/lib/safe-image-url";
 import { logPerfImageLoad } from "@/lib/app-perf";
 import { getSignedPlacePhotoUrl, readSignedPlacePhotoUrl } from "@/services/signed-place-photo";
+import { isUnsignedPlacePhotoProxyUrl } from "@/services/image-cache";
 
 type Options = PlaceImageInput & {
   /** 若已有 Google 封面 URL，跳過 async 解析 */
@@ -14,6 +15,12 @@ type Options = PlaceImageInput & {
   perfPage?: string;
 };
 
+/** 非 Google photo 的既有 URL 才可直接顯示；未簽名 proxy 一律回 null（交由簽名或預設圖）。 */
+function resolveDirectDisplayUrl(url: string): string | null {
+  const resolved = resolvePlaceImageUrl(url);
+  return resolved && !isUnsignedPlacePhotoProxyUrl(resolved) ? resolved : null;
+}
+
 export function usePlaceImage(options: Options): {
   url: string | null;
   loading: boolean;
@@ -22,7 +29,7 @@ export function usePlaceImage(options: Options): {
   const { initialUrl, enabled = true, perfPage, ...input } = options;
   const immediateUrl =
     initialUrl && !extractGooglePlacePhotoName(initialUrl)
-      ? resolvePlaceImageUrl(initialUrl)
+      ? resolveDirectDisplayUrl(initialUrl)
       : readSignedPlacePhotoUrl(input.photoName || initialUrl || "", input.photoWidth ?? 600);
   const [url, setUrl] = useState<string | null>(immediateUrl);
   const [loading, setLoading] = useState(!immediateUrl && enabled);
@@ -51,7 +58,7 @@ export function usePlaceImage(options: Options): {
           if (version !== versionRef.current) return;
           setUrl(
             signed ??
-              (!extractGooglePlacePhotoName(initialUrl) ? resolvePlaceImageUrl(initialUrl) : null),
+              (!extractGooglePlacePhotoName(initialUrl) ? resolveDirectDisplayUrl(initialUrl) : null),
           );
           setSource(signed ? "google" : "existing");
           setLoading(false);
@@ -78,14 +85,23 @@ export function usePlaceImage(options: Options): {
     void getPlaceImage(input)
       .then(async (result) => {
         if (version !== versionRef.current) return;
-        const signed =
+        // 非 google 來源（例如 runtime／持久化快取的舊 proxy URL）若可解析出 photo name，同樣先簽名。
+        const photoSource =
           result.source === "google"
-            ? await getSignedPlacePhotoUrl(input.photoName ?? result.url, input.photoWidth ?? 600)
-            : null;
+            ? (input.photoName ?? result.url)
+            : extractGooglePlacePhotoName(result.url)
+              ? result.url
+              : null;
+        const signed = photoSource
+          ? await getSignedPlacePhotoUrl(photoSource, input.photoWidth ?? 600)
+          : null;
         if (version !== versionRef.current) return;
         setUrl(
           signed ??
-            (result.source === "google" ? null : (resolvePlaceImageUrl(result.url) ?? result.url)),
+            (photoSource
+              ? null
+              : (resolveDirectDisplayUrl(result.url) ??
+                (isUnsignedPlacePhotoProxyUrl(result.url) ? null : result.url))),
         );
         setSource(result.source);
         setLoading(false);

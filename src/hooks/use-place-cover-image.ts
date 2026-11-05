@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { markImageLoadFailed } from "@/lib/image-url-failure-cache";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
-import { resolvePlaceImageUrl } from "@/lib/safe-image-url";
+import { extractGooglePlacePhotoName, resolvePlaceImageUrl } from "@/lib/safe-image-url";
 import { logPerfImageLoad } from "@/lib/app-perf";
 import {
   cacheKey,
@@ -119,7 +119,10 @@ export function usePlaceCoverImage(options: Options): {
     const currentIsSigned = isSignedPlacePhotoCapabilityUrl(currentUrl);
     const photoResource =
       photoName?.trim() ||
-      (currentUrl?.includes("/api/place-photo") ? currentUrl : null) ||
+      (currentUrl?.includes("/api/place-photo") ||
+      (currentUrl && extractGooglePlacePhotoName(currentUrl))
+        ? currentUrl
+        : null) ||
       recovered;
     if (photoResource) {
       let cancelled = false;

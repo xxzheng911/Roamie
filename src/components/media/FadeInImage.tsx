@@ -4,11 +4,38 @@ import { recordPlacesPhotoUrlLoad } from "@/lib/places-api-stats";
 import { isImageLoadFailed, markImageLoadFailed } from "@/lib/image-url-failure-cache";
 import { stripMediaUrlQuery } from "@/lib/media-display-url";
 import {
+  extractGooglePlacePhotoName,
   getLocalPlaceImageFallback,
   preferJpegPngImageUrl,
   resolvePlaceImageUrl,
 } from "@/lib/safe-image-url";
 import { cn } from "@/lib/utils";
+import { isUnsignedPlacePhotoProxyUrl } from "@/services/image-cache";
+import { getSignedPlacePhotoUrl, readSignedPlacePhotoUrl } from "@/services/signed-place-photo";
+
+/** 未簽名 proxy 的 photo name 與寬度；其他 URL 回 null。 */
+function unsignedPlacePhotoTarget(src: string): { photo: string; width: number } | null {
+  if (src.startsWith("blob:") || src.startsWith("data:")) return null;
+  const resolved = resolvePlaceImageUrl(src);
+  if (!resolved || !isUnsignedPlacePhotoProxyUrl(resolved)) return null;
+  const photo = extractGooglePlacePhotoName(resolved);
+  if (!photo) return null;
+  let width = 600;
+  try {
+    width = Number(new URL(resolved, "https://roamie.invalid").searchParams.get("w")) || 600;
+  } catch {
+    /* keep default width */
+  }
+  return { photo, width };
+}
+
+/** 未簽名 /api/place-photo 但解析不出 photo name：不得當 <img src>（必 401），直接預設圖。 */
+function isUnparseableUnsignedPlacePhoto(src: string): boolean {
+  if (src.startsWith("blob:") || src.startsWith("data:")) return false;
+  const resolved = resolvePlaceImageUrl(src) ?? src;
+  if (!isUnsignedPlacePhotoProxyUrl(resolved)) return false;
+  return !extractGooglePlacePhotoName(resolved);
+}
 
 const loadedSrcCache =
   (globalThis as { __roamieLoadedImages?: Set<string> }).__roamieLoadedImages ?? new Set<string>();
@@ -40,6 +67,8 @@ type Props = {
   /** Prefer eager decode for above-the-fold covers */
   priority?: boolean;
   waitForDecode?: boolean;
+  /** 主圖（非 fallback）實際載入失敗時通知；不影響既有 fallback 行為。 */
+  onSourceError?: (failedSrc: string) => void;
 };
 
 /** 帶 loading skeleton 與淡入動畫的圖片 */
@@ -53,11 +82,22 @@ export function FadeInImage({
   priority = false,
   waitForDecode = false,
   coverTrace,
+  onSourceError,
 }: Props) {
+  const onSourceErrorRef = useRef(onSourceError);
+  onSourceErrorRef.current = onSourceError;
   const stable = src ? stableSrcKey(src) : "";
   const [loaded, setLoaded] = useState(() => Boolean(src && loadedSrcCache.has(stable)));
-  const [displaySrc, setDisplaySrc] = useState(src ?? null);
+  const [initialUnsigned] = useState(() => (src ? unsignedPlacePhotoTarget(src) : null));
+  const [displaySrc, setDisplaySrc] = useState(() =>
+    initialUnsigned
+      ? readSignedPlacePhotoUrl(initialUnsigned.photo, initialUnsigned.width)
+      : src && isUnparseableUnsignedPlacePhoto(src)
+        ? (resolvePlaceImageUrl(fallbackSrc ?? null) ?? getLocalPlaceImageFallback())
+        : (src ?? null),
+  );
   const [usedFallback, setUsedFallback] = useState(false);
+  const [signing, setSigning] = useState(() => Boolean(initialUnsigned && !displaySrc));
   const prevStable = useRef(stable);
   const currentSrc = useRef(src);
   currentSrc.current = src;
@@ -69,6 +109,56 @@ export function FadeInImage({
   }, [displaySrc, coverTrace?.correlationId]);
 
   useEffect(() => {
+    setSigning(false);
+    const unsigned = src ? unsignedPlacePhotoTarget(src) : null;
+    if (src && unsigned) {
+      // 未簽名 /api/place-photo 會被 Worker 401：先簽名（沿用 cache／inflight），失敗才 fallback。
+      prevStable.current = stableSrcKey(src);
+      const applySigned = (signed: string | null) => {
+        if (signed && !isImageLoadFailed(signed)) {
+          setDisplaySrc(signed);
+          setUsedFallback(false);
+          setLoaded(loadedSrcCache.has(signed));
+          return;
+        }
+        // 已記錄過載入失敗（非簽名失敗）同樣通知，讓呼叫端有機會換新來源。
+        if (signed) onSourceErrorRef.current?.(signed);
+        const safeFallback =
+          resolvePlaceImageUrl(fallbackSrc ?? null) ?? getLocalPlaceImageFallback();
+        traceCover(coverTrace, "COVER_FALLBACK_APPLIED", safeFallback, "fallback", "invalid_url");
+        setDisplaySrc(safeFallback);
+        setUsedFallback(true);
+        setLoaded(loadedSrcCache.has(stableSrcKey(safeFallback)));
+      };
+      const cached = readSignedPlacePhotoUrl(unsigned.photo, unsigned.width);
+      if (cached) {
+        applySigned(cached);
+        return;
+      }
+      let cancelled = false;
+      setDisplaySrc(null);
+      setUsedFallback(false);
+      setLoaded(false);
+      setSigning(true);
+      void getSignedPlacePhotoUrl(unsigned.photo, unsigned.width).then((signed) => {
+        if (cancelled) return;
+        setSigning(false);
+        applySigned(signed);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+    if (src && isUnparseableUnsignedPlacePhoto(src)) {
+      prevStable.current = stableSrcKey(src);
+      const safeFallback =
+        resolvePlaceImageUrl(fallbackSrc ?? null) ?? getLocalPlaceImageFallback();
+      traceCover(coverTrace, "COVER_FALLBACK_APPLIED", safeFallback, "fallback", "invalid_url");
+      setDisplaySrc(safeFallback);
+      setUsedFallback(true);
+      setLoaded(loadedSrcCache.has(stableSrcKey(safeFallback)));
+      return;
+    }
     if (!src) {
       traceCover(coverTrace, "COVER_FALLBACK_APPLIED", fallbackSrc, loading ? "pending" : "fallback", "missing_url");
       setLoaded(false);
@@ -99,6 +189,7 @@ export function FadeInImage({
     const safeSrc =
       src.startsWith("blob:") || src.startsWith("data:") ? src : resolvePlaceImageUrl(src);
     if (!safeSrc || isImageLoadFailed(safeSrc)) {
+      if (safeSrc) onSourceErrorRef.current?.(safeSrc);
       const safeFallback =
         resolvePlaceImageUrl(fallbackSrc ?? null) ?? getLocalPlaceImageFallback();
       if (safeFallback && !isImageLoadFailed(safeFallback)) {
@@ -121,7 +212,7 @@ export function FadeInImage({
 
   return (
     <div className={cn("relative overflow-hidden bg-secondary", className)}>
-      {(loading || (displaySrc && !loaded)) && (
+      {(loading || signing || (displaySrc && !loaded)) && (
         <div className="absolute inset-0 animate-pulse bg-secondary/80" aria-hidden />
       )}
       {displaySrc ? (
@@ -152,6 +243,7 @@ export function FadeInImage({
             const current = currentSrc.current === src && currentDisplaySrc.current === displaySrc;
             traceCover(coverTrace, "COVER_IMAGE_LOAD_FAILURE", displaySrc, "failed", current ? "image_error" : "stale_callback", current);
             markImageLoadFailed(displaySrc);
+            if (current && displaySrc && !usedFallback) onSourceErrorRef.current?.(displaySrc);
             const safeFallback =
               resolvePlaceImageUrl(fallbackSrc ?? null) ?? getLocalPlaceImageFallback();
             if (
@@ -174,7 +266,7 @@ export function FadeInImage({
             imgClassName,
           )}
         />
-      ) : !loading && fallbackSrc ? (
+      ) : !signing && !loading && fallbackSrc ? (
         <img
           src={preferJpegPngImageUrl(fallbackSrc) ?? fallbackSrc}
           alt={alt}

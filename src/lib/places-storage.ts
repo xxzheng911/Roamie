@@ -177,6 +177,29 @@ export async function savePlace(input: NewPlace): Promise<SavedPlace> {
   throw new Error("AUTH_REQUIRED");
 }
 
+/**
+ * 收藏照片名稱過期後的寫回：只更新該筆 metadata／cover_image／image_url，並同步本機快照。
+ * 刻意不發 SAVED_PLACES_CHANGED_EVENT，避免每筆寫回都觸發收藏頁重新 listPlaces。
+ */
+export async function patchSavedPlaceImage(
+  id: string,
+  patch: Pick<SavedPlace, "metadata"> & Partial<Pick<SavedPlace, "cover_image" | "image_url">>,
+): Promise<void> {
+  const userId = await resolveStableUserId();
+  if (!userId) throw new Error("AUTH_REQUIRED");
+  const { error } = await supabase
+    .from("saved_places")
+    // image_url 欄位存在於 DB（20260527180000 migration），但產生的型別尚未包含。
+    .update({ ...patch } as never)
+    .eq("id", id)
+    .eq("user_id", userId);
+  if (error) throw new Error(error.message);
+  const apply = (list: SavedPlace[]) =>
+    list.map((p) => (p.id === id ? { ...p, ...patch } : p));
+  writeLocalCache(userId, apply(readLocalCache(userId)));
+  if (listPlacesCache) listPlacesCache = { ...listPlacesCache, data: apply(listPlacesCache.data) };
+}
+
 function removePlaceFromLocalCaches(id: string, name?: string): void {
   const filter = (list: SavedPlace[]) =>
     list.filter((p) => p.id !== id && (!name || p.name !== name));

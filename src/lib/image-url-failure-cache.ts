@@ -1,7 +1,28 @@
 const failedImageUrls = new Set<string>();
 
+/**
+ * /api/place-photo 的身分在 query（photo＋w）；去 query 會讓所有 proxy 照片共用同一 key。
+ * 以 photo name＋寬度為 key，signature／expires 變動不影響同一張圖，不同照片互不污染。
+ */
+function placePhotoProxyFailureKey(url: string): string | null {
+  if (!url.includes("/api/place-photo")) return null;
+  try {
+    const parsed = new URL(url, "https://roamie.invalid");
+    if (!parsed.pathname.endsWith("/api/place-photo")) return null;
+    const photo = parsed.searchParams.get("photo")?.trim();
+    if (!photo) return url.toLowerCase();
+    const width = parsed.searchParams.get("w")?.trim() ?? "";
+    return `place-photo-proxy:${photo}@${width}`;
+  } catch {
+    return url.toLowerCase();
+  }
+}
+
 function failureKey(url: string): string {
-  return url.trim().split("?")[0]?.toLowerCase() ?? url.trim().toLowerCase();
+  const trimmed = url.trim();
+  const proxyKey = placePhotoProxyFailureKey(trimmed);
+  if (proxyKey) return proxyKey;
+  return trimmed.split("?")[0]?.toLowerCase() ?? trimmed.toLowerCase();
 }
 
 export function markImageLoadFailed(url: string | null | undefined): void {
