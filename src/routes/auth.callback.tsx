@@ -4,7 +4,9 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Loader2 } from "lucide-react";
 import { MobileFrame } from "@/components/MobileFrame";
 import { AuthSignInError } from "@/components/auth/AuthSignInError";
-import { navigateOnceAfterLogin } from "@/lib/login-navigation";
+import { forceNavigateAfterLoginFallback, navigateOnceAfterLogin } from "@/lib/login-navigation";
+import { AUTH_CALLBACK_PATH } from "@/constants/auth-redirect";
+import { readBrowserPathname } from "@/lib/startup-path";
 import { completeSignInAfterAuth } from "@/lib/complete-sign-in";
 import { getClientAuthSession } from "@/lib/auth-session";
 import { readStashedOAuthRedirectTarget, stripOAuthParamsFromUrl } from "@/lib/auth-oauth";
@@ -34,6 +36,32 @@ export const Route = createFileRoute("/auth/callback")({
   component: AuthCallback,
 });
 
+/** 登入完成後仍停在 callback 頁超過此時間，且已有 session，就強制導向一次。 */
+const AUTH_CALLBACK_STUCK_FALLBACK_MS = 5_000;
+
+/** 每次 AuthCallback 開始處理就遞增；保險 timer 只對最新一次嘗試生效。 */
+let callbackAttemptSeq = 0;
+
+function isStillOnCallbackRoute(): boolean {
+  return readBrowserPathname() === AUTH_CALLBACK_PATH;
+}
+
+/**
+ * 只在仍停留 callback 且網址真的帶參數時才清除。
+ * stripOAuthParamsFromUrl 會以 history.replaceState 寫回 /auth/callback；TanStack history
+ * 攔截 replaceState 後會觸發 router.load()，若此時已開始導向首頁（例如 remount 後的
+ * 新 instance 走 skip_existing_session），會把進行中的導向中止並拉回 callback。
+ */
+function stripOAuthParamsIfStillOnCallback(step: string): void {
+  if (typeof window === "undefined") return;
+  if (!isStillOnCallbackRoute()) {
+    console.info("[AUTH_CALLBACK_STRIP_SKIP]", { step, reason: "left_callback_route" });
+    return;
+  }
+  if (!window.location.search && !window.location.hash) return;
+  stripOAuthParamsFromUrl();
+}
+
 function AuthCallback() {
   const { t: uiT } = useI18n();
 
@@ -42,6 +70,20 @@ function AuthCallback() {
   const [status, setStatus] = useState("正在完成登入…");
   const [error, setError] = useState<string | null>(null);
   const handledRef = useRef(false);
+  const stuckTimerRef = useRef<number | null>(null);
+
+  const mountedRef = useRef(false);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (stuckTimerRef.current != null) {
+        window.clearTimeout(stuckTimerRef.current);
+        stuckTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const finishAuthRedirect = async (step: string) => {
     logAuthSessionResult(true, { step: `callback.redirect.${step}` });
@@ -66,7 +108,7 @@ function AuthCallback() {
         userId: existing.user.id,
       });
       clearPendingCallbackPath();
-      stripOAuthParamsFromUrl();
+      stripOAuthParamsIfStillOnCallback("skip_existing_session");
       await finishAuthRedirect("skip_existing_session");
       return;
     }
@@ -79,7 +121,7 @@ function AuthCallback() {
     if (code && isOAuthCodeAlreadyConsumed(code)) {
       logAuthSessionResult(true, { step: "callback.skip_consumed_code" });
       clearPendingCallbackPath();
-      stripOAuthParamsFromUrl();
+      stripOAuthParamsIfStillOnCallback("skip_consumed_code");
       await finishAuthRedirect("skip_consumed_code");
       return;
     }
@@ -94,7 +136,7 @@ function AuthCallback() {
       if (fromPath) markOAuthCodeConsumed(fromPath);
     }
 
-    stripOAuthParamsFromUrl();
+    stripOAuthParamsIfStillOnCallback("oauth_exchanged");
 
     setStatus("正在建立個人資料…");
     await completeSignInAfterAuth(session.user.id);
@@ -108,8 +150,42 @@ function AuthCallback() {
 
     await getClientAuthSession();
 
-    await finishAuthRedirect("oauth_complete");
+    // 導向前先清 pending：離開 callback 時整棵 AppProviders 會 remount，
+    // OAuthRouterBridge 重新掛載時不能再讀到這筆 pending 而把路由拉回 callback。
     clearPendingCallbackPath();
+    await finishAuthRedirect("oauth_complete");
+  };
+
+  const scheduleStuckFallback = (attemptId: number) => {
+    // runCallback 可能在元件卸載後才 resolve；此時 cleanup 已跑過，排了也清不到。
+    if (!mountedRef.current) return;
+    if (attemptId !== callbackAttemptSeq) return;
+    if (stuckTimerRef.current != null) return;
+    const startedAt = Date.now();
+    const isSameAttempt = () => mountedRef.current && attemptId === callbackAttemptSeq;
+    stuckTimerRef.current = window.setTimeout(() => {
+      stuckTimerRef.current = null;
+      if (!isSameAttempt()) return;
+      if (!isStillOnCallbackRoute()) return;
+      void (async () => {
+        const session = await getClientAuthSession().catch(() => null);
+        if (!isSameAttempt()) return;
+        if (!isStillOnCallbackRoute()) return;
+        if (!session?.user) {
+          // 沒有 session 不假裝成功：維持原畫面，由既有錯誤／重試流程處理。
+          console.info("[AUTH_CALLBACK_STUCK_FALLBACK_SKIP]", { reason: "no_session" });
+          return;
+        }
+        const target = forceNavigateAfterLoginFallback(
+          (opts) => navigate({ to: opts.to, search: opts.search, replace: opts.replace }),
+          "auth-callback",
+        );
+        console.warn("[AUTH_CALLBACK_STUCK_FALLBACK]", {
+          elapsedMs: Date.now() - startedAt,
+          targetRoute: target,
+        });
+      })();
+    }, AUTH_CALLBACK_STUCK_FALLBACK_MS);
   };
 
   useLayoutEffect(() => {
@@ -130,9 +206,12 @@ function AuthCallback() {
 
     let cancelled = false;
 
+    const attemptId = ++callbackAttemptSeq;
+
     void (async () => {
       try {
         await runCallback();
+        scheduleStuckFallback(attemptId);
       } catch (e) {
         if (cancelled) return;
         const msg = e instanceof Error ? e.message : "登入失敗，請再試一次。";

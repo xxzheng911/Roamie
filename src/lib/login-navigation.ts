@@ -1,4 +1,8 @@
-import { finishPostAuthRedirect, type PostAuthRedirectSource } from "@/lib/auth-post-redirect";
+import {
+  finishPostAuthRedirect,
+  getLastPostAuthDestination,
+  type PostAuthRedirectSource,
+} from "@/lib/auth-post-redirect";
 import { loadOnboardingState } from "@/lib/onboarding-storage";
 import { resolveStartupPath } from "@/lib/post-auth-navigation";
 import {
@@ -18,6 +22,11 @@ type RouterNavigate = (opts: {
 
 let postLoginNavigationCommitted = false;
 
+/** 診斷：登入後跳轉被略過的原因（僅原因字串，不含使用者資料）。 */
+function logPostLoginNavigationSkip(source: string, reason: string): void {
+  console.info("[POST_LOGIN_NAV_SKIP]", { source, reason });
+}
+
 export function isPostLoginNavigationCommitted(): boolean {
   return postLoginNavigationCommitted;
 }
@@ -33,7 +42,10 @@ export async function navigateOnceAfterLogin(
   navigate: RouterNavigate,
   source: PostAuthRedirectSource,
 ): Promise<void> {
-  if (postLoginNavigationCommitted) return;
+  if (postLoginNavigationCommitted) {
+    logPostLoginNavigationSkip(source, "already_committed");
+    return;
+  }
   postLoginNavigationCommitted = true;
 
   const onboardingCompleted = await loadOnboardingState();
@@ -54,6 +66,7 @@ export async function navigateOnceAfterLogin(
 
   const current = readBrowserPathname();
   if (shouldSkipStartupNavigation(current, pathname)) {
+    logPostLoginNavigationSkip(source, "already_on_target");
     if (pathname === "/") {
       markStartupResolved("/");
     }
@@ -64,4 +77,23 @@ export async function navigateOnceAfterLogin(
   if (pathname === "/") {
     markStartupResolved("/");
   }
+}
+
+/**
+ * 保險：登入已完成卻仍停在 callback 頁時，略過 once-commit 旗標強制導向一次。
+ * 目標沿用最近一次的 post-auth target（含 search）；沒有時依 onboarding 狀態決定首頁或教學頁。
+ * 不重新消費 pending action / admin return（第一次導向時已處理）。
+ */
+export function forceNavigateAfterLoginFallback(
+  navigate: RouterNavigate,
+  source: PostAuthRedirectSource,
+): string {
+  postLoginNavigationCommitted = true;
+  const last = getLastPostAuthDestination();
+  const target = last?.pathname ?? guardStartupTarget("/", source);
+  finishPostAuthRedirect(target, navigate, source, last?.search);
+  if (target === "/") {
+    markStartupResolved("/");
+  }
+  return target;
 }

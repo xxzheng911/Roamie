@@ -31,9 +31,28 @@ export type PostAuthRedirectSource =
  * 主頁導向須本機 onboarding 已完成。
  */
 let lastPostAuthTarget: string | null = null;
+let lastPostAuthSearch: Record<string, string> | undefined;
 
 export function resetPostAuthRedirect(): void {
   lastPostAuthTarget = null;
+  lastPostAuthSearch = undefined;
+}
+
+/** 最近一次登入後導向的目標路徑（不含 search）；尚未導向時為 null。 */
+export function getLastPostAuthTarget(): string | null {
+  return lastPostAuthTarget;
+}
+
+/** 最近一次登入後導向的完整目標（pathname + search）；尚未導向時為 null。 */
+export function getLastPostAuthDestination(): {
+  pathname: string;
+  search?: Record<string, string>;
+} | null {
+  if (lastPostAuthTarget == null) return null;
+  return {
+    pathname: lastPostAuthTarget,
+    search: lastPostAuthSearch ? { ...lastPostAuthSearch } : undefined,
+  };
 }
 
 export function finishPostAuthRedirect(
@@ -51,6 +70,7 @@ export function finishPostAuthRedirect(
     lastPostAuthTarget === normalized &&
     shouldSkipStartupNavigation(currentRoute, normalized)
   ) {
+    console.info("[POST_LOGIN_NAV_SKIP]", { source, reason: "same_target_already_on_route" });
     if (normalized === "/") {
       markStartupResolved("/");
     }
@@ -58,7 +78,9 @@ export function finishPostAuthRedirect(
   }
 
   if (shouldSkipStartupNavigation(currentRoute, normalized)) {
+    console.info("[POST_LOGIN_NAV_SKIP]", { source, reason: "already_on_route" });
     lastPostAuthTarget = normalized;
+    lastPostAuthSearch = search ? { ...search } : undefined;
     if (normalized === "/") {
       markStartupResolved("/");
     }
@@ -90,6 +112,7 @@ export function finishPostAuthRedirect(
   const platform = detectPlatform();
 
   lastPostAuthTarget = target;
+  lastPostAuthSearch = search ? { ...search } : undefined;
 
   if (platform.isCapacitor && navigate) {
     if (platform.isIOS) {

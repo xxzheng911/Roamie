@@ -28,6 +28,8 @@ let listenerAttached = false;
 let removeListeners: (() => void) | null = null;
 let handleUrlImpl: ((url: string, source: string) => void) | null = null;
 const earlyUrls: string[] = [];
+/** 本次 App 行程內已處理過的 OAuth 返回 URL（僅記憶體，不持久化、不輸出到 log）。 */
+const handledOAuthReturnUrls = new Set<string>();
 
 export const OAUTH_PENDING_CALLBACK_KEY = "roamie:oauth-pending-callback-path";
 
@@ -153,6 +155,13 @@ export function attachOAuthDeepLinkListener(): () => void {
         logAuthDebug("oauth.deep_link_ignored", { source, url });
         return;
       }
+      // iOS getLaunchUrl 回傳最後一次開啟的 URL，每次回前景都會重放同一個 callback；
+      // 已處理過的就不再導回 /auth/callback（登出後 consumed 標記會被清掉，舊 code 會造成 PKCE 錯誤）。
+      if (source.includes("getLaunchUrl") && handledOAuthReturnUrls.has(url)) {
+        console.info("[OAUTH_DEEP_LINK_SKIP]", { source, reason: "launch_url_replay" });
+        return;
+      }
+      handledOAuthReturnUrls.add(url);
       void navigateToCallbackPath(path, source, url);
     } catch (e) {
       logAuthError("oauth.deep_link_handle", e, { source, url });
