@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { MobileFrame } from "@/components/MobileFrame";
+import { FadeInImage } from "@/components/media/FadeInImage";
 import { useAuth } from "@/hooks/use-auth";
 import { requireAuthForAction } from "@/lib/auth-action";
 import {
@@ -24,8 +25,29 @@ import {
 } from "@/lib/i18n/trip-workspace-copy";
 import { resolveDisplayCoverImage } from "@/lib/saved-trip/display";
 import { formatDateRangeSlash } from "@/lib/picker-utils";
+import { APP_SCHEME, APP_STORE_ID, APP_STORE_URL } from "@/constants/app";
+import { detectPlatform } from "@/services/platform";
+
+/** 網頁版＋iOS 瀏覽器（含 iPadOS 桌面 UA）；Capacitor 原生殼、Android 與桌機不顯示 */
+function shouldOfferOpenInApp(): boolean {
+  if (typeof navigator === "undefined") return false;
+  if (detectPlatform().isCapacitor) return false;
+  const ua = navigator.userAgent || "";
+  // 目前只有 iOS App（roamie:// 只在 iOS 註冊），Android 不顯示
+  if (/iPhone|iPad|iPod/i.test(ua)) return true;
+  return /Macintosh/i.test(ua) && (navigator.maxTouchPoints ?? 0) > 1;
+}
 
 export const Route = createFileRoute("/trip-invite/$token")({
+  // iOS Safari Smart App Banner（網域同 trip-collab TRIP_INVITE_WEB_ORIGIN）：未安裝顯示「取得」，已安裝點「打開」以 app-argument 帶入這份邀請
+  head: ({ params }) => ({
+    meta: [
+      {
+        name: "apple-itunes-app",
+        content: `app-id=${APP_STORE_ID}, app-argument=https://roamie.tw/trip-invite/${encodeURIComponent(params.token)}`,
+      },
+    ],
+  }),
   component: TripInviteAcceptPage,
 });
 
@@ -56,6 +78,11 @@ function TripInviteAcceptPage() {
   const [loadFailed, setLoadFailed] = useState(false);
   const [joining, setJoining] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const [offerOpenInApp, setOfferOpenInApp] = useState(false);
+
+  useEffect(() => {
+    setOfferOpenInApp(shouldOfferOpenInApp());
+  }, []);
 
   useEffect(() => {
     stashTripInviteToken(token);
@@ -196,10 +223,11 @@ function TripInviteAcceptPage() {
         {showTripCard ? (
           <div className="w-full max-w-sm overflow-hidden rounded-2xl border border-border bg-card">
             {coverSrc ? (
-              <img
+              <FadeInImage
                 src={coverSrc}
                 alt=""
-                className="block aspect-[16/9] w-full bg-secondary object-cover"
+                className="block aspect-[16/9] w-full bg-secondary"
+                imgClassName="h-full w-full object-cover"
               />
             ) : null}
             <div className="px-4 py-3">
@@ -243,6 +271,27 @@ function TripInviteAcceptPage() {
             >
               {copy.inviteNotNow}
             </button>
+            {offerOpenInApp && !joining ? (
+              <>
+                <a
+                  href={`${APP_SCHEME}://trip-invite/${encodeURIComponent(token)}`}
+                  className="w-full rounded-full border border-border py-3.5 text-center text-sm font-medium text-foreground"
+                >
+                  {copy.inviteOpenInApp}
+                </a>
+                <p className="text-center text-xs text-muted-foreground">
+                  {copy.inviteOpenInAppHint}
+                </p>
+                <p className="text-center text-xs">
+                  <a
+                    href={APP_STORE_URL}
+                    className="inline-block py-3 font-medium text-foreground underline"
+                  >
+                    {copy.inviteDownloadApp}
+                  </a>
+                </p>
+              </>
+            ) : null}
           </div>
         ) : preview != null ? (
           <button

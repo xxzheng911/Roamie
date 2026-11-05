@@ -53,6 +53,9 @@ type TripWorkspaceCopyKey =
   | "inviteNotNow"
   | "inviteLoginToJoin"
   | "inviteBackHome"
+  | "inviteOpenInApp"
+  | "inviteOpenInAppHint"
+  | "inviteDownloadApp"
   | "inviteRetry"
   | "inviteMemberCount"
   | "inviteMemberCountOne"
@@ -122,6 +125,9 @@ const COPY = {
     inviteNotNow: "暫時不要",
     inviteLoginToJoin: "登入後加入",
     inviteBackHome: "回到首頁",
+    inviteOpenInApp: "在 Roamie App 開啟",
+    inviteOpenInAppHint: "已安裝 App 才能開啟",
+    inviteDownloadApp: "還沒安裝？下載 Roamie App",
     inviteRetry: "重試",
     inviteMemberCount: "{count} 位成員",
     inviteMemberCountOne: "{count} 位成員",
@@ -190,6 +196,9 @@ const COPY = {
     inviteNotNow: "Not now",
     inviteLoginToJoin: "Log in to join",
     inviteBackHome: "Back to home",
+    inviteOpenInApp: "Open in Roamie app",
+    inviteOpenInAppHint: "Requires the Roamie app",
+    inviteDownloadApp: "Don't have it yet? Get Roamie on the App Store",
     inviteRetry: "Retry",
     inviteMemberCount: "{count} members",
     inviteMemberCountOne: "{count} member",
@@ -258,6 +267,9 @@ const COPY = {
     inviteNotNow: "今はしない",
     inviteLoginToJoin: "ログインして参加",
     inviteBackHome: "ホームに戻る",
+    inviteOpenInApp: "Roamie アプリで開く",
+    inviteOpenInAppHint: "アプリがインストールされている場合のみ開けます",
+    inviteDownloadApp: "まだの方は App Store で Roamie を入手",
     inviteRetry: "再試行",
     inviteMemberCount: "メンバー {count}人",
     inviteMemberCountOne: "メンバー {count}人",
@@ -326,6 +338,9 @@ const COPY = {
     inviteNotNow: "나중에",
     inviteLoginToJoin: "로그인 후 참여",
     inviteBackHome: "홈으로",
+    inviteOpenInApp: "Roamie 앱에서 열기",
+    inviteOpenInAppHint: "앱이 설치되어 있어야 열 수 있어요",
+    inviteDownloadApp: "아직 없으신가요? App Store에서 Roamie 받기",
     inviteRetry: "다시 시도",
     inviteMemberCount: "멤버 {count}명",
     inviteMemberCountOne: "멤버 {count}명",

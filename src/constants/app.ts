@@ -8,6 +8,11 @@ export const APP_DISPLAY_NAME = "Roamie";
 
 export const APP_SCHEME = "roamie";
 
+/** App Store Connect 的 Apple ID（數字，公開資訊） */
+export const APP_STORE_ID = "6772861982";
+
+export const APP_STORE_URL = `https://apps.apple.com/app/id${APP_STORE_ID}`;
+
 /** Minimum supported iOS version for Capacitor 7+ */
 export const IOS_MIN_VERSION = "15.0";
 

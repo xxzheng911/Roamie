@@ -221,8 +221,9 @@ const INVITE_STASH_KEY = "roamie:pending-trip-invite-token";
 /** 邀請連結網域（Universal Link：applinks:roamie.tw） */
 export const TRIP_INVITE_WEB_ORIGIN = "https://roamie.tw";
 
+/** `openExternalBrowser=1`：LINE 官方參數，讓 LINE 改用外部瀏覽器開啟（內建 WebView 不觸發 Universal Link） */
 export function buildTripInviteUrl(token: string): string {
-  return `${TRIP_INVITE_WEB_ORIGIN}/trip-invite/${encodeURIComponent(token)}`;
+  return `${TRIP_INVITE_WEB_ORIGIN}/trip-invite/${encodeURIComponent(token)}?openExternalBrowser=1`;
 }
 
 export function stashTripInviteToken(token: string): void {
