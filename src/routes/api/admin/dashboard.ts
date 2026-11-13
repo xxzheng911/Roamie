@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 import { AdminAuthError, requireAdminFromRequest } from "@/lib/admin/admin-auth.server";
-import { loadAdminDashboard } from "@/lib/admin/admin-dashboard.server";
+import { loadAdminAnalytics, loadAdminDashboard } from "@/lib/admin/admin-dashboard.server";
 import { checkRateLimit, SECURITY_RATE_LIMITS } from "@/lib/rate-limit.server";
 
 const QuerySchema = z.object({
@@ -10,6 +10,9 @@ const QuerySchema = z.object({
     .enum(["active_7d", "active_30d", "recently_active", "newest", "oldest"])
     .default("recently_active"),
   page: z.coerce.number().int().min(1).default(1),
+  period: z.enum(["today", "7d", "30d", "all"]).default("30d"),
+  /** analytics：只重抓分析區（admin_analytics_v1），不查 phase1 */
+  scope: z.enum(["all", "analytics"]).default("all"),
 });
 
 function json(body: unknown, status = 200): Response {
@@ -40,7 +43,13 @@ export const Route = createFileRoute("/api/admin/dashboard")({
             search: url.searchParams.get("search") || undefined,
             sort: url.searchParams.get("sort") || undefined,
             page: url.searchParams.get("page") || undefined,
+            period: url.searchParams.get("period") || undefined,
+            scope: url.searchParams.get("scope") || undefined,
           });
+          if (query.scope === "analytics") {
+            const analytics = await loadAdminAnalytics(query.period);
+            return json({ analytics });
+          }
           const dashboard = await loadAdminDashboard(query);
           return json({ dashboard });
         } catch (error) {
