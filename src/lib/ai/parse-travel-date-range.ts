@@ -1,7 +1,7 @@
 import { computeInclusiveItineraryDays } from "@/lib/ai/itinerary-days";
 
 const TRAVEL_DATE_RANGE_PATTERN =
-  /((?:\d{4}[\/\-年])?\d{1,2}[\/\-月]\d{1,2})\s*[~～至到\-—–]\s*((?:\d{4}[\/\-年])?\d{1,2}[\/\-月]\d{1,2})/;
+  /((?:\d{4}[\/\-年])?\d{1,2}[\/\-月]\d{1,2})\s*[~～〜至到\-—–]\s*((?:\d{4}[\/\-年])?\d{1,2}[\/\-月]\d{1,2})/;
 
 /**
  * Remove a date range that parseTravelDateRangeFromText accepts, so destination parsing

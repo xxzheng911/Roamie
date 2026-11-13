@@ -700,15 +700,18 @@ export async function acceptTripInvite(token: string): Promise<string> {
   return tripId;
 }
 
+/**
+ * 擁有者移除成員：伺服端 RPC 在同一交易刪除成員並撤銷該行程開啟中的分享連結。
+ * 成功後清掉本地快取的舊 token，開著的分享面板會依既有 effect 重新取得新連結。
+ */
 export async function removeTripMember(tripId: string, memberUserId: string): Promise<void> {
-  const { error } = await supabase
-    .from("trip_members")
-    .delete()
-    .eq("trip_id", tripId)
-    .eq("user_id", memberUserId)
-    .eq("is_owner", false);
+  const { error } = await supabase.rpc("remove_trip_member", {
+    p_trip_id: tripId,
+    p_member_user_id: memberUserId,
+  });
 
   if (error) throw new Error(error.message);
+  if (tripInviteTokenCache.delete(tripId)) notifyTripInviteListeners();
 }
 
 export async function listOwnedTripIds(): Promise<Map<string, boolean>> {

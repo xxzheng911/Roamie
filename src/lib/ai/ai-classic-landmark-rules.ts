@@ -6,6 +6,7 @@ import { normalizePlaceName } from "@/lib/place-planning-memory";
 import { EN_CITY_NAMES } from "@/lib/ai/destination-geocode";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
+import { isKrNeighborhoodParkName } from "@/lib/ai/tourism-quality-gate";
 import {
   isCafePlace,
   isExcludedRetailPlace,
@@ -30,7 +31,7 @@ const CLASSIC_LANDMARK_EXCLUDED_NAME_RE =
   /市場|黃昏市場|中央市場|肉品市場|公有市場|菜市場|觀光夜市|夜市|咖啡|coffee|餐廳|小吃|便當|輕食|食雞|燒賣|超市|賣場|量販|菓子|甜點店|烘焙/i;
 
 const LOCAL_PARK_NAME_RE =
-  /兒童公園|社區公園|運動公園|濕地公園|新生公園|河濱公園|森林步道|自行車道|鐵馬道|海濱公園|東海濕地/i;
+  /兒童公園|社區公園|運動公園|濕地公園|新生公園|河濱公園|森林步道|自行車道|鐵馬道|海濱公園|東海濕地|児童公園|近隣公園|街区公園/i;
 
 const FAMOUS_LANDMARK_PARK_RE =
   /國家公園|國家森林|森林公園|森林遊樂區|遺址公園|美術館|遊憩區|自然公園|國家級/i;
@@ -227,7 +228,7 @@ export function isFamousLandmarkPark(place: PlaceResult): boolean {
 
 export function isLocalNeighborhoodPark(place: PlaceResult): boolean {
   const name = place.name ?? "";
-  if (LOCAL_PARK_NAME_RE.test(name)) return true;
+  if (LOCAL_PARK_NAME_RE.test(name) || isKrNeighborhoodParkName(place)) return true;
   const types = placeTypes(place);
   if (types.has("playground") || types.has("dog_park")) return true;
   if (types.has("park") && /公園/.test(name) && !isFamousLandmarkPark(place)) {

@@ -5,7 +5,11 @@ import { clearPendingAuthAction } from "@/lib/auth-pending-action";
 import { clearPendingCallbackPath, OAUTH_PENDING_CALLBACK_KEY } from "@/lib/auth-oauth-deep-link";
 import { clearOAuthCodeConsumedMarker } from "@/lib/oauth-callback-guard";
 import { AUTH_RESTORE_TIMEOUT } from "@/lib/auth-restore";
-import { clearAuthMemoryCache, clearPersistedAuthSession } from "@/lib/supabase-auth-storage";
+import {
+  clearAuthMemoryCache,
+  clearPersistedAuthSession,
+  readHydratedAuthSessionRaw,
+} from "@/lib/supabase-auth-storage";
 import { clearCompanionModeSelection } from "@/lib/companion-mode-storage";
 import { supabase } from "@/lib/supabase";
 import { detectPlatform } from "@/services/platform";
@@ -164,17 +168,136 @@ export function clearAuthStateSync(options: ClearAuthStateOptions = {}): void {
   }
 }
 
-async function clearAuthStateAsync(): Promise<void> {
+function waitNativeClearTimeout(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, NATIVE_CLEAR_TIMEOUT_MS);
+  });
+}
+
+type SessionTokenSnapshot = {
+  accessToken: string;
+  refreshToken: string | null;
+  /** 秒（epoch）；無法判斷時為 null */
+  expiresAt: number | null;
+};
+
+/** access token 剩餘有效期低於此值（秒）時，撤銷前先換新 token */
+const ACCESS_TOKEN_EXPIRY_MARGIN_SECONDS = 30;
+
+function readJwtExp(token: string): number | null {
+  try {
+    const payload = token.split(".")[1];
+    if (!payload) return null;
+    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const json = JSON.parse(atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=")));
+    return typeof json?.exp === "number" ? json.exp : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 本機清除前同步擷取 access／refresh token（memory → localStorage），讓背景撤銷不受本機清除影響。 */
+function snapshotSessionTokens(): SessionTokenSnapshot | null {
+  try {
+    const raw = readHydratedAuthSessionRaw();
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as {
+      access_token?: unknown;
+      refresh_token?: unknown;
+      expires_at?: unknown;
+    } | null;
+    const accessToken = parsed?.access_token;
+    if (typeof accessToken !== "string" || !accessToken) return null;
+    const refreshToken =
+      typeof parsed?.refresh_token === "string" && parsed.refresh_token
+        ? parsed.refresh_token
+        : null;
+    const expiresAt =
+      typeof parsed?.expires_at === "number" ? parsed.expires_at : readJwtExp(accessToken);
+    return { accessToken, refreshToken, expiresAt };
+  } catch {
+    return null;
+  }
+}
+
+function isAccessTokenExpiringSoon(expiresAt: number | null): boolean {
+  if (expiresAt == null) return false;
+  return expiresAt - Date.now() / 1000 <= ACCESS_TOKEN_EXPIRY_MARGIN_SECONDS;
+}
+
+/**
+ * 用 refresh token 向 auth REST 換一個新的 access token，只用於撤銷。
+ * 直接呼叫 /token（不經 refreshSession），新 session 不會寫回本機、也不發出 auth 事件。
+ */
+async function exchangeRefreshTokenForRevoke(refreshToken: string): Promise<string | null> {
+  const admin = supabase.auth.admin as unknown as {
+    url?: unknown;
+    headers?: unknown;
+  };
+  const url = typeof admin.url === "string" ? admin.url : null;
+  const headers =
+    admin.headers && typeof admin.headers === "object"
+      ? (admin.headers as Record<string, string>)
+      : null;
+  if (!url || !headers) return null;
+  const response = await fetch(`${url}/token?grant_type=refresh_token`, {
+    method: "POST",
+    headers: { ...headers, "Content-Type": "application/json;charset=UTF-8" },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
+  if (!response.ok) return null;
+  const json = (await response.json()) as { access_token?: unknown } | null;
+  return typeof json?.access_token === "string" && json.access_token ? json.access_token : null;
+}
+
+/**
+ * 用清除前擷取的 token 撤銷伺服器端 session（作廢 refresh token）。
+ * access token 已過期／即將過期時先換新 token（只在此時才多一次請求）；換不到就放棄，只記 warn。
+ * 任何失敗（例如離線）一律吞掉。
+ */
+async function revokeServerSession(tokens: SessionTokenSnapshot | null): Promise<void> {
+  if (!tokens) return;
+  try {
+    let accessToken: string | null = tokens.accessToken;
+    if (isAccessTokenExpiringSoon(tokens.expiresAt)) {
+      accessToken = tokens.refreshToken
+        ? await exchangeRefreshTokenForRevoke(tokens.refreshToken).catch(() => null)
+        : null;
+      if (!accessToken) {
+        console.warn("[Clear Auth State] token exchange for revoke failed; skip server sign-out");
+        return;
+      }
+    }
+    const { error } = await supabase.auth.admin.signOut(accessToken, "local");
+    if (error) console.warn("[Clear Auth State] server sign-out failed", error.name);
+  } catch (e) {
+    console.warn("[Clear Auth State] server sign-out failed", e instanceof Error ? e.name : e);
+  }
+}
+
+/**
+ * 本機清除：先移除持久化 session，再呼叫 signOut({ scope: "local" })。
+ * 此時 storage 已無 session，auth-js 不會打 /logout，只會 _removeSession 並發出 SIGNED_OUT（與 HEAD 相同）。
+ */
+async function clearLocalAuthSession(): Promise<void> {
+  try {
+    await clearPersistedAuthSession();
+    await supabase.auth.signOut({ scope: "local" });
+    await clearNativePreferencesAuthKeys();
+  } catch (e) {
+    console.warn("[Clear Auth State] async cleanup failed", e);
+  }
+}
+
+/**
+ * 伺服器撤銷與本機清除並行，共用一個 3 秒逾時（最壞等待與 HEAD 相同）。
+ * 本機清除不依賴伺服器結果：離線或撤銷失敗時仍會移除本機 session 並發出 SIGNED_OUT。
+ */
+async function clearAuthStateAsync(tokens: SessionTokenSnapshot | null = null): Promise<void> {
   try {
     await Promise.race([
-      (async () => {
-        await clearPersistedAuthSession();
-        await supabase.auth.signOut({ scope: "local" });
-        await clearNativePreferencesAuthKeys();
-      })(),
-      new Promise<void>((resolve) => {
-        window.setTimeout(resolve, NATIVE_CLEAR_TIMEOUT_MS);
-      }),
+      Promise.allSettled([revokeServerSession(tokens), clearLocalAuthSession()]),
+      waitNativeClearTimeout(),
     ]);
   } catch (e) {
     console.warn("[Clear Auth State] async cleanup failed", e);
@@ -202,6 +325,7 @@ export async function clearDeletedAccountLocalData(userId: string): Promise<void
   // Account deletion clears identity-owned state, not the device-level first-run flag.
   // Keeping onboarding completed makes the post-delete and subsequent cold-start
   // unauthenticated authority resolve to /login rather than /welcome.
+  const sessionTokens = snapshotSessionTokens();
   clearAuthStateSync({ reason: "account-deleted", clearCompanionMode: false });
   if (typeof window !== "undefined") {
     for (const storage of [localStorage, sessionStorage]) {
@@ -236,7 +360,7 @@ export async function clearDeletedAccountLocalData(userId: string): Promise<void
       error instanceof Error ? error.name : "unknown",
     );
   }
-  await clearAuthStateAsync();
+  await clearAuthStateAsync(sessionTokens);
 }
 
 /**
@@ -245,8 +369,10 @@ export async function clearDeletedAccountLocalData(userId: string): Promise<void
  */
 export async function clearAuthState(options: ClearAuthStateOptions = {}): Promise<void> {
   logAuthFlowMarker("[Clear Auth State]", { reason: options.reason ?? "unspecified" });
+  // 先擷取 token 再清本機；伺服器撤銷失敗／逾時（例如離線）不影響本機清除與 SIGNED_OUT。
+  const sessionTokens = snapshotSessionTokens();
   clearAuthStateSync(options);
-  await clearAuthStateAsync();
+  await clearAuthStateAsync(sessionTokens);
 }
 
 export type ResetToLoginOptions = {
@@ -287,6 +413,8 @@ export async function resetToLoginScreen(options?: ResetToLoginOptions | string)
     typeof options === "string" ? { reason: options } : (options ?? {});
   const reason = opts.reason ?? "reset-to-login";
 
+  // 導向不能被 signOut 阻塞：先擷取 token，同步清本機後再於背景用它撤銷伺服器端 session。
+  const sessionTokens = snapshotSessionTokens();
   clearAuthStateSync({ reason, clearCompanionMode: false });
   await enableIosLoginInteraction();
 
@@ -328,5 +456,5 @@ export async function resetToLoginScreen(options?: ResetToLoginOptions | string)
     }
   }, 350);
 
-  void clearAuthStateAsync();
+  void clearAuthStateAsync(sessionTokens);
 }

@@ -173,6 +173,29 @@ function hasTourismType(types: Set<string>): boolean {
   return [...types].some((t) => TOURISM_SIGNAL_TYPES.has(t));
 }
 
+/** Park types themselves; not a tourism signal when judging whether a park is ordinary. */
+const PARK_SELF_TYPES = new Set(["park", "city_park", "garden"]);
+
+function hasNonParkTourismType(types: Set<string>): boolean {
+  return [...types].some((t) => TOURISM_SIGNAL_TYPES.has(t) && !PARK_SELF_TYPES.has(t));
+}
+
+function hasParkSelfType(types: Set<string>): boolean {
+  return [...types].some((t) => PARK_SELF_TYPES.has(t));
+}
+
+/**
+ * 韓文一般公園名。소공원 只在詞首、分隔符後或行政地名尾字（동／가／로／길）後成立，
+ * 避免 발전소+공원、연구소+공원 等「…소」複合詞誤判。
+ */
+const KR_NEIGHBORHOOD_PARK_NAME_RE =
+  /어린이공원|근린공원|마을공원|동네공원|(?:^|[\s(（·・,\-]|[동가로길])소공원/;
+
+/** 僅在 types 含 park 類時，以韓文名稱判斷一般公園；餐廳／咖啡廳名含 공원 不受影響。 */
+export function isKrNeighborhoodParkName(place: PlaceResult): boolean {
+  return hasParkSelfType(placeTypes(place)) && KR_NEIGHBORHOOD_PARK_NAME_RE.test(place.name ?? "");
+}
+
 /**
  * Exception: keep a keyword-hit place only when it is a genuine tourist landmark.
  * Requires tourism type + popularity + (famous name OR strong review floor).
@@ -212,10 +235,10 @@ function isOrdinaryParkOrMarket(place: PlaceResult, types: Set<string>): boolean
   const blob = placeBlob(place);
 
   // Parks: type=park without tourism signal / landmark exception → ordinary
-  if (types.has("park") || /公園|park/i.test(name)) {
+  if (types.has("park") || /公園|park/i.test(name) || (hasParkSelfType(types) && /공원/.test(name))) {
     if (isTourismLandmarkException(place)) return false;
     if (
-      /國家公園|国営公園|国立公園|森林公園|海洋公園|主題公園|遊園地|amusement|national\s*park|central\s*park|yoyogi|上野公園|代代木|奈良公園/i.test(
+      /國家公園|国営公園|国立公園|국립공원|森林公園|海洋公園|主題公園|遊園地|amusement|national\s*park|central\s*park|yoyogi|上野公園|代代木|奈良公園/i.test(
         blob,
       )
     ) {
@@ -224,7 +247,8 @@ function isOrdinaryParkOrMarket(place: PlaceResult, types: Set<string>): boolean
     // Neighborhood / generic urban parks
     if (
       /近鄰|近隣|街区|社區|社区|neighborhood|pocket\s*park|兒童公園|児童公園|小公園/i.test(blob) ||
-      (!hasTourismType(types) && (place.userRatingCount ?? 0) < 80)
+      isKrNeighborhoodParkName(place) ||
+      (!hasNonParkTourismType(types) && (place.userRatingCount ?? 0) < 80)
     ) {
       return true;
     }

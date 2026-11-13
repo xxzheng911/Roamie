@@ -1,3 +1,4 @@
+import "./verify-netguard-full.mjs";
 import assert from "node:assert/strict";
 import { build, stop } from "esbuild";
 import { mkdtempSync, rmSync, readFileSync } from "node:fs";
@@ -38,7 +39,14 @@ try {
             namespace: "mock",
           }));
           b.onLoad({ filter: /.*/, namespace: "mock" }, () => ({
-            contents: "export const getClientAuthSession=async()=>globalThis.fixtureSession",
+            // Every export derives from the same globalThis.fixtureSession that
+            // getClientAuthSession returns, mirroring src/lib/auth-session.ts semantics.
+            contents: [
+              "export const getClientAuthSession=async()=>globalThis.fixtureSession;",
+              "export const getAuthenticatedUserId=async()=>globalThis.fixtureSession?.user?.id??null;",
+              "export const readCachedAuthenticatedUserIdSync=()=>globalThis.fixtureSession?.user?.id??null;",
+              "export const requireAuthenticatedUser=async()=>{const s=globalThis.fixtureSession;if(!s?.user)throw new Error('fixture: not signed in');return {id:s.user.id};};",
+            ].join(""),
             loader: "js",
           }));
         },

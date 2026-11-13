@@ -12,10 +12,13 @@ import {
   reinforceTripAddPlaceSession,
 } from "@/lib/trip/trip-add-place-session";
 import { buildDestinationStyleChoiceQuestion } from "@/lib/ai/destination-style-guide";
+import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import type { Locale } from "@/lib/i18n/types";
 import {
   isBestSeasonQuestion,
 } from "@/lib/ai/season-response-guardrail";
 import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
+import { mapPlaceLabelToGoogleType } from "@/lib/affiliate/place-type-category-map";
 import { isComboItineraryQuery } from "@/lib/ai/chat-category-place-guard";
 import { extractItineraryDestinationFromText } from "@/lib/ai/itinerary-entity-extraction";
 import { enrichTripDatesInContext } from "@/lib/ai/ai-trip-style";
@@ -109,6 +112,21 @@ const DESTINATION_ALIASES: Record<string, string> = {
   Jeju: "濟州",
   jeju: "濟州",
 };
+
+/**
+ * Same Han place name up to 臺／台, 區／区 and one trailing 區／区 / 市 (海雲臺區 = 海雲台). At least two
+ * Han characters remain on both sides; never a substring match.
+ */
+export function sameHanPlaceVariant(left: string | undefined, right: string | undefined): boolean {
+  const fold = (value: string | undefined) => {
+    const t = (value ?? "").trim().replace(/臺/g, "台").replace(/區/g, "区");
+    if (!/^\p{Script=Han}+$/u.test(t)) return "";
+    const stem = t.length > 2 ? t.replace(/(?:区|市)$/, "") : t;
+    return stem.length >= 2 ? stem : "";
+  };
+  const a = fold(left);
+  return Boolean(a) && a === fold(right);
+}
 
 export function normalizeDestinationLabel(name: string): string {
   const durationNormalized = normalizeDestinationAndDuration(name);
@@ -406,6 +424,8 @@ export function isDestinationSelectionText(text: string): boolean {
 export function isFutureTripPlanningStatement(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
+  // 「我想去博物館」"I want to go to a museum": a category wish names no trip destination.
+  if (categorySwitchSearchText(t)) return false;
 
   if (multilingualTravelIntent(t)) return true;
   // Explicit place-category asks are not trip planning narratives.
@@ -483,6 +503,10 @@ const CATEGORY_NON_DESTINATION_LABELS = new Set([
   "放鬆",
   "放松",
   "散步",
+  // 「今天不去了，我要去休息」: rest / surfing are activities, never a destination.
+  "休息",
+  "衝浪",
+  "冲浪",
   "shopping",
   "food",
   "cafe",
@@ -492,6 +516,21 @@ const CATEGORY_NON_DESTINATION_LABELS = new Set([
   "酒吧",
   "室內",
   "室内",
+  // 「不去海邊了，改去博物館」"instead of the beach, museums": categories, never a destination.
+  "博物館",
+  "博物馆",
+  "美術館",
+  "美术馆",
+  "海邊",
+  "海边",
+  "海灘",
+  "海滩",
+  "museum",
+  "museums",
+  "beach",
+  "beaches",
+  "박물관",
+  "해변",
 ]);
 
 const NON_DESTINATION_LABELS = new Set([
@@ -540,6 +579,9 @@ export function normalizeCityLabel(name: string): string {
   if (t === "京都") return "京都";
   // 東京都 → 東京 (administrative suffix)
   if (t === "東京都" || t === "东京都") return "東京";
+  // 別府・甲府・成都: a two-character name ending in 府 / 都 / 縣 is the name itself (never one character).
+  // 「津市」「堺市」 keep the 市 rule (→ 津 / 堺), so a typed 「津」 and a geocoded 「津市」 match.
+  if (t.length <= 2 && !t.endsWith("市")) return t;
   return t.replace(/(市|縣|都|府)$/, "");
 }
 
@@ -555,7 +597,95 @@ export function isCategoryNonDestinationLabel(name: string): boolean {
   if (/^(吃|喝|玩|逛|買|买|看|住)/.test(n) && /(地方|地点|地點|区域|區域)/.test(n)) {
     return true;
   }
-  return false;
+  return isCategoryActivityLabel(raw);
+}
+
+/**
+ * Category / activity vocabulary (zh / en / ja / ko) of the place-category flows: the
+ * chat category query words (chat-place-category-types), the Roamie category → Places type map
+ * (affiliate/place-type-category-map) and the category / exclusion families (博物館・夜市・動物園・
+ * 溫泉・樂園 …). A label made only of these words (plus switch / filler wording) is a category,
+ * never a destination; any other word left (「京都國立博物館」「澳洲博物館」"the Australian
+ * Museum") keeps it a named place.
+ */
+const CATEGORY_ACTIVITY_CJK_TOKEN_RE =
+  /博物館|博物馆|美術館|美术馆|藝廊|艺廊|展覽館|展覽|展館|咖啡廳|咖啡厅|咖啡店|咖啡館|咖啡馆|咖啡|餐廳|餐厅|美食|小吃|夜市|市集|市場|市场|商圈|商場|商场|百貨公司|百貨|百货|購物中心|購物|购物|逛街|買東西|买东西|老街|溫泉|温泉|泡湯|泡汤|動物園|动物园|水族館|水族馆|植物園|植物园|主題樂園|主题乐园|遊樂園|游乐园|樂園|乐园|公園|公园|海邊|海边|海灘|海滩|沙灘|沙滩|酒吧|夜景|景點|景点|寺廟|寺庙|神社|教堂|步道|爬山|登山|健行|買い物|ショッピング|カフェ|レストラン|遊園地|テーマパーク|ビーチ|お寺|海|박물관|미술관|온천|쇼핑|카페|맛집|식당|동물원|수족관|놀이공원|테마파크|야시장|시장|해변|바다|공원|술집/g;
+const CATEGORY_ACTIVITY_EN_TOKEN_RE =
+  /\b(?:museums?|art\s+galler(?:y|ies)|galler(?:y|ies)|caf[eé]s?|coffee(?:\s+shops?)?|restaurants?|food|shopping(?:\s+malls?)?|malls?|outlets?|night\s+markets?|markets?|onsens?|zoos?|aquariums?|botanical\s+gardens?|theme\s+parks?|amusement\s+parks?|parks?|beach(?:es)?|bars?|nightlife|temples?|shrines?|hiking)\b/gi;
+/**
+ * "hot springs" / "Hot springs" is the activity; "Hot Springs" (both words capitalized, e.g. the US
+ * city) is a place name, so it stays out of the case-insensitive vocabulary above.
+ */
+const CATEGORY_ACTIVITY_HOT_SPRINGS_RE = /\b(?:hot|Hot|HOT)\s+springs?\b/g;
+/** Switch / filler wording allowed around a category word (whole fragments only). */
+const CATEGORY_ACTIVITY_FILLER_FRAGMENT_RE =
+  /^(?:the|a|an|some|to|go|more|instead|of|switch|change|swap|let'?s|please|visit|see|then|and|or|maybe|how|about|it|make|[了吧啦呢的去玩看]|改去|改成去|改成|換成|换成|換去|换去|換到|换到|改到|改為|改为|走走|逛逛|看看|[にへでをはが]|に?変更|に?して|に?しよう|(?:으|)로|에|을|를|은|는|바꿔|하자|가자)+$/i;
+
+/** Sentence-initial negated clause (zh / en / ja / ko): 「不去海邊了，」"instead of the beach," 「海じゃなくて」「바다 말고」. */
+const CATEGORY_SWITCH_NEGATED_CLAUSE_RES: RegExp[] = [
+  /^(?:我們|我们|那我|那就|我|那)?(?:不去|不要去|不想去|別去|别去|不要)[^，,、。]{1,24}?了?[，,、。\s]+/,
+  /^[^\s，,、。]{1,24}?(?:就)?(?:不去|不要去|不想去|不要)了?[，,、。\s]+/,
+  /^(?:not|no\s+more|skip|forget(?:\s+about)?|instead\s+of|rather\s+than)\s+[^,;.!]{1,40}?(?:\s+(?:anymore|any\s+more))?\s*[,;.!]\s*/i,
+  /^[^\s、,，。]{1,24}?(?:は|を)?(?:やめて|じゃなくて|じゃなく|ではなくて|ではなく)[、,，。\s]*/,
+  /^[^\s,，。]{1,24}?(?:은|는|을|를)?\s*(?:말고|대신에?|빼고)[,，\s]*/,
+];
+
+/** Sentence-initial wish wording (zh / en): 「我想去」「我要去」"I want to (go to)" "I'm going to". */
+const CATEGORY_WISH_PREFIX_RE =
+  /^(?:(?:我們|我们|那我|那就|我|那|就)?(?:還是|还是|比較|比较|只)?(?:想要|想|要)(?:去|到)?(?:泡(?=溫泉|温泉))?|(?:今天|明天|後天|后天|今晚|明晚)(?:我們|我们|我)?(?:想要|想|要)?(?:去|到)|(?:i|we)(?:['’]d|\s+would)?\s+(?:really\s+)?(?:want|wanna|like|love|hope)\s+(?:to\s+)?|(?:i['’]m|i\s+am|we['’]re|we\s+are)\s+going\s+(?:to\s+)?)/i;
+/**
+ * Sentence-final wish wording (ko / ja): 「에 가고 싶어」「温泉に行きたい」.
+ */
+const CATEGORY_WISH_SUFFIX_RE =
+  /\s*(?:(?:에|으로|로)?\s*(?:가고\s*싶어(?:요)?|가고\s*싶다|갈래(?:요)?|가자|갈게(?:요)?)|(?:に|へ)(?:行きたい(?:です)?|行こう|行きます))[.!！。]?$/u;
+
+/**
+ * 「改去博物館」「不去海邊了，改去夜市」"switch to cafe" "instead of the beach, museums"
+ * 「海じゃなくて温泉に変更」「바다 말고 박물관으로 바꿔」: when the wording after an optional
+ * negated clause is only switch wording + category / activity words, the category words alone
+ * (the text a category search reads its area from); otherwise undefined. Lexical only.
+ */
+export function categorySwitchSearchText(text: string): string | undefined {
+  let body = (text ?? "").trim();
+  if (!body) return undefined;
+  for (const re of CATEGORY_SWITCH_NEGATED_CLAUSE_RES) {
+    const m = body.match(re);
+    if (m && body.length > m[0].length) {
+      body = body.slice(m[0].length).trim();
+      break;
+    }
+  }
+  // 「我想去博物館」"I want to go to a museum"「美術館に行きたい」「박물관에 가고 싶어」: a wish wrapper
+  // around category words only is the same category request (no named place is read from it).
+  const wishBody = body
+    .replace(CATEGORY_WISH_PREFIX_RE, "")
+    .replace(CATEGORY_WISH_SUFFIX_RE, "")
+    .trim();
+  if (wishBody && wishBody !== body && isCategoryActivityLabel(wishBody)) body = wishBody;
+  if (!isCategoryActivityLabel(body)) return undefined;
+  const words = [
+    ...(body.match(CATEGORY_ACTIVITY_EN_TOKEN_RE) ?? []),
+    ...(body.match(CATEGORY_ACTIVITY_HOT_SPRINGS_RE) ?? []),
+    ...body.replace(CATEGORY_ACTIVITY_EN_TOKEN_RE, " ").replace(CATEGORY_ACTIVITY_HOT_SPRINGS_RE, " ").match(CATEGORY_ACTIVITY_CJK_TOKEN_RE) ?? [],
+  ];
+  return words.length ? words.join(" ") : body;
+}
+
+/** True when the whole label is a category / activity (no named place left); see the vocabulary above. */
+export function isCategoryActivityLabel(label: string): boolean {
+  const raw = (label ?? "").trim();
+  if (!raw || raw.length > 40) return false;
+  if (mapPlaceLabelToGoogleType(raw)) return true;
+  const replaced = raw
+    .replace(CATEGORY_ACTIVITY_EN_TOKEN_RE, "\u0001")
+    .replace(CATEGORY_ACTIVITY_HOT_SPRINGS_RE, "\u0001")
+    .replace(CATEGORY_ACTIVITY_CJK_TOKEN_RE, "\u0001");
+  if (!replaced.includes("\u0001")) return false;
+  return replaced
+    // eslint-disable-next-line no-control-regex -- \u0001 is the intentional token separator inserted above
+    .split(/[\u0001\s,，、。.!！?？~～]+/u)
+    .filter(Boolean)
+    .every((fragment) => CATEGORY_ACTIVITY_FILLER_FRAGMENT_RE.test(fragment));
 }
 
 /** 通過驗證才回傳正規化目的地，否則 undefined */
@@ -567,11 +697,126 @@ export function coerceTravelDestination(name: string | undefined | null): string
   return label;
 }
 
+/** Switch / negation wording left inside a destination string (「雪梨了改去熱海」「京都にする」"switch to …"). */
+const NON_PLACE_SWITCH_RESIDUE_RE =
+  /改去|改成|換成|换成|換去|换去|換到|换到|改到|不要|不去|不想去|算了|以外|やめ|빼|말고|にする|に変更|へ変更|(?:으로|로)\s*바꿔|\b(?:instead|switch\s+to|change\s+to|except|not)\b/iu;
+/** Exclusion wording on a place (「京都以外」「京都不要」「京都はやめて」「교토 말고」"except Kyoto" "not Kyoto"). */
+const DESTINATION_EXCLUSION_RE =
+  /以外(?!\s*に?も)|(?<=\p{Script=Han})不要[\s。！!.]*$|やめ|빼|말고|\bexcept\b|^\s*not\b|\banything\s+but\b/iu;
+/** A trailing 了 particle after a Han name (「雪梨了」); 了 inside a name is never checked. */
+const NON_PLACE_TRAILING_LE_RE = /(?<=\p{Script=Han})了$/u;
+/** A leading time word (「今天」「這次」…); 明日香 stays a place. */
+const NON_PLACE_TIME_LEAD_RE = /^(?:今天|明天|後天|后天|昨天|今晚|明晚|今日|明日(?!香)|這次|这次|這趟|这趟|下次|오늘|내일|today\b|tomorrow\b)/i;
+/**
+ * Sentence-final ja / ko travel-wish wording: 「東京へ行きたい」「北海道に行こう」「日本への旅行」
+ * 「沖縄へ旅行に行きたい」「東京 へ旅行」「日本へ旅行中」「도쿄에 가고 싶어」.
+ */
+const TRAVEL_WISH_SUFFIX_RE =
+  /\s*(?:(?:に|へ)\s*(?:行きたい(?:です)?|行きます|行こう|行く)|(?<=[\p{Script=Han}\p{Script=Katakana}]\s*)(?:への|に|へ)\s*(?:旅行|観光)(?:したい(?:です)?|します|中|\s*に\s*(?:行きたい(?:です)?|行きます|行こう|行く))?|(?:에|으로|로)\s*(?:가고\s*싶어(?:요)?|가고\s*싶다|갈래(?:요)?|가자|갈게(?:요)?))[.!！。]?$/u;
+/** The same wording left inside a destination string is never a place name (「沖縄へ旅行」「日本へ旅行中」). */
+const NON_PLACE_TRAVEL_WISH_RESIDUE_RE =
+  /(?:に|へ)\s*(?:行きたい|行きます|行こう|行く)|(?:への|へ)\s*(?:旅行|観光)|가고\s*싶|갈래|갈게/u;
+
+/**
+ * 「東京へ行きたい」→「東京」「도쿄에 가고 싶어」→「도쿄」: drops sentence-final ja / ko travel-wish
+ * wording so only the place is read (unchanged text otherwise).
+ */
+export function stripTravelWishSuffix(text: string): string {
+  const t = (text ?? "").trim();
+  const stripped = t.replace(TRAVEL_WISH_SUFFIX_RE, "").trim();
+  return stripped || t;
+}
+
+/** Filler allowed around a bare city answer (「東京吧」「東京で」「도쿄요」). */
+const CITY_ANSWER_FILLER_RE = /^(?:的|吧|啊|喔|哦|呀|好了|で|に|へ|かな|です|에서|에|요|으로|로|please)*$/iu;
+
+/**
+ * 「東京」「Tokyo」「도쿄」「東京吧」: the answer names only a city (no days, dates, category or
+ * other request); its destination label, otherwise undefined. Lexical only (no geocode).
+ */
+export function cityOnlyAnswerDestination(text: string): string | undefined {
+  const t = (text ?? "")
+    .trim()
+    .replace(/[\s。．.！!？?、,，~〜…]+$/u, "")
+    .replace(/^(?:是|在)/u, "")
+    .trim();
+  if (!t || t.length > 40 || /\d/.test(t)) return undefined;
+  if (hasCategoryPlaceQuery(t) || categorySwitchSearchText(t) || /[一二三四五六七八九十兩两]\s*天/.test(t)) return undefined;
+  const dest = resolveDestinationFromText(t);
+  if (dest) {
+    const label = normalizeDestinationLabel(dest);
+    for (const surface of [dest, label]) {
+      if (surface && t.includes(surface)) {
+        return CITY_ANSWER_FILLER_RE.test(t.replace(surface, "").trim()) ? label : undefined;
+      }
+    }
+  }
+  // An alias spelling (「Tokyo」「도쿄」「도쿄요」「Tokyo please」): a short name only, never a sentence.
+  if (/^[\p{L}\s.'’-]+$/u.test(t) && t.split(/\s+/).length <= 3 && !isFutureTripPlanningStatement(t)) {
+    const stripped = t.replace(/\s*(?:에서|에|요|으로|로|please)$/iu, "").trim();
+    // The whole remainder is a known alias (「도쿄 여행」"Tokyo trip" stay the general flow).
+    const aliasDest = applyCityLocaleAlias(stripped);
+    if (!aliasDest || aliasDest === stripped || (dest && aliasDest !== dest)) return undefined;
+    return normalizeDestinationLabel(aliasDest);
+  }
+  return undefined;
+}
+
+/** Question residue (「今天到底要去哪」→「底要去哪」「要吃什麼」): a question, never a place name. */
+// A bare 「哪」 (the target of 「…要去哪」) is the question word itself.
+const NON_PLACE_QUESTION_RESIDUE_RE = /去哪|哪裡|哪里|哪兒|哪儿|什麼|什么|甚麼|怎麼|怎么|(?<=\p{Script=Han})[哪嗎吗呢]$|^哪$/u;
+/** "a cheaper hotel" "the other option": article + generic noun, never a place name. */
+const NON_PLACE_EN_GENERIC_RE =
+  /^(?:a|an|the|some|another|other|any)\s+(?:[a-z'-]+\s+){0,3}(?:hotels?|hostels?|restaurants?|places?|spots?|options?|plans?|ones?|cit(?:y|ies)|areas?|destinations?|rooms?|stays?|trips?)$/i;
+/** en nearby residue ("eat nearby" "to eat nearby" "near me" "around here" "good to eat"): never a place name. */
+// Food / drink words ("drink" "drinks" "food" "eat and drink" "I want to eat") are never a place name either.
+const NON_PLACE_EN_NEARBY_RE = /^(?:(?:(?:i|we)(?:\s+(?:want|wanna|would\s+like)|['’]d\s+like)\s+)?(?:(?:any|some)thing\s+)?(?:good\s+)?(?:to\s+)?(?:eat|drinks?|food)(?:\s+(?:and|&)\s+(?:eat|drinks?|food))?(?:\s+(?:here|nearby|near\s+me|around\s+here))?|nearby|near\s+me|around\s+here)$/i;
+/** A yes / no reply to the candidate confirmation (「はい」「いいえ」「うん」「아니요」"yes" "no") is never a place name. */
+const NON_PLACE_YES_NO_RE =
+  /^(?:はい|ええ|うん|ううん|いいえ|いや|そうです|네|예|응|아니요|아뇨|아니|yes|yeah|yep|no|nope|ok|okay|sure|是|是的|好|好的|對|对|不是|不要|沒有|没有|不對|不对|嗯)[\s.!?。！？]*$/iu;
+/**
+ * A wish to travel without any place, left after the travel word was read as a destination
+ * (「したい」「の計画を立てたい」「プランを作って」「旅行」「여행 계획 세워줘」"travel" "plan a trip"
+ * "go on a trip"). Whole-string anchored: 「東京旅行」"Tokyo trip" "trip to Tokyo" keep the place.
+ */
+const NON_PLACE_TRAVEL_WORD_RESIDUE_RES: RegExp[] = [
+  /^(?:どこか|どっか)?(?:旅行|旅|観光|プラン|計画|予定|[のをにへが]|\s)*(?:したい(?:です)?|しよう|します|立てたい(?:です)?|立てて(?:ください)?|作って(?:ください)?|作りたい(?:です)?|行きたい(?:です)?|行こう|行く)?$/u,
+  /^(?:我)?(?:想|要)?(?:去|出去)?(?:安排|規劃|规划)?(?:一趟|一次|個|个)?(?:旅行|旅遊|旅游|玩|走走|度假|渡假|行程)$/u,
+  /^(?:我)?(?:想|要)?(?:去|出去)?(?:安排|規劃|规划)?(?:一趟|一次)$/u,
+  /^(?:어디론가|어디든|어디)?\s*(?:여행|계획|일정|\s)*(?:을|를)?\s*(?:하고|가고|떠나고|세워|짜)?\s*(?:싶어(?:요)?|싶다|줘|주세요)?$/u,
+  /^(?=.*\b(?:travel\w*|trips?|vacations?|holidays?|journeys?|getaways?|itinerar(?:y|ies)|plans?)\b|.*\b(?:go|take)\b.*\b(?:somewhere|anywhere|someplace)$)(?:(?:i|we)\s+(?:want|wanna|would\s+like|['’]d\s+like|need)\s+to\s+)?(?:(?:go|take|plan|make|book|have|travel)\s+)*(?:(?:on|for)\s+)?(?:(?:a|an|my|our|the|some)\s+)?(?:travel(?:l?ing)?|trips?|vacations?|holidays?|journeys?|getaways?|itinerar(?:y|ies)|plans?)?(?:\s*\b(?:(?:me|us)\s+)?(?:somewhere|anywhere|someplace))?(?:\s+for\s+(?:me|us))?$/i,
+];
+const isTravelWordResidue = (raw: string): boolean => NON_PLACE_TRAVEL_WORD_RESIDUE_RES.some((re) => re.test(raw));
+
+/**
+ * Final guard before a destination string is written into the session: switch / negation
+ * residue, a leading time word, an en article + generic noun, or a category / activity
+ * (isCategoryNonDestinationLabel) is never a destination. Locally known destinations pass.
+ */
+export function isNonPlaceDestinationText(name: string | undefined | null): boolean {
+  const raw = (name ?? "").trim();
+  if (!raw) return false;
+  if (isKnownDestinationLabel(normalizeDestinationLabel(raw))) return false;
+  return (
+    NON_PLACE_SWITCH_RESIDUE_RE.test(raw) ||
+    NON_PLACE_TRAILING_LE_RE.test(raw) ||
+    NON_PLACE_TIME_LEAD_RE.test(raw) ||
+    NON_PLACE_EN_GENERIC_RE.test(raw) ||
+    NON_PLACE_EN_NEARBY_RE.test(raw) ||
+    NON_PLACE_YES_NO_RE.test(raw) ||
+    NON_PLACE_QUESTION_RESIDUE_RE.test(raw) ||
+    NON_PLACE_TRAVEL_WISH_RESIDUE_RE.test(raw) ||
+    isTravelWordResidue(raw) ||
+    isCategoryNonDestinationLabel(raw)
+  );
+}
+
 /** 提問語、代詞、動詞片語 — 不可當目的地 */
 export function isValidParsedDestinationLabel(name: string): boolean {
   const n = name.trim();
   if (!safeDestinationCandidate(n) || isCalendarOnly(n)) return false;
   if (isCategoryNonDestinationLabel(n)) return false;
+  if (isNonPlaceDestinationText(n)) return false;
   if (NON_DESTINATION_LABELS.has(n)) return false;
   if (/^(哪|什麼|什么|何人|何處|何处|附近|這|这|那|幾|何時|何时|怎麼|怎么|如何)/.test(n)) {
     return false;
@@ -798,13 +1043,17 @@ export function parseDestinationFromText(text: string): string | undefined {
     const t = text.trim();
     if (!t) return undefined;
     // 「大阪不去了，換金澤」：被否定的舊城市不可當目的地，只解析切換後的語句。
-    const negatedSwitch = parseNegatedDestinationSwitch(t);
+    const negatedSwitch = parseNegatedDestinationSwitchTurn(t);
     if (negatedSwitch) return parseDestinationFromText(negatedSwitch.remainderText);
+    // 「京都以外」「京都不要」「京都はやめて」「교토는 빼줘」"anything but Kyoto": an excluded place is never the destination.
+    if (DESTINATION_EXCLUSION_RE.test(t)) return undefined;
 
     if (isCalendarOnly(t)) return undefined;
     const globalCandidates = travelDestinationCandidates(t);
     if (globalCandidates.length > 1) return undefined;
-    if (globalCandidates.length === 1) return normalizeDestinationLabel(globalCandidates[0]);
+    if (globalCandidates.length === 1 && !isNonPlaceDestinationText(globalCandidates[0])) {
+      return normalizeDestinationLabel(globalCandidates[0]);
+    }
     const itineraryDest = extractItineraryDestinationFromText(t);
     if (itineraryDest) return itineraryDest;
 
@@ -891,6 +1140,20 @@ export function parseDestinationFromText(text: string): string | undefined {
       if (accepted) return accepted;
     }
 
+    // 「12월에 일본 여행」"go Sydney please": a leading month (read by the month parser) or a trailing
+    // "please" around the same short alias form.
+    const aliasBody = t
+      .replace(/^\d{1,2}\s*월\s*(?:에)?\s+/u, "")
+      .replace(/[\s,，]+please[.!！]*$/iu, "")
+      .trim();
+    if (aliasBody && aliasBody !== t) {
+      const bodyAlias = extractKnownAliasDestination(aliasBody);
+      if (bodyAlias) {
+        const accepted = acceptParsedDestination(bodyAlias.canonical);
+        if (accepted) return accepted;
+      }
+    }
+
     return undefined;
   } catch (e) {
     console.warn("[trip-planning] parseDestinationFromText failed", e);
@@ -925,6 +1188,8 @@ const SWITCH_PUNCT_TRIM_RE = /^[\s，,、]+|[\s，,、]+$/g;
 const SWITCH_ADMIN_TAIL_RE = /^\p{Script=Han}{1,5}(?:區|区|市|町|村|鄉|乡|鎮|镇|縣|县|郡)$/u;
 const SWITCH_LABEL_MAX = 12;
 const SWITCH_LABEL_FRAGMENT_RE = /(?:了|再|吧|嗎|呢|一點|一下)/;
+/** 「我要」「我想」「那我要」 right before 去 after a negated-only clause (「雪梨不去了，我要去京都」). */
+const NEGATED_ONLY_WISH_LEAD_RE = /^[\s，,、]*(?:我們|我们|那我|那就|我|那)?(?:要|想|會|会|打算)(?=去[^\s，,、])/;
 const SWITCH_VENUE_SUFFIX_RE = /[廳厅店]$/;
 /**
  * Generic alternative wording as a whole candidate (anchored; never a substring match):
@@ -978,8 +1243,69 @@ function isPlaceShapedSwitchTarget(label: string): boolean {
     !SWITCH_LABEL_FRAGMENT_RE.test(label) &&
     !isContinuationGrammarOnly(label) &&
     !INVALID_STRUCTURED_AREA_SUBSTRING.test(label) &&
-    !isCategoryNonDestinationLabel(label)
+    !isCategoryNonDestinationLabel(label) &&
+    !isNonPlaceDestinationText(label)
   );
+}
+
+/**
+ * 「雪梨不去了，我要去京都」→「雪梨不去了，去京都」: a negated-only clause on a known destination
+ * followed by wish wording before 去 (「我要」「我想」), rewritten to the extended clause form, only
+ * when that form is a local CONFIRMED_SWITCH; undefined otherwise. Lexical only.
+ */
+function negatedOnlyWishSwitchText(text: string): string | undefined {
+  const raw = (text ?? "").trim();
+  const clause = matchLeadingNegatedClause(raw);
+  if (clause?.form !== "negated_only") return undefined;
+  const negatedPlace = withoutActivityTail(clause.negatedText);
+  if (!negatedPlace || !(isKnownTouristCityLabel(negatedPlace) || isKnownCountryLabel(negatedPlace))) return undefined;
+  const rest = raw.slice(clause.length);
+  const wish = rest.match(NEGATED_ONLY_WISH_LEAD_RE);
+  if (!wish) return undefined;
+  const rewritten = raw.slice(0, clause.length) + rest.slice(wish[0].length);
+  const again = classifyDestinationSwitchTurn(rewritten);
+  // Only a locally known target (「京都」) switches; any other wording (「熱海」「衝浪」) stays NEGATED_UNCERTAIN.
+  return again.state === "CONFIRMED_SWITCH" && again.authority === "local" ? rewritten : undefined;
+}
+
+/** Explicit switch lead right after a dropped place (「換成」「改去」…; never a bare 「去」). */
+const NEGATED_DROP_SWITCH_LEAD =
+  "(?:換成去|换成去|改成去|換去|换去|改去|換成|换成|改成|換到|换到|改到|換|换|改)";
+/** 「雪梨不要了，換成熱海」「雪梨算了，改去熱海」: dropped place first. */
+const NEGATED_DROP_PLACE_FIRST_RE = new RegExp(
+  `^([^\\s，,、換换改去了]{1,24}?)(?:就)?(?:不要了|算了)[\\s，,、]*(?=${NEGATED_DROP_SWITCH_LEAD}[^\\s，,、])`,
+);
+/** 「不要雪梨了，換成熱海」「我不要雪梨了，改去熱海」: dropped place after 不要. */
+const NEGATED_DROP_PLACE_AFTER_RE = new RegExp(
+  `^(?:我們|我们|那我|那就|我|那|就|還是|还是|先)?不要([^\\s，,、換换改去了]{1,24}?)了[\\s，,、]*(?=${NEGATED_DROP_SWITCH_LEAD}[^\\s，,、])`,
+);
+/**
+ * 「雪梨不要了，換成熱海」「不要雪梨了，換成熱海」「我不要雪梨了，改去熱海」「雪梨算了，改去熱海」→
+ * 「雪梨不去了，換成熱海」/「不去雪梨了，改去熱海」: a dropped place plus explicit switch wording, rewritten
+ * to the negated clause form only when that form is a CONFIRMED_SWITCH; undefined otherwise. Lexical only.
+ */
+function negatedDropSwitchText(text: string): string | undefined {
+  const raw = (text ?? "").trim();
+  const first = raw.match(NEGATED_DROP_PLACE_FIRST_RE);
+  const after = first ? null : raw.match(NEGATED_DROP_PLACE_AFTER_RE);
+  const m = first ?? after;
+  const place = m?.[1]?.trim();
+  if (!m || !place) return undefined;
+  const rest = raw.slice(m[0].length);
+  const rewritten = first ? `${place}不去了，${rest}` : `不去${place}了，${rest}`;
+  return classifyDestinationSwitchTurn(rewritten).state === "CONFIRMED_SWITCH" ? rewritten : undefined;
+}
+
+/**
+ * parseNegatedDestinationSwitch, plus 「雪梨不去了，我要去京都」 read as 「雪梨不去了，去京都」
+ * (negatedOnlyWishSwitchText) and 「雪梨不要了，換成熱海」 read as 「雪梨不去了，換成熱海」
+ * (negatedDropSwitchText); every other text exactly as parseNegatedDestinationSwitch.
+ */
+export function parseNegatedDestinationSwitchTurn(text: string): ReturnType<typeof parseNegatedDestinationSwitch> {
+  const direct = parseNegatedDestinationSwitch(text);
+  if (direct) return direct;
+  const rewritten = negatedOnlyWishSwitchText(text) ?? (matchLeadingNegatedClause((text ?? "").trim()) ? undefined : negatedDropSwitchText(text));
+  return rewritten ? parseNegatedDestinationSwitch(rewritten) : null;
 }
 
 /**
@@ -989,7 +1315,13 @@ function isPlaceShapedSwitchTarget(label: string): boolean {
 export function classifyDestinationSwitchTurn(text: string): DestinationSwitchTurn {
   const raw = (text ?? "").trim();
   const clause = matchLeadingNegatedClause(raw);
-  if (!clause) return { state: "NO_SWITCH", hasNegatedClause: false, requestText: raw };
+  if (!clause) {
+    // 「雪梨不要了，換成熱海」: the same confirmed switch as 「雪梨不去了，換成熱海」.
+    const dropped = negatedDropSwitchText(raw);
+    return dropped
+      ? classifyDestinationSwitchTurn(dropped)
+      : { state: "NO_SWITCH", hasNegatedClause: false, requestText: raw };
+  }
 
   const negatedText = clause.negatedText;
   const negatedPlace = withoutActivityTail(negatedText);
@@ -1010,6 +1342,10 @@ export function classifyDestinationSwitchTurn(text: string): DestinationSwitchTu
     const isDestination =
       Boolean(negatedPlace) &&
       (isKnownTouristCityLabel(negatedPlace) || isKnownCountryLabel(negatedPlace));
+    // 「雪梨不去了，我要去京都」: a wish wording before 去 is the same switch as
+    // 「雪梨不去了，去京都」 (extended clause); classified on that form.
+    const rewritten = negatedOnlyWishSwitchText(raw);
+    if (rewritten) return classifyDestinationSwitchTurn(rewritten);
     return isDestination
       ? {
           ...base,
@@ -1108,6 +1444,8 @@ export function isDestinationPlanningText(text: string, session: ChatPlanningSes
   if (!t) return false;
   // Explicit place-category recommendation is never trip planning
   if (hasCategoryPlaceQuery(t) && !isComboItineraryQuery(t)) return false;
+  // 「我想去公園」"I want to go to the beach": a category wish names no trip destination.
+  if (categorySwitchSearchText(t)) return false;
   if (isDestinationAdviceText(t)) return true;
   if (isTravelPlanningText(t)) return true;
   if (/(我想?去|要去|想去|幫我規劃|規劃.*行程|安排.*行程)/.test(t) && parseDestinationFromText(t)) {
@@ -1248,7 +1586,36 @@ export function mergeTripPlanningContext(
       !hasCategoryPlaceQuery(text) &&
       !isDestinationPlanningText(text, session) &&
       !isDestinationAdviceText(text);
-    const parsedDest = skipDestParse ? undefined : parseDestinationFromText(text);
+    const parsedDestText = skipDestParse ? undefined : parseDestinationFromText(text);
+    // 「改去Atami」「我要去海雲台」 just confirmed by geocode as 熱海市 / 海雲臺區: the typed surface is
+    // that same geocoded destination, so the confirmed label (and its tripDestination) is kept.
+    const resolvedRaw = travelCtx.destinationCandidate?.status === "resolved" ? travelCtx.destinationCandidate.raw : undefined;
+    const surfaceOf = (v: string) => normalizeDestinationLabel(v).toLowerCase();
+    // 「熱海, 日本」: the country named next to the confirmed city is not a destination of its own.
+    const isCountryOfDestination = (v: string) =>
+      Boolean(travelCtx.destinationCountry) &&
+      isKnownCountryLabel(v) &&
+      !isKnownTouristCityLabel(v) &&
+      normalizeDestinationLabel(v) === normalizeDestinationLabel(travelCtx.destinationCountry!);
+    const geocodedSurface = Boolean(
+      parsedDestText && resolvedRaw && travelCtx.destination?.trim() &&
+        (surfaceOf(parsedDestText) === surfaceOf(resolvedRaw) ||
+          surfaceOf(resolvedRaw).includes(surfaceOf(parsedDestText)) ||
+          surfaceOf(parsedDestText).includes(surfaceOf(resolvedRaw)) ||
+          (text.includes(resolvedRaw) && isCountryOfDestination(parsedDestText))),
+    );
+    // The sentence names the old destination next to the candidate just geocoded into the trip
+    // (tripDestination already that new place): the old name never writes back over it.
+    const sameLabel = (a: string | undefined, b: string | undefined) =>
+      Boolean(a?.trim() && b?.trim()) && normalizeDestinationLabel(a!) === normalizeDestinationLabel(b!);
+    const oldNamedBesideResolved = Boolean(
+      parsedDestText && resolvedRaw && text.includes(resolvedRaw) &&
+        sameLabel(parsedDestText, prev.destination) &&
+        travelCtx.destination?.trim() && !sameLabel(travelCtx.destination, prev.destination) &&
+        (sameLabel(session.tripDestination?.city, travelCtx.destination) ||
+          sameLabel(session.tripDestination?.displayLabel, travelCtx.destination)),
+    );
+    const parsedDest = geocodedSurface || oldNamedBesideResolved ? travelCtx.destination : parsedDestText;
 
     const destination =
       parsedDest ??
@@ -1312,9 +1679,24 @@ export function mergeTripPlanningContext(
 
     if (destination && mode === "destination_planning") {
       const existingCity = session.tripDestination?.city?.trim();
+      // A geocoded 海雲臺區 is the same place as the typed 海雲台 (script variant + district
+      // suffix): the resolved trip destination is kept, never replaced by a label-only stub.
+      // When both sides have a center, they must also agree (中山區 in 台北 ≠ 中山 in 廣東).
+      const trip = session.tripDestination;
+      const coords = travelCtx.destinationCoordinates;
+      const centersAgree =
+        !trip ||
+        !coords ||
+        !Number.isFinite(trip.lat) ||
+        !Number.isFinite(trip.lng) ||
+        (trip.lat === 0 && trip.lng === 0) ||
+        !Number.isFinite(coords.lat) ||
+        !Number.isFinite(coords.lng) ||
+        (Math.abs(trip.lat - coords.lat) <= 0.05 && Math.abs(trip.lng - coords.lng) <= 0.05);
       const shouldReplaceTripDestination =
         !existingCity ||
-        normalizeDestinationLabel(existingCity) !== normalizeDestinationLabel(destination);
+        (normalizeDestinationLabel(existingCity) !== normalizeDestinationLabel(destination) &&
+          !(sameHanPlaceVariant(existingCity, destination) && centersAgree));
       if (shouldReplaceTripDestination) {
         nextSession = {
           ...nextSession,
@@ -1380,11 +1762,18 @@ export function buildDestinationPlanningClarify(
   ctx: CanonicalTravelContext,
   session: ChatPlanningSession,
   key: TripIntentMissingKey,
+  locale: Locale = "zh-TW",
 ): string {
   const dest = ctx.destination ?? session.tripPlanningContext?.destination ?? "這趟";
   const days = ctx.days ?? session.tripDays ?? session.tripPlanningContext?.days;
   const daysLabel = days ? ` ${days} 天` : "";
   const month = ctx.travelMonth ?? session.tripPlanningContext?.travelMonth;
+
+  if (locale !== "zh-TW") {
+    return key === "vibe"
+      ? buildDestinationStyleChoiceQuestion(dest, { days, month, locale })
+      : chatRuntimeCopy(`clarify_${key}`, locale);
+  }
 
   switch (key) {
     case "destination":

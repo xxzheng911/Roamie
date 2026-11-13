@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "./verify-netguard-full.mjs";
 /**
  * Guest browsing authority.
  * Public reads are allowlisted. AI, credits, and user-owned writes stay authenticated.

@@ -18,7 +18,9 @@ const mocks = {
  export function createServerFn(){let ms=[],valid=x=>x;return {middleware(v){ms=v;return this},inputValidator(v){valid=v;return this},handler(fn){return async ({data})=>{const r=globalThis.R;let i=0;const go=async ({context})=>{if(i<ms.length)return ms[i++]({context,next:go});r.handlerEntered=true;return fn({data:valid(data),context})};try{return await go({context:{}})}catch(e){r.exceptions.push({name:e.name,message:e.message,stack:e.stack});r.caught.push(e);throw e}}}}}
  `,
   "@/integrations/supabase/auth-middleware": `export const requireSupabaseAuth=async({next,context})=>next({context:{...context,userId:'fixture-user',supabase:globalThis.R.supabase}});export const allowGuestPublicRead=requireSupabaseAuth;`,
-  "@/lib/ai/endpoint-guard.server": `export const requireAuthenticatedAiRequest=async()=>{if(globalThis.R.config.authThrow)throw globalThis.R.primary;if(globalThis.R.config.unauthorized)return null;return {userId:'fixture-user',hasPlusAccess:!!globalThis.R.config.plus}};`,
+  // serverCreditsRpc is the REAL implementation (re-exported); only the service-role client is
+  // pointed at the fixture client so credits RPCs still go through the fixture's mocked fetch.
+  "@/lib/ai/endpoint-guard.server": `export { serverCreditsRpc } from ${JSON.stringify(path.join(root, "src/lib/ai/endpoint-guard.server.ts"))};export const serverCreditsClient=()=>globalThis.R.supabase;export const requireAuthenticatedAiRequest=async()=>{if(globalThis.R.config.authThrow)throw globalThis.R.primary;if(globalThis.R.config.unauthorized)return null;return {userId:'fixture-user',hasPlusAccess:!!globalThis.R.config.plus}};`,
   "@/integrations/supabase/client.server": `export const supabaseAdmin={from(...a){return globalThis.R.supabase.from(...a)}};`,
   "@/lib/env.server": `export const getOpenAIKey=()=> 'sk-offline-fixture';export const getOpenWeatherApiKey=()=> 'offline-fixture';export const resolveGoogleMapsKey=()=> 'AIza'+'x'.repeat(35);`,
   "@/lib/ai/service.server": `export async function callRoamieAI(){globalThis.R.aiFixtureCalls++;return globalThis.R.aiPayload;}`,
@@ -86,8 +88,17 @@ try {
     correlateGeneration,
   } = await import(pathToFileURL(outfile));
   let checks = 0;
+  // A failed check is reported and recorded; later scenarios still run (exit code 1 at the end).
+  // Under vite-node an uncaught top-level error can hang silently, hiding every later result.
+  const failed = [];
   const check = (name, fn) => {
-    fn();
+    try {
+      fn();
+    } catch (e) {
+      failed.push(name);
+      fs.writeSync(1, "FAIL " + name + "\n     " + String(e?.message ?? e).split("\n").slice(0, 12).join("\n     ") + "\n");
+      return;
+    }
     checks++;
     console.log("PASS " + name);
   };
@@ -116,7 +127,14 @@ try {
   const transit = await run({ transitFailure: true });
   check("transit fallback remains successful; exception phase retained", () => {
     assert.equal(transit.result.status, 200);
-    assert.equal(transit.ledger, "committed");
+    assert.equal(
+      transit.ledger,
+      "committed",
+      "supabase calls=" + JSON.stringify(transit.events.filter((e) => String(e).startsWith("/rest/"))) +
+        " uncaught=" + JSON.stringify(transit.result.uncaught ?? null) +
+        " body=" + JSON.stringify(transit.result.body ?? null).slice(0, 600) +
+        " exceptions=" + JSON.stringify(transit.exceptions.map((x) => x.message).slice(0, 5)),
+    );
     assert.equal(transit.diagnostics.at(-1).optional[0].phase, "transit");
     assert.equal(transit.diagnostics.at(-1).primary, undefined);
   });
@@ -172,14 +190,15 @@ try {
     );
   }
   const rejected = await run({ commitRejected: true });
-  check("JSON-level commit rejection is observable without changing billing behavior", () => {
-    assert.equal(rejected.result.status, 200);
-    assert.equal(rejected.result.body.success, true);
-    assert.equal(rejected.analytics.at(-1).metadata.generationDiagnostic.commit, "rejected");
-    assert.equal(
-      rejected.analytics.at(-1).metadata.generationDiagnostic.rpc.commit.reason,
-      "already_rolled_back",
-    );
+  // 任務單 #6：commit 回 ok:false 視為結算失敗——不交付結果，middleware 釋放預扣（舊斷言「仍回 200」已過時）。
+  check("JSON-level commit rejection withholds the result and releases the reservation", () => {
+    assert.notEqual(rejected.result.status, 200);
+    assert.notEqual(rejected.result.body?.success, true);
+    const restCalls = rejected.events.filter((e) => String(e).startsWith("/rest/v1/rpc/credits_"));
+    assert.deepEqual(restCalls, ["/rest/v1/rpc/credits_reserve", "/rest/v1/rpc/credits_commit", "/rest/v1/rpc/credits_rollback"]);
+    const diag = rejected.analytics.at(-1).metadata.generationDiagnostic;
+    assert.ok(["rejected", "failed"].includes(diag.commit), diag.commit);
+    assert.equal(diag.rpc.commit.reason, "already_rolled_back");
   });
   for (const config of [
     {},
@@ -324,8 +343,16 @@ try {
     assert(!JSON.stringify(parallel).includes("token-should-not-be-logged"));
   });
   console.log(
-    `Generation diagnostics: ${checks} scenarios passed (offline, no production writes).`,
+    `Generation diagnostics: ${checks} scenarios passed, ${failed.length} failed (offline, no production writes).`,
   );
+  if (failed.length) {
+    for (const f of failed) fs.writeSync(1, "  FAILED: " + f + "\n");
+    process.exitCode = 1;
+  }
+} catch (e) {
+  fs.writeSync(1, "Generation diagnostics: FAILED — " + String(e?.message ?? e).split("\n")[0] + "\n");
+  process.exitCode = 1;
 } finally {
   fs.rmSync(temporary, { recursive: true, force: true });
 }
+process.exit(process.exitCode ?? 0);

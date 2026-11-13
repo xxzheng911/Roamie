@@ -1,3 +1,4 @@
+import "./verify-netguard-full.mjs";
 /**
  * Acceptance: selected combinations 1,2,4 → required pool coverage + landmark merge + snapshots.
  * Destination-agnostic (uses synthetic coords; no city hardcode in logic under test).

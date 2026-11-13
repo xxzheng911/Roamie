@@ -26,7 +26,7 @@ function ItineraryByDate({
 
   const groups = new Map<string, RoamieItineraryItem[]>();
   for (const item of items) {
-    const key = item.date?.trim() || "未指定日期";
+    const key = item.date?.trim() || uiT("nativeQa.dateNotSet");
     const list = groups.get(key) ?? [];
     list.push(item);
     groups.set(key, list);
@@ -152,15 +152,16 @@ export function RoamieResponseView({
   savingPlaceName,
   savedPlaceNames,
   outfitAdvice,
-  addToTripLabel = "加入行程",
-  discussPlaceLabel = "跟 Roamie 聊這裡",
-  viewMapLabel = "查看地圖",
+  addToTripLabel: addToTripLabelProp,
+  discussPlaceLabel: discussPlaceLabelProp,
   recommendationsPreFiltered = false,
   onRecommendationEngage,
   selectionMode = false,
   hideSummary = false,
 }: Props) {
   const { t: uiT, locale } = useI18n();
+  const addToTripLabel = addToTripLabelProp ?? uiT("chat.addToTrip");
+  const discussPlaceLabel = discussPlaceLabelProp ?? uiT("trip.discussPlace");
 
   const moodBadge = data.moodTag ? chatMoodDisplay(data.moodTag, locale) : "";
   const summary = data.summary?.trim();
@@ -172,7 +173,7 @@ export function RoamieResponseView({
   const itinerary = data.itinerary ?? [];
 
   return (
-    <div className="space-y-3">
+    <div className="chat-latin-text space-y-3">
       {!hideSummary && moodBadge ? (
         <span className="inline-block rounded-full bg-sage/15 px-2.5 py-0.5 text-[11px] text-foreground/80">
           {moodBadge}

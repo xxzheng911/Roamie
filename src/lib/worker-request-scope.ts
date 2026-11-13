@@ -153,12 +153,42 @@ export function resolveTrustedUserId(): string | null {
   return store.testUserId ?? store.verifiedUserId ?? null;
 }
 
+/**
+ * Abuse-guard IP identity. IPv4 stays as-is; IPv4-mapped IPv6 becomes IPv4; any other IPv6
+ * collapses to its /64 (one subscriber allocation), e.g. "2001:db8:abcd:12::/64".
+ * Unparseable values are returned unchanged.
+ */
+export function normalizeClientIp(raw: string): string {
+  const value = raw.trim();
+  if (!value.includes(":")) return value;
+  let text = value.toLowerCase().split("%")[0];
+  const v4 = /^(.*:)(\d{1,3}(?:\.\d{1,3}){3})$/.exec(text);
+  if (v4) {
+    const octets = v4[2].split(".").map(Number);
+    if (octets.some((octet) => octet > 255)) return value;
+    text = `${v4[1]}${((octets[0] << 8) | octets[1]).toString(16)}:${((octets[2] << 8) | octets[3]).toString(16)}`;
+  }
+  const halves = text.split("::");
+  if (halves.length > 2) return value;
+  const head = halves[0] ? halves[0].split(":") : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  const fill = 8 - head.length - tail.length;
+  if (halves.length === 2 ? fill < 1 : fill !== 0) return value;
+  const groups = [...head, ...Array<string>(fill).fill("0"), ...tail];
+  if (groups.some((group) => !/^[0-9a-f]{1,4}$/.test(group))) return value;
+  const words = groups.map((group) => parseInt(group, 16));
+  if (words.slice(0, 5).every((word) => word === 0) && words[5] === 0xffff) {
+    return [words[6] >> 8, words[6] & 255, words[7] >> 8, words[7] & 255].join(".");
+  }
+  return `${words.slice(0, 4).map((word) => word.toString(16)).join(":")}::/64`;
+}
+
 export function resolveTrustedIp(request?: Request): string | null {
   const store = storage.getStore();
   if (!isProductionGuardRuntime() && store?.testIp) return store.testIp;
   const source = request ?? store?.request;
   const connecting = source?.headers.get("cf-connecting-ip")?.trim() ?? "";
-  if (connecting) return connecting;
+  if (connecting) return normalizeClientIp(connecting);
   if (!isProductionGuardRuntime() && store?.allowLocalIp) return "local-dev";
   return null;
 }

@@ -18,15 +18,15 @@ const COPY = {
   en: {
     opening: "Of course! Here are a few places to consider adding to your day 👇",
     continuation: "Here are a few more options 👇",
-    empty: "I couldn’t find a suitable place to add right now.",
+    empty: "I couldn't find a suitable place to add right now.",
     searchRestricted: "Search is temporarily limited. Please try again later.",
     filtered: "Places were found, but none are new options that fit this itinerary.",
     searchUnavailable: "Search is temporarily unavailable. Please try again later.",
-    missingContext: "Location information is missing, so I can’t suggest nearby places yet.",
-    renderFailed: "I found the places, but the cards didn’t load. Please refresh.",
+    missingContext: "Location information is missing, so I can't suggest nearby places yet.",
+    renderFailed: "I found the places, but the cards didn't load. Please refresh.",
     emptyHint:
       "I can look for places that fit this itinerary. Tell me if you want sights, cafés, or restaurants, or ask for more.",
-    placesFound: "I found {count} places that fit this itinerary. See which one you’d like to add.",
+    placesFound: "I found {count} places that fit this itinerary. See which one you'd like to add.",
   },
   ja: {
     opening: "もちろん！予定に加えるのにおすすめの場所を見つけました 👇",

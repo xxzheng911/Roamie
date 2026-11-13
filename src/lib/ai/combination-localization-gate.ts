@@ -19,6 +19,7 @@ import {
 import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
 import type { Locale } from "@/lib/i18n/types";
 import { resolvePlaceCategoryFamily } from "@/lib/ai/place-category-family";
+import { isKeptGoogleLatinName } from "@/lib/place-localization/canonical-place-translations";
 import type { PlaceResult } from "@/lib/place-result";
 import {
   hasForeignLocalScript,
@@ -253,8 +254,9 @@ function localizeCandidate(
   let localizationSource = resolved.localizationSource;
   let languageCode = resolved.languageCode;
 
-  // Repair: foreign script → English when available.
-  if (display && hasForeignLocalScript(display, locale)) {
+  // Repair: foreign script → English when available. A zh-TW Google name kept because no
+  // official 繁中 name exists (canonical keepGoogleName) is already the deliverable name.
+  if (display && hasForeignLocalScript(display, locale) && !isKeptGoogleLatinName(resolved, locale)) {
     const english = (
       resolved.englishName ||
       candidate.englishName ||

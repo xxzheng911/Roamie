@@ -456,10 +456,16 @@ export async function fetchRouteWithDirectionFallbacks(
   // Japan transit is a Google Maps deeplink (route-duration-providers), never an
   // automatic Directions fallback for a walk/drive leg.
   const skipAutoTransit = preferredMode !== "TRANSIT" && ctx.query.region === "jp";
-  const fallbackAllowed = (m: RoutesTravelMode) => !(skipAutoTransit && m === "TRANSIT");
+  // South Korea: Google Directions only serves TRANSIT (walk/drive/bike/two-wheeler
+  // always return ZERO_RESULTS), so never spend a billed request on them.
+  const transitOnlyRegion = ctx.query.region === "kr";
+  const fallbackAllowed = (m: RoutesTravelMode) =>
+    !(skipAutoTransit && m === "TRANSIT") && !(transitOnlyRegion && m !== "TRANSIT");
   const chain = (allowModeFallback
     ? buildFallbackModeChain(preferredMode, straightM, null, chainOpts)
     : [preferredMode]).filter(fallbackAllowed);
+  // kr auto chains without TRANSIT (BICYCLE / TWO_WHEELER prefs) still get one transit try.
+  if (transitOnlyRegion && allowModeFallback && chain.length === 0) chain.push("TRANSIT");
   const attempted: RoutesTravelMode[] = [];
   const rawFailures: RouteApiFailureTelemetry[] = [];
   let lastAvailable: string[] | undefined;

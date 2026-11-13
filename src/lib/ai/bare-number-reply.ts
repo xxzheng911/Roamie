@@ -2,6 +2,46 @@ import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
 import { parseTravelDateRangeFromText } from "@/lib/ai/parse-travel-date-range";
 import { isValidItineraryDayCount, MAX_ITINERARY_DAYS } from "@/lib/ai/itinerary-days";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import type { Locale } from "@/lib/i18n/types";
+
+type BareNumberClarifyKind = "date_or_days" | "calendar_or_days" | "too_large";
+
+/** en / ja / ko clarification copy; zh-TW keeps the original strings at each call site. */
+function foreignBareNumberClarify(
+  kind: BareNumberClarifyKind,
+  raw: string,
+  locale: Exclude<Locale, "zh-TW">,
+): string {
+  const copy: Record<BareNumberClarifyKind, Record<Exclude<Locale, "zh-TW">, string>> = {
+    date_or_days: {
+      en: `By "${raw}", do you mean leaving on day ${raw} of the month, or a ${raw}-day trip?`,
+      ja: `「${raw}」は${raw}日出発のことですか？それとも${raw}日間の旅のことですか？`,
+      ko: `"${raw}"라고 답하신 건 ${raw}일 출발인가요, 아니면 ${raw}일 일정인가요?`,
+    },
+    calendar_or_days: {
+      en: `Is "${raw}" your departure date, or how many days you'd like to travel? You can reply with something like "3 days" or "8/15-8/17".`,
+      ja: `「${raw}」は出発日ですか？それとも旅行日数ですか？「3日間」や「8/15-8/17」のように返信してください。`,
+      ko: `"${raw}"라고 답하신 건 출발 날짜인가요, 아니면 여행 일수인가요? "3일"이나 "8/15-8/17"처럼 답해 주세요.`,
+    },
+    too_large: {
+      en: `"${raw}" looks more like a date or another number. About how many days is this trip? For example, reply "5 days" or "8/15-8/17".`,
+      ja: `「${raw}」は日付か別の数字のようです。今回の旅は何日くらいの予定ですか？たとえば「5日間」や「8/15-8/17」と返信してください。`,
+      ko: `"${raw}"라고 답하신 건 날짜나 다른 숫자 같아요. 이번 여행은 며칠 정도 생각하세요? 예를 들어 "5일"이나 "8/15-8/17"처럼 답해 주세요.`,
+    },
+  };
+  return copy[kind][locale];
+}
+
+function bareNumberClarify(
+  kind: BareNumberClarifyKind,
+  raw: string,
+  zh: string,
+  locale?: Locale,
+): string {
+  const resolved = locale ?? effectiveAppLocale();
+  return resolved === "zh-TW" ? zh : foreignBareNumberClarify(kind, raw, resolved);
+}
 
 /** Minimal pending shape — avoids circular import with destination-pending-question. */
 export type BareNumberPendingQuestion = {
@@ -67,6 +107,8 @@ export type BareNumberPendingContext = {
   pendingQuestionAlias?: string;
   conversationStage?: string | null;
   tripDays?: number | null;
+  /** Reply locale for clarificationReply; defaults to the effective App locale. */
+  locale?: Locale;
 };
 
 function normalizeDigits(text: string): string {
@@ -173,7 +215,12 @@ export function resolveBareNumberByPendingQuestion(
       value,
       resolvedAs: "needs_date_or_days_clarification",
       confidence: "high",
-      clarificationReply: `你回的「${value}」是指 ${value} 號出發，還是想玩 ${value} 天？`,
+      clarificationReply: bareNumberClarify(
+        "date_or_days",
+        String(value),
+        `你回的「${value}」是指 ${value} 號出發，還是想玩 ${value} 天？`,
+        context.locale,
+      ),
     };
   }
 
@@ -272,7 +319,12 @@ export function parseTripDaysFromPendingReply(
         confidence: "high",
       });
       return {
-        clarificationReply: `你回的「${t}」是指出發日期，還是想玩幾天？可以回例如「3天」或「8/15-8/17」。`,
+        clarificationReply: bareNumberClarify(
+          "calendar_or_days",
+          t,
+          `你回的「${t}」是指出發日期，還是想玩幾天？可以回例如「3天」或「8/15-8/17」。`,
+          context?.locale,
+        ),
       };
     }
   }
@@ -328,7 +380,12 @@ export function parseTripDaysFromPendingReply(
   // Bare integer above the itinerary duration contract — do not auto-resolve.
   if (bare > MAX_ITINERARY_DAYS) {
     return {
-      clarificationReply: `你回的「${bare}」比較像日期或別的數字。這趟大概想玩幾天？例如回「5天」或「8/15-8/17」。`,
+      clarificationReply: bareNumberClarify(
+        "too_large",
+        String(bare),
+        `你回的「${bare}」比較像日期或別的數字。這趟大概想玩幾天？例如回「5天」或「8/15-8/17」。`,
+        context?.locale,
+      ),
     };
   }
 

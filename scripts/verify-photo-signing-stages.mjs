@@ -1,3 +1,4 @@
+import "./verify-netguard-full.mjs";
 import assert from 'node:assert/strict';
 import fs from 'node:fs';import path from 'node:path';import os from 'node:os';
 import {execFileSync} from 'node:child_process';import {pathToFileURL} from 'node:url';import {build} from 'esbuild';

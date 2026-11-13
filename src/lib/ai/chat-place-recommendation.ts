@@ -130,6 +130,7 @@ import {
 import type { ChatPlaceSearchContext } from "@/lib/ai/chat-place-search-context";
 import {
   filterPlacesByDestinationGuard,
+  filterTextOnlyDestinationCountryMismatch,
   placesSearchContextPayload,
 } from "@/lib/ai/chat-place-search-context";
 import {
@@ -2787,6 +2788,11 @@ export async function buildNearbyPlaceRecommendation(params: {
       // already passed Nearby keyword/district/business-status eligibility.
     }
 
+    // 無座標目的地：查詢全部結束後、slice 之前先剔除地址明確屬於其他國家的同名地點，
+    // 讓後面的合格候選補上名額。picks 仍不超過 pickCount（Details 補資料次數不會增加）；
+    // 篩完為 0 走下方既有無結果分支。
+    places = filterTextOnlyDestinationCountryMismatch(places, searchContext);
+    foodDistricts = filterTextOnlyDestinationCountryMismatch(foodDistricts, searchContext);
     const restaurantPicks = places.slice(0, pickCount);
     const districtPick =
       foodDistricts.length > 0 && restaurantPicks.length < pickCount
@@ -2991,7 +2997,9 @@ export async function buildNearbyPlaceRecommendation(params: {
     // shortcut/profile flows keep their established continuation contract.
     const continuationRecommendations =
       !shortcut && !params.searchProfile
-        ? mapPlacesToRecommendations([...places, ...foodDistricts])
+        ? mapPlacesToRecommendations(
+            filterTextOnlyDestinationCountryMismatch([...places, ...foodDistricts], searchContext),
+          )
         : recommendations;
     if (shortcutDiagnostics) shortcutDiagnostics.renderableCount = recommendations.length;
 

@@ -6,6 +6,7 @@ import type { SearchAttempt } from "@/lib/ai/chat-place-recommendation";
 import {
   attractionTypeSearchTokens,
   cuisineSearchTokens,
+  RESTAURANT_CUISINES,
   shoppingTypeSearchTokens,
 } from "@/lib/ai/recommendation-refinement/parser";
 import type { PlaceRecommendationQueryBuildInput } from "@/lib/ai/place-recommendation-intent/types";
@@ -72,7 +73,18 @@ export function buildPlaceRecommendationQueries(
   const features = input.preferredFeatures ?? [];
   const attempts: SearchAttempt[] = [];
 
-  if (input.primaryType === "restaurant" || (subtypes.length > 0 && input.primaryType !== "cafe")) {
+  // 景點／室內／購物類別且 subtypes 不含菜系（例如博物館解析出的 culture、百貨公司的 department_store）時，
+  // 不走餐廳分支，落到下方對應的景點或購物分支。
+  const attractionWithoutCuisine =
+    (input.primaryType === "attraction" || input.primaryType === "indoor" || input.primaryType === "shopping") &&
+    !subtypes.some((id) => RESTAURANT_CUISINES.some((c) => c.id === id));
+  // 改道的請求不得多於原本餐廳分支的查詢數（每個 subtype 2 筆）。
+  const reroutedAttemptCap =
+    attractionWithoutCuisine && subtypes.length > 0 ? 2 * Math.min(subtypes.length, 3) : Infinity;
+  if (
+    input.primaryType === "restaurant" ||
+    (subtypes.length > 0 && input.primaryType !== "cafe" && !attractionWithoutCuisine)
+  ) {
     const included = ["restaurant", "japanese_restaurant", "food"];
     if (subtypes.length) {
       for (const id of subtypes.slice(0, 3)) {
@@ -156,7 +168,7 @@ export function buildPlaceRecommendationQueries(
         includedTypes: included,
       });
     }
-    return uniqQueries(attempts);
+    return uniqQueries(attempts).slice(0, reroutedAttemptCap);
   }
 
   if (
@@ -183,7 +195,7 @@ export function buildPlaceRecommendationQueries(
         includedTypes: included,
       });
     }
-    return uniqQueries(attempts);
+    return uniqQueries(attempts).slice(0, reroutedAttemptCap);
   }
 
   if (input.primaryType === "nightlife") {

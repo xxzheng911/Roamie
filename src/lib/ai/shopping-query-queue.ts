@@ -13,6 +13,10 @@ import type { ConversationRecommendationSession } from "@/lib/ai/conversation-re
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import { normalizePlaceName } from "@/lib/place-planning-memory";
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
+import type { Locale } from "@/lib/i18n/types";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import { displayDestinationForCopy } from "@/lib/ai/destination-locale-aliases";
 import {
   resolveShoppingSearchScope,
   type ShoppingSearchScope,
@@ -229,7 +233,17 @@ export const SHOPPING_NO_MORE_RECOMMENDATIONS_MESSAGE =
   "目前暫時找不到更多符合條件、且不重複的購物地點。你也可以指定想找百貨、地下街、Outlet 或特色商店，我再換一個方向幫你找。";
 
 /** Shown when the same destination+shopping session is already exhausted. */
-export function buildShoppingExhaustedFollowupMessage(destination: string): string {
+export function buildShoppingExhaustedFollowupMessage(
+  destination: string,
+  locale: Locale = effectiveAppLocale(),
+): string {
+  if (locale !== "zh-TW") {
+    const trimmed = destination.trim();
+    if (!trimmed) return chatRuntimeCopy("shoppingNoMore", locale);
+    return chatRuntimeCopy("shoppingExhaustedFollowup", locale, {
+      destination: displayDestinationForCopy(trimmed, undefined, locale),
+    });
+  }
   const label = destination.trim() || "這裡";
   return `${label}目前符合這組購物條件、且未重複的地點已經看完了。你可以指定想找百貨、地下街、Outlet 或特色商店，我再換一個方向幫你找。`;
 }

@@ -1,5 +1,7 @@
 import type { Locale } from "@/lib/i18n/types";
-import { displayDestinationForCopy } from "./destination-locale-aliases";
+import { applyKoParticles, displayDestinationForCopy, englishNameInSentence } from "./destination-locale-aliases";
+import { applyEnglishPlaceArticles } from "@/lib/i18n/en-place-articles";
+import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import {
   coerceTravelDestination,
@@ -186,7 +188,17 @@ function buildGenericFullItineraryDraft(
   return plans.slice(0, days);
 }
 
-export function itineraryGenerationStatusReply(ctx: CanonicalTravelContext): string | null {
+/** Destination shown in non-zh copy; the internal "這趟" fallback becomes the localized "this trip". */
+function shownLabel(label: string, locale: Locale, userText?: string): string {
+  return label === "這趟"
+    ? chatRuntimeCopy("tripFallback", locale)
+    : displayDestinationForCopy(label, userText, locale);
+}
+
+export function itineraryGenerationStatusReply(
+  ctx: CanonicalTravelContext,
+  locale: Locale = "zh-TW",
+): string | null {
   const destination = ctx.destination?.trim();
   const days = ctx.days;
   if (!destination || !days) return null;
@@ -197,6 +209,24 @@ export function itineraryGenerationStatusReply(ctx: CanonicalTravelContext): str
   const unresolved = (ctx.unresolvedNearbyExtensions ?? [])
     .map((e) => normalizeDestinationLabel(e))
     .filter(Boolean);
+  if (locale !== "zh-TW") {
+    const shown = englishNameInSentence(shownLabel(label, locale), locale);
+    if (unresolved.length) {
+      const ext = englishNameInSentence(displayDestinationForCopy(unresolved[0]!, undefined, locale), locale);
+      return applyKoParticles(
+        chatRuntimeCopy("generationStatusUnresolved", locale, { destination: shown, ext }),
+        [shown, ext],
+        locale,
+      );
+    }
+    if (nearby.length) {
+      const shownNearby = nearby
+        .map((e) => englishNameInSentence(displayDestinationForCopy(e, undefined, locale), locale))
+        .join(locale === "ja" ? "、" : ", ");
+      return chatRuntimeCopy("generationStatusNearby", locale, { destination: shown, nearby: shownNearby, days });
+    }
+    return chatRuntimeCopy("generationStatus", locale, { destination: shown, days });
+  }
   if (unresolved.length) {
     const ext = unresolved[0]!;
     return `好，我先排${label}行程；目前找到的${ext}地點還不足以組成完整一天，我會標示近郊待補，也可以請我重新補找${ext}。`;
@@ -233,15 +263,36 @@ export function buildFullItineraryDraftReply(
   ].join("\n");
 }
 
+/** Non-zh daily directions: same front / middle / tail split as the generic zh draft. */
+function buildForeignDailyRecommendationsReply(label: string, days: number, locale: Locale): string {
+  const shown = shownLabel(label, locale);
+  const front = Math.max(1, Math.floor(days / 3));
+  const middle = Math.max(1, Math.floor(days / 3));
+  const lines: string[] = [];
+  for (let day = 1; day <= days; day += 1) {
+    const key = day <= front ? "dailyRecFront" : day <= front + middle ? "dailyRecMiddle" : "dailyRecTail";
+    lines.push(chatRuntimeCopy(key, locale, { day, destination: shown }));
+  }
+  return [
+    chatRuntimeCopy("dailyRecHeader", locale, { destination: shown, days }),
+    "",
+    ...lines.map((line, index) => `${index + 1}. ${line}`),
+    "",
+    chatRuntimeCopy("dailyRecFooter", locale),
+  ].join("\n");
+}
+
 export function buildDailyRecommendationsReply(
   ctx: CanonicalTravelContext,
   interests: TripInterest[] = (ctx.selectedInterests as TripInterest[] | undefined) ?? [],
+  locale: Locale = "zh-TW",
 ): string | null {
   const destination = ctx.destination?.trim();
   const days = ctx.days;
   if (!destination || !days) return null;
 
   const label = normalizeDestinationLabel(destination);
+  if (locale !== "zh-TW") return buildForeignDailyRecommendationsReply(label, days, locale);
   const lines =
     label === "曼谷" || label.includes("曼谷")
       ? buildBangkokDailyRecommendations(days, interests)
@@ -351,11 +402,11 @@ export function buildItineraryPlanningReply(
   const days = ctx.days;
   if (locale !== "zh-TW") {
     const destination = displayDestinationForCopy(label, undefined, locale);
-    return {
-      en: `I’ll plan ${days} days in ${destination} around your preferences. Start with key sights, mix in food or shopping, and leave room for flexible time.\n\nWhich would you prefer?\nA. Build the full ${days}-day itinerary\nB. Recommend places for each day first`,
+    return applyEnglishPlaceArticles({
+      en: `I'll plan ${days} days in ${destination} around your preferences. Start with key sights, mix in food or shopping, and leave room for flexible time.\n\nWhich would you prefer?\nA. Build the full ${days}-day itinerary\nB. Recommend places for each day first`,
       ja: `${destination}の${days}日間をご希望に沿って考えます。主な観光地から始め、食事や買い物を組み合わせ、自由時間も確保します。\n\nどちらがよいですか？\nA. ${days}日間の行程を作成\nB. まず各日のおすすめスポットを紹介`,
       ko: `${destination} ${days}일 여행을 선호에 맞춰 계획할게요. 주요 명소부터 시작해 음식이나 쇼핑을 곁들이고 여유 시간도 남겨 둘게요.\n\n어느 쪽을 원하세요?\nA. ${days}일 전체 일정 만들기\nB. 먼저 날짜별 추천 장소 보기`,
-    }[locale];
+    }[locale], locale);
   }
   const mix = formatTripInterestMix(interests);
 

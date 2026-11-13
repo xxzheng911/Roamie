@@ -10,6 +10,8 @@ import {
 import { isExplicitNearbyQuery } from "@/lib/ai/chat-place-search-context";
 import type { GeocodeDestinationFn } from "@/lib/ai/destination-geocode";
 import type { Locale } from "@/lib/i18n/types";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
 import {
   enrichChatPlaceItemFromDetails,
   hasValidPlaceCoordinates,
@@ -236,12 +238,47 @@ function moodFitLine(name: string, mood: string): string {
   return `「${name}」值得停下來感受一下，我們可以從這裡往下細排。`;
 }
 
+function moodFitKey(mood: string): string {
+  if (/深夜散步|夜景/.test(mood)) return "placeDetailNightWalk";
+  if (/下雨天|雨/.test(mood)) return "placeDetailRainy";
+  if (/找咖啡|咖啡/.test(mood)) return "placeDetailCafe";
+  if (/想放空|放鬆/.test(mood)) return "placeDetailRelax";
+  if (/看海/.test(mood)) return "placeDetailSea";
+  return "placeDetailDefault";
+}
+
+/** Non-zh stay duration: keeps a non-Chinese estimate, else re-renders the suggested minute range. */
+function localizedStayDuration(place: ChatPlaceItem, mood: string, locale: Locale): string {
+  const estimated = place.estimatedTime?.trim();
+  if (estimated && !/[一-鿿]/.test(estimated)) return estimated;
+  const [, min, max] = suggestStayDuration(place, mood).match(/(\d+)～(\d+)/) ?? [];
+  const range = `${min}${locale === "ja" ? "〜" : "–"}${max}`;
+  return chatRuntimeCopy("placeDetailMinutes", locale, { range });
+}
+
 export function buildPlaceDetailReply(
   place: ChatPlaceItem,
   session: ChatPlanningSession,
+  locale: Locale = effectiveAppLocale(),
 ): string {
   const name = placeDisplayName(place);
   const mood = session.selectedMood ?? session.mood ?? session.travelContext?.mood ?? "";
+  if (locale !== "zh-TW") {
+    const reasonText = place.reason?.trim();
+    const lines = [chatRuntimeCopy(moodFitKey(mood), locale, { place: name })];
+    // Place reasons are generated content; only keep them when they are not Chinese-only text.
+    if (reasonText && (!/[一-鿿]/.test(reasonText) || (locale === "ja" && /[぀-ヿ]/.test(reasonText)))) {
+      lines.push(reasonText);
+    }
+    lines.push(
+      chatRuntimeCopy("placeDetailStay", locale, {
+        duration: localizedStayDuration(place, mood, locale),
+      }),
+      "",
+      chatRuntimeCopy("placeDetailAsk", locale),
+    );
+    return lines.join("\n");
+  }
   const duration = place.estimatedTime?.trim() || suggestStayDuration(place, mood);
   const reason = place.reason?.trim();
 
@@ -396,7 +433,24 @@ export function preparePlaceDetailNearbySession(
 export function buildPlaceDetailFollowUpReply(
   intent: PlaceDetailFollowUpIntent,
   session: ChatPlanningSession,
+  locale: Locale = effectiveAppLocale(),
 ): string | null {
+  if (locale !== "zh-TW") {
+    const place = session.placeDetailFocus
+      ? placeDisplayName(session.placeDetailFocus)
+      : chatRuntimeCopy("placeDetailThisPlace", locale);
+    const key =
+      intent === "add_to_trip"
+        ? "placeDetailAddToTrip"
+        : intent === "view_route"
+          ? "placeDetailViewRoute"
+          : intent === "nearby_cafe"
+            ? "placeDetailNearbyCafe"
+            : intent === "nearby_late_snack"
+              ? "placeDetailNearbyRestaurant"
+              : null;
+    return key ? chatRuntimeCopy(key, locale, { place }) : null;
+  }
   const name = session.placeDetailFocus
     ? placeDisplayName(session.placeDetailFocus)
     : "這個地點";

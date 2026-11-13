@@ -3,6 +3,7 @@ import type { SearchAttempt } from "@/lib/ai/chat-place-recommendation";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   dedupeCandidatePlaces,
+  evaluatePlannerPoolGate,
   isPlannerPoolReady,
   minCandidatePoolSize,
   PLANNING_RADIUS_STEPS_M,
@@ -111,7 +112,42 @@ export type ExpandPlacePoolParams = {
   excludePlaceIds?: string[];
   searchBatch: PoolExpansionSearchFn;
   targetCount?: number;
+  /** 同一次生成共用的搜尋預算；未提供時每次呼叫各自計算 */
+  queryBudget?: PoolExpansionQueryBudget;
 };
+
+/** 單次生成擴池最多送出的不重複 query（radius+query+types），只減少呼叫 */
+export const POOL_EXPANSION_QUERY_BUDGET = 120;
+/** 單次擴池連續幾批新增 0 筆就停止 */
+export const POOL_EXPANSION_MAX_ZERO_GAIN_BATCHES = 8;
+
+const DINING_EXPANSION_KEYS = new Set(["night_market", "cafe", "breakfast", "restaurant", "bakery"]);
+const DINING_SLOTS = new Set(["breakfast", "lunch", "cafe", "dinner", "evening"]);
+
+/** 依 pool gate 的缺額把「缺的類別」排前面；其餘維持原順序（穩定排序） */
+function prioritizeMissingCategories(places: PlaceResult[], days: number): PoolExpansionCategory[] {
+  const missing = evaluatePlannerPoolGate(places, days).missingSlots;
+  const needDining = missing.some((s) => DINING_SLOTS.has(s));
+  const needScenic = missing.includes("attraction");
+  if (!needDining && !needScenic) return POOL_EXPANSION_CATEGORIES;
+  if (needDining && needScenic) {
+    // 兩類都缺：景點、餐飲輪流，避免景點連續零新增時餐飲永遠輪不到
+    const dining = POOL_EXPANSION_CATEGORIES.filter((c) => DINING_EXPANSION_KEYS.has(c.key));
+    const scenic = POOL_EXPANSION_CATEGORIES.filter((c) => !DINING_EXPANSION_KEYS.has(c.key));
+    const out: PoolExpansionCategory[] = [];
+    for (let i = 0; i < Math.max(dining.length, scenic.length); i += 1) {
+      if (scenic[i]) out.push(scenic[i]);
+      if (dining[i]) out.push(dining[i]);
+    }
+    return out;
+  }
+  const isWanted = (c: PoolExpansionCategory) => DINING_EXPANSION_KEYS.has(c.key) === needDining;
+  return [...POOL_EXPANSION_CATEGORIES.filter(isWanted), ...POOL_EXPANSION_CATEGORIES.filter((c) => !isWanted(c))];
+}
+export type PoolExpansionQueryBudget = { seen: Set<string>; max: number };
+export function createPoolExpansionQueryBudget(): PoolExpansionQueryBudget {
+  return { seen: new Set(), max: POOL_EXPANSION_QUERY_BUDGET };
+}
 
 function collectedTripPlaceIds(places: PlaceResult[]): string[] {
   return places.map((p) => (p.id ?? "").trim()).filter(Boolean);
@@ -139,15 +175,28 @@ export async function expandPlacePoolUntilSufficient(
     `ready=${poolReady()}`,
   );
 
+  const budget = params.queryBudget ?? createPoolExpansionQueryBudget();
+  let zeroGainStreak = 0;
+  let stopped = false;
   const runBatch = async (
     attempts: SearchAttempt[],
     radiusM: number,
     tag: string,
   ): Promise<void> => {
-    if (poolReady() || shouldSkipPlanningPlacesApi()) return;
+    if (stopped || poolReady() || shouldSkipPlanningPlacesApi()) return;
+    const keyOf = (a: SearchAttempt) => `${radiusM}|${a.query}|${(a.includedTypes ?? []).join(",")}`;
+    // 同一次生成已送過的 query 結果相同（只會多排除已收錄地點），不重送
+    const fresh = attempts.filter((a) => !budget.seen.has(keyOf(a)));
+    if (!fresh.length) return;
+    if (budget.seen.size + fresh.length > budget.max) {
+      stopped = true;
+      logAiPipeline("[AI_POOL_EXPAND_BUDGET]", `sent=${budget.seen.size}`, `max=${budget.max}`);
+      return;
+    }
+    for (const a of fresh) budget.seen.add(keyOf(a));
     const before = realPool().length;
     const batch = await params.searchBatch({
-      attempts,
+      attempts: fresh,
       caller: `${params.caller}.${tag}.r${radiusM}`,
       radiusM,
       excludePlaceIds: [
@@ -157,7 +206,11 @@ export async function expandPlacePoolUntilSufficient(
     });
     pool = dedupeCandidatePlaces([...pool, ...batch]);
     const after = realPool().length;
-    if (after > before) {
+    if (after <= before) {
+      zeroGainStreak += 1;
+      if (zeroGainStreak >= POOL_EXPANSION_MAX_ZERO_GAIN_BATCHES) stopped = true;
+    } else {
+      zeroGainStreak = 0;
       logAiPipeline(
         "[AI_POOL_EXPAND_BATCH]",
         `tag=${tag}`,
@@ -169,7 +222,7 @@ export async function expandPlacePoolUntilSufficient(
   };
 
   for (const radiusM of PLANNING_RADIUS_STEPS_M) {
-    if (poolReady() || shouldSkipPlanningPlacesApi()) break;
+    if (stopped || poolReady() || shouldSkipPlanningPlacesApi()) break;
 
     logAiPipeline(
       "[AI_POOL_EXPAND_RADIUS]",
@@ -182,10 +235,10 @@ export async function expandPlacePoolUntilSufficient(
       await runBatch(buildInitialPoolSearchAttempts(params.label), radiusM, "initial");
     }
 
-    for (const category of POOL_EXPANSION_CATEGORIES) {
-      if (poolReady() || shouldSkipPlanningPlacesApi()) break;
+    for (const category of prioritizeMissingCategories(realPool(), params.days)) {
+      if (stopped || poolReady() || shouldSkipPlanningPlacesApi()) break;
       for (const variant of POOL_EXPANSION_VARIANTS) {
-        if (poolReady() || shouldSkipPlanningPlacesApi()) break;
+        if (stopped || poolReady() || shouldSkipPlanningPlacesApi()) break;
         const attempts = buildPoolExpansionAttempts(params.label, category, variant);
         await runBatch(attempts, radiusM, `${category.key}.${variant}`);
       }

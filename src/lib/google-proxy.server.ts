@@ -69,7 +69,7 @@ function handleLegacyGoogleProxy(
       if (
         !(
           await limiter.limit({
-            key: `google:ip:${request.headers.get("cf-connecting-ip") ?? "unknown"}`,
+            key: `google:ip:${resolveTrustedIp(request) ?? "unknown"}`,
           })
         ).success
       )

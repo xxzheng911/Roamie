@@ -9,12 +9,50 @@
  * - Greeting stages: 15–20 / 8–14 / 1–7 / 0
  *
  * 執行：npm run verify:credits
+ *
+ * 網路安全：src/lib/credits/index.ts 會連帶載入 @/integrations/supabase/client（延遲建立的真 client）。
+ * 載入前先攔截全域 fetch／WebSocket／http(s)／net／tls 並清掉金鑰類環境變數；任何網路嘗試都記錄並讓本腳本 FAIL。
+ * 本腳本的斷言都不需要網路（純函式與原始碼比對）。
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
+
+for (const k of Object.keys(process.env)) {
+  if (/SUPABASE|OPENAI|GOOGLE_|SERVICE_ROLE|REVENUECAT|STRIPE|UNSPLASH|SECRET/i.test(k)) delete process.env[k];
+}
+const NET_BLOCKED = [];
+globalThis.fetch = async (input) => {
+  NET_BLOCKED.push(String(input?.url ?? input).slice(0, 120));
+  throw new TypeError("NETWORK_BLOCKED");
+};
+globalThis.WebSocket = class {
+  constructor(u) {
+    NET_BLOCKED.push("ws:" + String(u).slice(0, 80));
+    throw new Error("NETWORK_BLOCKED ws");
+  }
+};
+{
+  const require = createRequire(import.meta.url);
+  const trap = (kind) => () => {
+    NET_BLOCKED.push(kind);
+    throw new Error("NETWORK_BLOCKED " + kind);
+  };
+  for (const m of ["http", "https"]) {
+    const mod = require(m);
+    mod.request = trap(m + ".request");
+    mod.get = trap(m + ".get");
+  }
+  const net = require("net");
+  net.connect = trap("net.connect");
+  net.createConnection = trap("net.createConnection");
+  require("tls").connect = trap("tls.connect");
+}
+
+// Dynamic import: runs only after the network traps above are installed.
+const {
   buildCreditsGreetingContent,
   CREDITS_COSTS,
   FREE_MONTHLY_CREDITS,
@@ -22,7 +60,7 @@ import {
   resolveCreditsFeatureFlag,
   resolveCreditsGreetingStage,
   setCreditsFeatureEnabledOverride,
-} from "../src/lib/credits/index.ts";
+} = await import("../src/lib/credits/index.ts");
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "..");
@@ -160,4 +198,11 @@ test("developer debug panel: override + subscription Auto/Force", () => {
   assert.match(debugTs, /Never mutates formal/);
 });
 
+// Let any lazily scheduled client work (auth timers, etc.) surface before the network check.
+await new Promise((r) => setTimeout(r, 50));
+test("no network request was attempted (fetch / WebSocket / http(s) / net / tls trapped)", () => {
+  assert.deepEqual(NET_BLOCKED, []);
+});
+
 console.log("\n[verify:credits] OK\n");
+process.exit(0);

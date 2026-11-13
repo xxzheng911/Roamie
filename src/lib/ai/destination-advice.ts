@@ -1,7 +1,24 @@
 import { traceCombinationAdviceReturn, type AdviceReturnObservation } from "./combination-selection-diagnostics";
 import { resolvePlanningDestination } from "./resolved-trip-destination";
 import { resolveCandidateDisplay } from "./destination-localization";
-import { displayDestinationForCopy } from "./destination-locale-aliases";
+import { applyKoParticles, displayDestinationForCopy } from "./destination-locale-aliases";
+import { localizeCombinationThemeTitle } from "./combination-theme-titles";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import {
+  combinationPartialModifyFollowUp,
+  isCombinationChoiceTurn,
+  isCombinationPartialModifyReply,
+  isCombinationRefWithDayReply,
+  isDayOrdinalNegatedModifyReply,
+  combinationRefDayConfirmCopy,
+  combinationConfirmContextKey,
+  isCombinationDateCorrectionReply,
+  combinationDatesUpdatedCopy,
+  isCombinationMonthOnlyReply,
+  combinationMonthUpdatedCopy,
+  combinationMonthUnchangedCopy,
+} from "@/lib/ai/combination-partial-modify-reply";
+import { resolveCombinationRefWithDaySelection, shownCombinationPickText } from "@/lib/ai/destination-pending-question";
 import { planningContextText } from "@/lib/i18n/planning-context-copy";
 import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
 import type { ChatPlanningSession, PlanningShownCandidate } from "@/lib/chat-session";
@@ -27,6 +44,8 @@ import {
   parseDestinationFromText,
   parseDestinationSelectionFromText,
   resolveDestinationFromText,
+  categorySwitchSearchText,
+  sameHanPlaceVariant,
 } from "@/lib/ai/trip-planning-context";
 import { isTripAddPlaceSession } from "@/lib/trip/trip-add-place-session";
 import {
@@ -60,6 +79,7 @@ import {
   pendingQuestionForAskDays,
 } from "@/lib/ai/city-days-planning";
 import { buildWeatherConstraintAcknowledgement } from "@/lib/ai/weather-planning-reply";
+import { parseMonthNumber } from "@/lib/ai/season-response-guardrail";
 import {
   buildScenicMonthPlanningReply,
   buildScenicMonthPlanningResult,
@@ -82,6 +102,7 @@ import {
   logTripIntentScopeSummary,
 } from "@/lib/ai/destination-scope";
 import { resolveSuggestedTripDates, suggestedTripDateContextPatch } from "@/lib/ai/resolve-suggested-trip-dates";
+import { parseTravelDateRangeFromText } from "@/lib/ai/parse-travel-date-range";
 import {
   hasUserSpecifiedTravelMonth,
   isBestSeasonQuestion,
@@ -153,7 +174,10 @@ import {
   hasDestinationCombinations,
   hasDestinationPlanningBasics,
   isSoftAcceptAllCombinationsReply,
+  isUserAllOrAutoCombinationReply,
+  isRejectAllCombinationsReply,
   logChatDestinationScopeLock,
+  parseCombinationSelectionIndices,
   resolveSelectedCombinations,
   type CombinationSelectionAllowlist,
 } from "@/lib/ai/destination-combination-suggestions";
@@ -232,6 +256,13 @@ export type DestinationAdviceResult = {
   planningShownCandidates?: PlanningShownCandidate[];
   planningSuggestionEntryPoint?: PlanningSuggestionEntryPoint;
 };
+
+/** Inclusive day count of an ISO start / end range, or undefined. */
+function isoRangeDayCount(start?: string, end?: string): number | undefined {
+  if (!start || !end || !/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) return undefined;
+  const n = Math.round((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86_400_000) + 1;
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
 
 function inferPlanningSuggestionEntryPoint(
   session: ChatPlanningSession,
@@ -411,8 +442,9 @@ export { isFlexiblePreferenceReply } from "@/lib/ai/destination-pending-question
 function buildItineraryGenerationAdvice(
   ctx: CanonicalTravelContext,
   extra?: Partial<CanonicalTravelContext>,
+  locale?: import("@/lib/i18n/types").Locale,
 ): DestinationAdviceResult | null {
-  const reply = itineraryGenerationStatusReply(ctx);
+  const reply = itineraryGenerationStatusReply(ctx, locale ?? effectiveAppLocale());
   if (!reply) return null;
   const label = ctx.destination ? normalizeDestinationLabel(ctx.destination) : undefined;
   return {
@@ -434,8 +466,9 @@ function allowlistContextPatch(
   dest: string,
   days: number,
   labelList: string,
+  shownOffered?: CanonicalTravelContext["offeredCombinations"],
 ): Partial<CanonicalTravelContext> {
-  const offered = buildOfferedCombinationsForSession(dest).map((combo) => {
+  const offered = (shownOffered ?? buildOfferedCombinationsForSession(dest)).map((combo) => {
     const isSelected = allowlist.selectedCombinationIds.includes(combo.id);
     return {
       ...combo,
@@ -508,6 +541,24 @@ function buildAllowlistFromLockedContext(
   );
 }
 
+/** 「全部／都不錯／1、3」: ids by position in the session's shown list (never the re-derived source list). */
+function resolveShownCombinationSelection(
+  ctx: Pick<CanonicalTravelContext, "offeredCombinations">,
+  dest: string,
+  userText: string,
+): ReturnType<typeof resolveSelectedCombinationAuthority> | null {
+  const shown = ctx.offeredCombinations ?? [];
+  // 「全部，也想去鎌倉」: all-select is the shown list before the other-city check (as the pending flow);
+  // the other city stays with the nearby-extension flow.
+  const all = isUserAllOrAutoCombinationReply(userText);
+  const pickText = all && shown.length ? "" : shownCombinationPickText(userText, dest);
+  if (pickText == null) return null;
+  const ids = all && shown.length ? shown.map((c) => c.id) : parseCombinationSelectionIndices(pickText, shown.length).map((i) => shown[i]!.id);
+  if (!ids.length) return null;
+  const selectionSource = !all ? "user_indexed" : isSoftAcceptAllCombinationsReply(userText) ? "all_selected_by_user" : "user_all_or_auto";
+  return resolveSelectedCombinationAuthority({ selectedCombinationIds: ids, offeredCombinations: shown, selectionSource }, dest);
+}
+
 /**
  * Combination selection → GENERATING_ITINERARY.
  * Lock allowlist on context; do NOT attach place cards to the chat reply.
@@ -521,7 +572,16 @@ function buildCombinationSelectionGenerationAdvice(params: {
   locale?: import("@/lib/i18n/types").Locale;
 }): DestinationAdviceResult | null {
   const { ctx, dest, days, userText, titleFallback, locale } = params;
+  const shown = ctx.offeredCombinations ?? [];
+  // Confirm turn (「幫我生成」, empty userText): the confirmed titles came from the shown list — map them back there.
+  const titleIds = !userText.trim() && titleFallback?.length ? shown.filter((c) => titleFallback.includes(c.title)).map((c) => c.id) : [];
+  const shownAuthority =
+    resolveShownCombinationSelection(ctx, dest, userText) ??
+    (titleIds.length
+      ? resolveSelectedCombinationAuthority({ selectedCombinationIds: titleIds, offeredCombinations: shown, selectionSource: "user_indexed" }, dest)
+      : null);
   const allowlist =
+    (shownAuthority?.ok ? shownAuthority.allowlist : null) ??
     buildCombinationSelectionAllowlist(dest, userText) ??
     (titleFallback?.length ? buildCombinationAllowlistFromTitles(dest, titleFallback) : null);
   if (!allowlist?.allowedPlaceNames.length) return null;
@@ -529,7 +589,7 @@ function buildCombinationSelectionGenerationAdvice(params: {
   const labelList = allowlist.allowedTitles.join("、") || "建議組合";
   const nearbyExtensions = parseNearbyExtensionsFromText(userText, dest);
   const patch: Partial<CanonicalTravelContext> = {
-    ...allowlistContextPatch(allowlist, dest, days, labelList),
+    ...allowlistContextPatch(allowlist, dest, days, labelList, shownAuthority?.ok ? shown : undefined),
     ...(nearbyExtensions.length
       ? {
           nearbyExtensions,
@@ -547,6 +607,7 @@ function buildCombinationSelectionGenerationAdvice(params: {
       ...(nearbyExtensions.length ? { nearbyExtensions } : {}),
     },
     patch,
+    locale,
   );
   if (!gen) return null;
 
@@ -564,16 +625,27 @@ function buildCombinationSelectionGenerationAdvice(params: {
     `selectedCombinationIds=[${allowlist.selectedCombinationIds.join(",")}]`,
   );
 
+  const shownLocale = locale ?? effectiveAppLocale();
+  const shownStyles = allowlist.allowedTitles.length
+    ? shownLocale === "zh-TW"
+      ? labelList
+      : allowlist.allowedTitles
+          .map((title) => localizeCombinationThemeTitle(title, shownLocale))
+          .join(shownLocale === "ja" ? "、" : ", ")
+    : chatRuntimeCopy("suggestedMix", locale);
+  const shownDest = displayDestinationForCopy(dest, userText, shownLocale);
   return {
     ...gen,
     reply: [
-      chatRuntimeCopy("combinationFocusDays", locale, {
-        styles: allowlist.allowedTitles.length
-          ? labelList
-          : chatRuntimeCopy("suggestedMix", locale),
-        destination: dest,
-        days,
-      }),
+      applyKoParticles(
+        chatRuntimeCopy("combinationFocusDays", locale, {
+          styles: shownStyles,
+          destination: shownDest,
+          days,
+        }),
+        [shownStyles, shownDest],
+        shownLocale,
+      ),
       chatRuntimeCopy("planningInProgress", locale),
     ].join("\n"),
     // Never render candidate place cards during GENERATING_ITINERARY.
@@ -599,6 +671,7 @@ function resolveItineraryAbSelectionAdvice(
   ctx: CanonicalTravelContext,
   userText: string,
   pending: PendingQuestion,
+  locale?: import("@/lib/i18n/types").Locale,
 ): DestinationAdviceResult | null {
   const dest = coerceTravelDestination(pending.baseDestination ?? ctx.destination);
 
@@ -625,6 +698,7 @@ function resolveItineraryAbSelectionAdvice(
         destinationCountry: pending.destinationCountry ?? ctx.destinationCountry,
         days: ctx.days,
       },
+      locale,
     );
     if (gen) {
       return { ...gen, pendingQuestion: undefined };
@@ -732,6 +806,7 @@ function resolveAcceptPreviousSuggestionsAdvice(
   ctx: CanonicalTravelContext,
   session: ChatPlanningSession,
   userText: string,
+  locale?: import("@/lib/i18n/types").Locale,
 ): DestinationAdviceResult | null {
   if (!isAcceptPreviousSuggestionsIntent(userText, ctx, session)) return null;
 
@@ -755,12 +830,18 @@ function resolveAcceptPreviousSuggestionsAdvice(
   if (
     awaitingCombinations &&
     isSoftAcceptAllCombinationsReply(userText) &&
-    hasDestinationCombinations(destination)
+    hasDestinationCombinations(destination) &&
+    // 「好」answering the 「第2組的第一天改一下」confirm question: the confirmed combinations, not all.
+    !session.lastResolvedPendingQuestion?.confirmCombinationTitles?.length
   ) {
-    const allowlist = buildCombinationSelectionAllowlist(destination, userText);
+    const shownAuthority = resolveShownCombinationSelection(ctx, destination, userText);
+    const allowlist = shownAuthority?.ok
+      ? shownAuthority.allowlist
+      : buildCombinationSelectionAllowlist(destination, userText);
     if (!allowlist?.allowedPlaceNames.length) return null;
     const labelList = allowlist.allowedTitles.join("、") || "建議組合";
-    const patch = allowlistContextPatch(allowlist, destination, days, labelList);
+    const shownList = shownAuthority?.ok ? ctx.offeredCombinations : undefined;
+    const patch = allowlistContextPatch(allowlist, destination, days, labelList, shownList);
     logAiPipeline(
       "[COMBINATION_SELECTION_PARSED]",
       `rawInput=${userText.trim()}`,
@@ -774,10 +855,22 @@ function resolveAcceptPreviousSuggestionsAdvice(
       `selectionSource=${allowlist.selectionSource ?? "all_selected_by_user"}`,
       `deferredGeneration=true`,
     );
+    const shownLocale = locale ?? effectiveAppLocale();
+    const shownStyles =
+      shownLocale === "zh-TW" || !allowlist.allowedTitles.length
+        ? shownLocale === "zh-TW"
+          ? labelList
+          : chatRuntimeCopy("suggestedMix", shownLocale)
+        : allowlist.allowedTitles
+            .map((title) => localizeCombinationThemeTitle(title, shownLocale))
+            .join(shownLocale === "ja" ? "、" : ", ");
     return {
       reply: [
-        `好，我先記下全部組合：${labelList}。`,
-        `回覆「幫我生成」就可以開始排 ${destination} ${days} 天行程。`,
+        chatRuntimeCopy("combinationAllLocked", shownLocale, { styles: shownStyles }),
+        chatRuntimeCopy("combinationAllLockedGenerate", shownLocale, {
+          destination: displayDestinationForCopy(destination, userText, shownLocale),
+          days,
+        }),
       ].join("\n"),
       triggerItineraryGeneration: false,
       recommendations: undefined,
@@ -804,6 +897,7 @@ function resolveAcceptPreviousSuggestionsAdvice(
       dest: destination,
       days,
       userText,
+      locale,
     });
     if (comboGen) {
       return {
@@ -826,6 +920,7 @@ function resolveAcceptPreviousSuggestionsAdvice(
       tripPurpose: "create_itinerary_from_accepted",
       conversationState: "ready_for_itinerary",
     },
+    locale,
   );
   if (!gen) return null;
 
@@ -836,11 +931,27 @@ function resolveAcceptPreviousSuggestionsAdvice(
   };
 }
 
+/**
+ * The last finalized discovery scope, only when it belongs to this turn's destination (the value is
+ * module-wide: a cached-combination turn for 雪梨 must never read 熱海's scope). Otherwise null, so
+ * the turn's own context fields are used.
+ */
+function finalizedScopePatchFor(destination: string): ReturnType<typeof getLastFinalizedDestinationScopePatch> {
+  const patch = getLastFinalizedDestinationScopePatch();
+  if (!patch?.destination?.trim() || !destination?.trim()) return null;
+  const same =
+    normalizeDestinationLabel(patch.destination) === normalizeDestinationLabel(destination) ||
+    sameHanPlaceVariant(patch.destination, destination);
+  return same ? patch : null;
+}
+
 function resolveDestinationCombinationsAdvice(
   ctx: CanonicalTravelContext,
   session: ChatPlanningSession,
   locale?: import("@/lib/i18n/types").Locale,
   observation?: AdviceReturnObservation,
+  /** User's own wording this turn; display-only fallback for the destination name. */
+  userText?: string,
 ): DestinationAdviceResult | null {
   const destination = resolveContextDestination(ctx, session);
   const days = resolveValidTripDays({
@@ -896,6 +1007,7 @@ function resolveDestinationCombinationsAdvice(
   });
   const startDate = suggestedDates?.startDate ?? ctx.startDate;
   const endDate = suggestedDates?.endDate ?? ctx.endDate;
+  const datePatch = suggestedDates ? suggestedTripDateContextPatch(suggestedDates) : {};
 
   const hasExactDate =
     suggestedDates?.confirmed === true &&
@@ -933,8 +1045,11 @@ function resolveDestinationCombinationsAdvice(
       tripDays: days,
       startDate: hasExactDate ? startDate : undefined,
       endDate: hasExactDate ? endDate : undefined,
+      locale,
+      userText,
     }),
     tentativeDates: Boolean(hasExactDate && startDate && endDate),
+    userText,
   });
   if (!suggestion) {
     const failure = getLastCombinationDiscoveryFailure();
@@ -959,7 +1074,7 @@ function resolveDestinationCombinationsAdvice(
     // Preserve destination / dates so refresh only re-runs discovery.
     // Legacy blocker only suppresses old templates — failure reason must reflect
     // real place/combination shortage, not localization English fallback.
-    const scopePatch = getLastFinalizedDestinationScopePatch();
+    const scopePatch = finalizedScopePatchFor(destination);
     return {
       reply: buildDestinationRecommendationFailedMessage(
         destination,
@@ -984,7 +1099,7 @@ function resolveDestinationCombinationsAdvice(
         destinationCity: scopePatch?.destinationCity ?? ctx.destinationCity,
         destinationRegion: scopePatch?.destinationRegion ?? ctx.destinationRegion,
         days,
-        ...(suggestedDates ? suggestedTripDateContextPatch(suggestedDates) : {}),
+        ...datePatch,
         tripPurpose: "combination_discovery_failed",
         conversationState: "awaiting_preference",
         lastItineraryFailure: failure
@@ -1022,7 +1137,7 @@ function resolveDestinationCombinationsAdvice(
   );
   logAiPipeline("[DIRECT_ITINERARY_GENERATION_BLOCKED]", "reason=no_combination_selected");
 
-  const successScope = getLastFinalizedDestinationScopePatch();
+  const successScope = finalizedScopePatchFor(destination);
   const resolvedCountry =
     successScope?.destinationCountry ??
     ctx.destinationCountry ??
@@ -1051,7 +1166,7 @@ function resolveDestinationCombinationsAdvice(
         : ctx.destinationRegion,
       destinationCountry: resolvedCountry,
       days,
-      ...(suggestedDates ? suggestedTripDateContextPatch(suggestedDates) : {}),
+      ...datePatch,
       tripPurpose: "combination_suggestions_offered",
       conversationState: "awaiting_preference",
       planningStage: "recommendations_generated",
@@ -1066,6 +1181,7 @@ function resolveCreateItineraryAdvice(
   ctx: CanonicalTravelContext,
   session: ChatPlanningSession,
   userText: string,
+  locale?: import("@/lib/i18n/types").Locale,
 ): DestinationAdviceResult | null {
   const planMode = parseItineraryPlanModeIntent(userText);
   const hasCreateIntent = isCreateItineraryIntent(userText) || planMode === "full_itinerary";
@@ -1128,6 +1244,7 @@ function resolveCreateItineraryAdvice(
           ...allowlistContextPatch(locked, contextDestination, contextDays, labelList),
           destinationCountry: ctx.destinationCountry ?? session.travelContext?.destinationCountry,
         },
+        locale,
       );
       if (gen) return gen;
     }
@@ -1136,6 +1253,7 @@ function resolveCreateItineraryAdvice(
       dest: contextDestination,
       days: contextDays,
       userText,
+      locale,
     });
     if (comboGen) {
       logAiPipeline(
@@ -1151,7 +1269,7 @@ function resolveCreateItineraryAdvice(
       `destination=${contextDestination}`,
     );
     return {
-      reply: "我還需要你確認想用哪些組合，才能幫你生成行程。回覆組合編號，或回「都不錯」全選。",
+      reply: chatRuntimeCopy("combinationSelectionRequired", locale ?? effectiveAppLocale()),
       triggerItineraryGeneration: false,
       pendingQuestion: pendingQuestionForCombinationChoice(
         contextDestination,
@@ -1175,6 +1293,7 @@ function resolveCreateItineraryAdvice(
       days: contextDays,
       destinationCountry: ctx.destinationCountry ?? session.travelContext?.destinationCountry,
     },
+    locale,
   );
 }
 
@@ -1546,13 +1665,26 @@ function buildJapanCityReply(city: string, userText?: string): string | null {
   return null;
 }
 
-function buildCountryBestTimeReply(country: string): string | null {
+function buildCountryBestTimeReply(
+  country: string,
+  locale?: import("@/lib/i18n/types").Locale,
+): string | null {
   const advice = COUNTRY_ADVICE[country];
   if (!advice?.cityOptions?.length) return null;
+  // Curated best-time lines are zh copy; other locales reuse the localized season builder
+  // (same as resolveBestTravelTimeAdvice's country branch).
+  const introLines =
+    !locale || locale === "zh-TW"
+      ? advice.bestTime
+      : buildBestTravelTimeReply(country, { skipFollowUpQuestion: true, locale })
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean);
   const built = buildCountryCitySelectionReply({
+    locale,
     country,
     cityOptions: resolveCountryCityOptions(country),
-    introLines: advice.bestTime,
+    introLines,
   });
   return built?.reply ?? null;
 }
@@ -1793,15 +1925,39 @@ export function buildCountryCitySelectionReply(params: {
   return { reply, cityOptions, endingType: "city_selection" };
 }
 
-function buildCountrySelectionReply(country: string): string | null {
+function buildCountrySelectionReply(
+  country: string,
+  locale?: import("@/lib/i18n/types").Locale,
+): string | null {
   const options = resolveCountryCityOptions(country);
   if (!options.length && !isKnownCountryLabel(country)) return null;
   return (
     buildCountryCitySelectionReply({
+      locale,
       country,
       cityOptions: options,
     })?.reply ?? null
   );
+}
+
+/**
+ * Last-resort country reply when no city options exist. zh-TW returns `zhReply()` (HEAD copy);
+ * other locales use the planning-context month / country line + city question.
+ */
+function countryCityFallbackReply(
+  country: string,
+  monthNum: number | null,
+  locale: import("@/lib/i18n/types").Locale | undefined,
+  zhReply: () => string,
+): string {
+  const resolved = locale ?? effectiveAppLocale();
+  if (resolved === "zh-TW") return zhReply();
+  const shown = displayDestinationForCopy(country, undefined, resolved);
+  return [
+    planningContextText(monthNum ? "month" : "country", resolved, shown, monthNum ?? undefined),
+    "",
+    planningContextText("cityQuestion", resolved, shown),
+  ].join("\n");
 }
 
 function countryRegionOptions(country: string): string[] {
@@ -1834,15 +1990,21 @@ function buildCountryCityCollectAdvice(
     if (!isKnownCountryLabel(label) && !isCountryLevelDestination(label)) {
       return null;
     }
-    const fallbackReply = sanitizeCountryCitySelectionReply(
-      [
-        withMonth && monthNum
-          ? `${label} ${monthNum} 月通常體感較舒適，不同地區的天氣與季節特色可能會有差異。`
-          : `好，${label}可以玩的城市和地區不少。`,
-        "",
-        COUNTRY_CITY_SELECTION_LAST_FALLBACK_ENDING,
-      ].join("\n"),
+    const fallbackReply = countryCityFallbackReply(
       label,
+      withMonth && monthNum ? monthNum : null,
+      opts?.locale,
+      () =>
+        sanitizeCountryCitySelectionReply(
+          [
+            withMonth && monthNum
+              ? `${label} ${monthNum} 月通常體感較舒適，不同地區的天氣與季節特色可能會有差異。`
+              : `好，${label}可以玩的城市和地區不少。`,
+            "",
+            COUNTRY_CITY_SELECTION_LAST_FALLBACK_ENDING,
+          ].join("\n"),
+          label,
+        ),
     );
     logAiPipeline("[COUNTRY_CITY_OPTIONS_EMPTY_BLOCKED]", `country=${label}`);
     logAiPipeline(
@@ -1919,6 +2081,7 @@ function buildScenicAdviceReply(
   userText: string,
   ctx?: CanonicalTravelContext,
   weather?: CanonicalTravelContext["weather"],
+  locale?: import("@/lib/i18n/types").Locale,
 ): string | null {
   if (detectMustVisitIntent(userText) || detectPlaceRecommendationIntent(userText)) {
     return null;
@@ -1932,7 +2095,20 @@ function buildScenicAdviceReply(
       context: { ...ctx, destination: label },
       userText,
       weather: weather ?? ctx.weather ?? null,
+      locale,
     });
+  }
+
+  const resolvedLocale = locale ?? effectiveAppLocale();
+  if (resolvedLocale !== "zh-TW") {
+    const scenicKeys: Record<string, string> = {
+      阿里山: "scenicAlishan",
+      日月潭: "scenicSunMoonLake",
+      太魯閣: "scenicTaroko",
+      富士山: "scenicFuji",
+    };
+    const key = scenicKeys[label];
+    return key ? chatRuntimeCopy(key, resolvedLocale) : null;
   }
 
   if (label === "阿里山") {
@@ -1995,6 +2171,7 @@ function buildCityAdviceReply(city: string, country?: string, userText?: string)
 function resolvePlanningFollowUpReply(
   ctx: CanonicalTravelContext,
   userText: string,
+  locale?: import("@/lib/i18n/types").Locale,
 ): DestinationAdviceResult | null {
   const followUp = parsePlanningFollowUpIntent(userText);
   if (!followUp) return null;
@@ -2003,7 +2180,7 @@ function resolvePlanningFollowUpReply(
   if (!destination) return null;
 
   if (followUp === "full_itinerary") {
-    const gen = buildItineraryGenerationAdvice({ ...ctx, destination });
+    const gen = buildItineraryGenerationAdvice({ ...ctx, destination }, undefined, locale);
     if (gen) return gen;
   }
 
@@ -2148,6 +2325,71 @@ function resolveBestTravelTimeAdvice(
   };
 }
 
+/**
+ * 「溫泉」「推薦溫泉」「想去海邊」 while a country-level trip (日本) waits on its region choice: a
+ * category search needs a city, so the existing region choice is asked again (same reply builder,
+ * pending kept, no Places / geocode) instead of the discovery failure copy.
+ */
+function resolveCountryLevelCategoryRegionAdvice(
+  ctx: CanonicalTravelContext,
+  session: ChatPlanningSession,
+  userText: string,
+  locale: import("@/lib/i18n/types").Locale | undefined,
+): DestinationAdviceResult | null {
+  const pending = session.pendingQuestion;
+  if (pending?.type !== "region_choice") return null;
+  const t = userText.trim();
+  const category =
+    categorySwitchSearchText(t) ??
+    categorySwitchSearchText(t.replace(/^(?:請|请)?(?:推薦|推荐|介紹|介绍)(?:一下|一些|幾個|几个)?/u, ""));
+  if (!category) return null;
+  const country =
+    pending.destinationCountry ?? pending.baseDestination ?? ctx.destinationCountry ?? ctx.destination;
+  if (!country || !isCountryLevelDestination(country)) return null;
+  if (resolveFreeFormRegionChoice(t, pending)) return null;
+  const built = buildCountryCityCollectAdvice(country, ctx, t, { locale });
+  if (!built?.reply) return null;
+  return { reply: built.reply, pendingQuestion: pending };
+}
+
+/**
+ * 「박물관에 가고 싶어」「我想泡溫泉」"I'm going to Market" after generation failed (activity_choice
+ * 「重新生成」) or on the refresh-recommendations ask: a pure category wish gets the same
+ * "no such combination" answer as the combination choice, pending kept, instead of a rediscovery
+ * that ends in the failure copy. Lexical only; no Places / geocode.
+ */
+function resolveFailedStageCategoryWishAdvice(
+  ctx: CanonicalTravelContext,
+  session: ChatPlanningSession,
+  userText: string,
+  locale: import("@/lib/i18n/types").Locale | undefined,
+): DestinationAdviceResult | null {
+  const pending = session.pendingQuestion;
+  if (!pending) return null;
+  const options = pending.options ?? [];
+  const failedGeneration =
+    pending.type === "activity_choice" &&
+    (session.chatPlanningState === "generationFailed" || options.includes("重新生成"));
+  const refreshAsk =
+    pending.type === "ask_preference" && options.includes(REFRESH_DESTINATION_RECOMMENDATIONS_OPTION);
+  if (!failedGeneration && !refreshAsk) return null;
+  if (!categorySwitchSearchText(userText)) return null;
+  const dest = coerceTravelDestination(pending.baseDestination ?? ctx.destination ?? session.travelContext?.destination);
+  if (!dest) return null;
+  if (refreshAsk) {
+    // The refresh ask shows no combinations: never 「這幾組裡沒有…」.
+    const shownLocale = locale ?? effectiveAppLocale();
+    return {
+      reply: chatRuntimeCopy("combinationCategoryNoCombinationsYet", shownLocale, {
+        destination: displayDestinationForCopy(dest, undefined, shownLocale),
+        category: categorySwitchSearchText(userText)!.trim(),
+      }),
+      pendingQuestion: pending,
+    };
+  }
+  return { reply: combinationChoiceNudgeReply(userText, dest, locale), pendingQuestion: pending };
+}
+
 function resolveDestinationAdviceInternal(
   ctx: CanonicalTravelContext,
   session: ChatPlanningSession,
@@ -2159,13 +2401,18 @@ function resolveDestinationAdviceInternal(
   if (ctx.destinationClarification || (ctx.destinationCandidate && ctx.destinationCandidate.status !== 'resolved')) {
     const copy = {
       'zh-TW': ctx.destinationClarification ? '我有保留全部目的地。請先選擇一個主要目的地來規劃這份行程。' : '請確認目的地的城市與國家，或使用目的地搜尋選取地點；確認前我不會猜測城市歸屬。',
-      en: ctx.destinationClarification ? 'I’ve kept all your destinations. Please choose one primary destination for this itinerary.' : 'Please confirm the city and country, or select a destination using destination search. I won’t assume its location before it is verified.',
+      en: ctx.destinationClarification ? 'I\'ve kept all your destinations. Please choose one primary destination for this itinerary.' : 'Please confirm the city and country, or select a destination using destination search. I won\'t assume its location before it is verified.',
       ja: ctx.destinationClarification ? 'すべての目的地を保持しました。この旅程の主な目的地を一つ選んでください。' : '都市と国を確認するか、目的地検索で場所を選んでください。確認前に所在地を推測しません。',
       ko: ctx.destinationClarification ? '모든 목적지를 보관했어요. 이 일정의 주요 목적지 하나를 선택해 주세요.' : '도시와 국가를 확인하거나 목적지 검색에서 장소를 선택해 주세요. 확인 전에는 위치를 추측하지 않아요.',
     };
     return {reply:copy[locale ?? 'zh-TW'],contextPatch:ctx};
   }
 
+  const countryCategoryAdvice = resolveCountryLevelCategoryRegionAdvice(ctx, session, userText, locale);
+  if (countryCategoryAdvice) return countryCategoryAdvice;
+
+  const failedStageCategoryAdvice = resolveFailedStageCategoryWishAdvice(ctx, session, userText, locale);
+  if (failedStageCategoryAdvice) return failedStageCategoryAdvice;
 
   if (
     hasCategoryPlaceQuery(userText) &&
@@ -2200,13 +2447,13 @@ function resolveDestinationAdviceInternal(
     return { reply: null };
   }
 
-  const createAdvice = resolveCreateItineraryAdvice(ctx, session, userText);
+  const createAdvice = resolveCreateItineraryAdvice(ctx, session, userText, locale);
   if (createAdvice) return createAdvice;
 
   const bestTimeAdvice = resolveBestTravelTimeAdvice(ctx, userText, locale);
   if (bestTimeAdvice) return bestTimeAdvice;
 
-  const acceptAdvice = resolveAcceptPreviousSuggestionsAdvice(ctx, session, userText);
+  const acceptAdvice = resolveAcceptPreviousSuggestionsAdvice(ctx, session, userText, locale);
   if (acceptAdvice) return acceptAdvice;
 
   // Pending lost but combinations were offered — still accept "1、2、3" / title replies.
@@ -2215,13 +2462,13 @@ function resolveDestinationAdviceInternal(
     const days = resolveContextDays(ctx, session);
     if (dest && days && hasDestinationCombinations(dest)) {
       const resolved = resolveSelectedCombinations(dest, userText);
-      if (resolved?.titles.length) {
+      if (resolved?.titles.length || resolveShownCombinationSelection(ctx, dest, userText)?.ok) {
         const comboGen = buildCombinationSelectionGenerationAdvice({
           ctx,
           dest,
           days,
           userText,
-          titleFallback: resolved.titles,
+          titleFallback: resolved?.titles,
           locale,
         });
         if (comboGen) return comboGen;
@@ -2271,7 +2518,7 @@ function resolveDestinationAdviceInternal(
           days: readyDays,
           planningDaysConfirmed: true,
         },
-        session, locale
+        session, locale, undefined, userText
       );
       if (comboAdvice) return comboAdvice;
     }
@@ -2332,13 +2579,19 @@ function resolveDestinationAdviceInternal(
         return {
           reply:
             blockedBuilt?.reply ??
-            sanitizeCountryCitySelectionReply(
-              [
-                `${blockedLabel} 這個月份不同地區的天氣與季節特色可能會有差異。`,
-                "",
-                COUNTRY_CITY_SELECTION_LAST_FALLBACK_ENDING,
-              ].join("\n"),
+            countryCityFallbackReply(
               blockedLabel,
+              parseMonthNumber(workingCtx.travelMonth) ?? null,
+              locale,
+              () =>
+                sanitizeCountryCitySelectionReply(
+                  [
+                    `${blockedLabel} 這個月份不同地區的天氣與季節特色可能會有差異。`,
+                    "",
+                    COUNTRY_CITY_SELECTION_LAST_FALLBACK_ENDING,
+                  ].join("\n"),
+                  blockedLabel,
+                ),
             ),
           pendingQuestion: pendingQuestionForCountryRegionChoice(
             blockedLabel,
@@ -2410,7 +2663,7 @@ function resolveDestinationAdviceInternal(
             days: comboDays,
             planningDaysConfirmed: true,
           },
-          session, locale
+          session, locale, undefined, userText
         );
         if (comboAdvice) return comboAdvice;
       }
@@ -2425,7 +2678,11 @@ function resolveDestinationAdviceInternal(
     ctx.destination?.trim() &&
     /(不要太熱|怕熱|不要曬|不想曬|太熱|不要太冷|怕雨|不要下雨)/.test(userText.trim())
   ) {
-    const ack = buildWeatherConstraintAcknowledgement(ctx, ctx.weather ?? session.weather ?? null);
+    const ack = buildWeatherConstraintAcknowledgement(
+      ctx,
+      ctx.weather ?? session.weather ?? null,
+      locale ?? effectiveAppLocale(),
+    );
     if (ack) {
       return {
         reply: ack,
@@ -2461,6 +2718,7 @@ function resolveDestinationAdviceInternal(
         ctx,
         userText,
         session.lastResolvedPendingQuestion,
+        locale,
       );
       if (abAdvice) return abAdvice;
     }
@@ -2471,6 +2729,7 @@ function resolveDestinationAdviceInternal(
         ctx,
         userText,
         session.lastResolvedPendingQuestion,
+        locale,
       );
       if (abAdvice) return abAdvice;
     }
@@ -2491,7 +2750,9 @@ function resolveDestinationAdviceInternal(
           ctx: workingCtx,
           dest,
           days,
-          userText,
+          // 「好」/「幫我生成」answering the confirm question: the confirmed combinations only
+          // (the text itself would read as「all」).
+          userText: pending.confirmCombinationTitles?.length ? "" : userText,
           titleFallback: titles,
           locale,
         });
@@ -2523,15 +2784,23 @@ function resolveDestinationAdviceInternal(
         Number(session.adviceSelectionThisTurn) ||
         parseDayCountFromText(session.adviceSelectionThisTurn);
       const destLabel = dest ? normalizeDestinationLabel(dest) : undefined;
+      // 「1」 answering the days question on a kept 12/10–12/14 range (日本 → 京都 narrowing): the
+      // answered length wins and the range it contradicts is cleared — dates and days stay consistent.
+      const keptSpan = isoRangeDayCount(workingCtx.startDate, workingCtx.endDate);
+      const conflictingRangeCleared: Partial<CanonicalTravelContext> =
+        parsedDays && keptSpan != null && keptSpan !== parsedDays && !parseTravelDateRangeFromText(userText).startDate
+          ? { startDate: undefined, endDate: undefined, suggestedStartDate: undefined, dateProvenance: undefined }
+          : {};
       const datedCtx: CanonicalTravelContext = {
         ...workingCtx,
+        ...conflictingRangeCleared,
         destination: destLabel,
         days: parsedDays,
         planningDaysConfirmed: true,
       };
       const comboAdvice =
         destLabel && parsedDays && hasDestinationCombinations(destLabel)
-          ? resolveDestinationCombinationsAdvice(datedCtx, session, locale, observation)
+          ? resolveDestinationCombinationsAdvice(datedCtx, session, locale, observation, userText)
           : null;
       if (
         comboAdvice?.reply &&
@@ -2564,6 +2833,7 @@ function resolveDestinationAdviceInternal(
           contextPatch: {
             ...datePatch,
             ...comboAdvice.contextPatch,
+            ...conflictingRangeCleared,
             days: parsedDays,
             destination: dest,
             destinationCountry:
@@ -2586,6 +2856,7 @@ function resolveDestinationAdviceInternal(
         triggerItineraryGeneration: false,
         contextPatch: {
           ...datePatch,
+          ...conflictingRangeCleared,
           days: parsedDays,
           destination: dest,
           destinationCountry:
@@ -2704,7 +2975,7 @@ function resolveDestinationAdviceInternal(
           dest,
           pending.destinationCountry ?? workingCtx.destinationCountry,
         );
-        const comboSelected = parsePendingOptionSelection(userText, synthetic);
+        const comboSelected = parsePendingOptionSelection(userText, synthetic, workingCtx.offeredCombinations);
         if (comboSelected) {
           const days = resolveContextDays(workingCtx, session);
           const titles =
@@ -2728,7 +2999,7 @@ function resolveDestinationAdviceInternal(
       }
     }
 
-    const selected = parsePendingOptionSelection(userText, pending);
+    const selected = parsePendingOptionSelection(userText, pending, workingCtx.offeredCombinations);
     if (!selected && pending.type === "combination_choice") {
       const dest = normalizeDestinationLabel(
         pending.baseDestination ?? workingCtx.destination ?? "",
@@ -2753,7 +3024,7 @@ function resolveDestinationAdviceInternal(
       ) {
         // Grammar matched but parsePendingOptionSelection failed — nudge again
         return {
-          reply: chatRuntimeCopy(dest ? "combinationSelectionNudge" : "combinationSelectionNudgeShort", locale),
+          reply: combinationChoiceNudgeReply(userText, dest, locale),
           pendingQuestion: pending,
         };
       }
@@ -2764,7 +3035,7 @@ function resolveDestinationAdviceInternal(
       ) {
         // Ambiguous non-place reply while waiting — keep pending, soft nudge
         return {
-          reply: chatRuntimeCopy(dest ? "combinationSelectionNudge" : "combinationSelectionNudgeShort", locale),
+          reply: combinationChoiceNudgeReply(userText, dest, locale),
           pendingQuestion: pending,
         };
       }
@@ -2777,7 +3048,7 @@ function resolveDestinationAdviceInternal(
     }
     if (selected) {
       if (selected === "full_itinerary" || selected === "daily_recommendations") {
-        const abAdvice = resolveItineraryAbSelectionAdvice(selected, ctx, userText, pending);
+        const abAdvice = resolveItineraryAbSelectionAdvice(selected, ctx, userText, pending, locale);
         if (abAdvice) return abAdvice;
       }
 
@@ -2966,7 +3237,7 @@ function resolveDestinationAdviceInternal(
         };
         const comboAdvice =
           destLabel && hasDestinationCombinations(destLabel)
-            ? resolveDestinationCombinationsAdvice(datedCtx, session, locale, observation)
+            ? resolveDestinationCombinationsAdvice(datedCtx, session, locale, observation, userText)
             : null;
         if (comboAdvice?.reply) {
           observation.branchCode = "unconsumed_duration_structured";
@@ -2992,6 +3263,14 @@ function resolveDestinationAdviceInternal(
         const destLabel = normalizeDestinationLabel(
           pending.baseDestination ?? ctx.destination ?? "",
         );
+        // 「1」 answering the days question on a kept 12/10–12/14 range (日本 → 京都 narrowing): the
+        // answered length wins and the range it contradicts is cleared — dates and days stay consistent.
+        const keptSpan = isoRangeDayCount(workingCtx.startDate, workingCtx.endDate);
+        const rangeConflict =
+          keptSpan != null && keptSpan !== parsedDays && !parseTravelDateRangeFromText(userText).startDate;
+        const conflictingRangeCleared: Partial<CanonicalTravelContext> = rangeConflict
+          ? { startDate: undefined, endDate: undefined, suggestedStartDate: undefined, dateProvenance: undefined }
+          : {};
         const suggested = resolveSuggestedTripDates({
           days: parsedDays,
           userText,
@@ -3003,6 +3282,7 @@ function resolveDestinationAdviceInternal(
         });
         const datedCtx: CanonicalTravelContext = {
           ...workingCtx,
+          ...conflictingRangeCleared,
           destination: destLabel,
           days: parsedDays,
           planningDaysConfirmed: true,
@@ -3030,7 +3310,7 @@ function resolveDestinationAdviceInternal(
 
         const comboAdvice =
           destLabel && hasDestinationCombinations(destLabel)
-            ? resolveDestinationCombinationsAdvice(datedCtx, session, locale, observation)
+            ? resolveDestinationCombinationsAdvice(datedCtx, session, locale, observation, userText)
             : null;
         // Duration reply must never open itinerary / place-failure paths.
         if (
@@ -3064,6 +3344,7 @@ function resolveDestinationAdviceInternal(
             contextPatch: {
               ...datePatch,
               ...comboAdvice.contextPatch,
+              ...conflictingRangeCleared,
               days: parsedDays,
               destination: destLabel || pending.baseDestination || ctx.destination,
               destinationCountry: pending.destinationCountry ?? ctx.destinationCountry,
@@ -3103,11 +3384,23 @@ function resolveDestinationAdviceInternal(
           observation.next = next;
           // Soft acknowledge + re-ask combinations, never place-failure copy.
           return {
-            reply: [
-              `好，我先記下 ${destLabel || "這趟"} ${parsedDays} 天的行程方向。`,
-              "",
-              "目前還在整理實際地點組合，請稍後再試或回「重新整理推薦」。",
-            ].join("\n"),
+            reply:
+              (locale ?? effectiveAppLocale()) === "zh-TW"
+                ? [
+                    `好，我先記下 ${destLabel || "這趟"} ${parsedDays} 天的行程方向。`,
+                    "",
+                    "目前還在整理實際地點組合，請稍後再試或回「重新整理推薦」。",
+                  ].join("\n")
+                : [
+                    chatRuntimeCopy("directionAckDays", locale ?? effectiveAppLocale(), {
+                      destination: destLabel
+                        ? displayDestinationForCopy(destLabel, userText, locale ?? effectiveAppLocale())
+                        : chatRuntimeCopy("tripFallback", locale ?? effectiveAppLocale()),
+                      days: parsedDays,
+                    }),
+                    "",
+                    chatRuntimeCopy("combinationsStillLoading", locale ?? effectiveAppLocale()),
+                  ].join("\n"),
             pendingQuestion: {
               type: "ask_preference",
               options: [REFRESH_DESTINATION_RECOMMENDATIONS_OPTION],
@@ -3119,6 +3412,7 @@ function resolveDestinationAdviceInternal(
             triggerItineraryGeneration: false,
             contextPatch: {
               ...datePatch,
+              ...conflictingRangeCleared,
               days: parsedDays,
               destination: destLabel || pending.baseDestination || ctx.destination,
               destinationCountry: pending.destinationCountry ?? ctx.destinationCountry,
@@ -3144,6 +3438,7 @@ function resolveDestinationAdviceInternal(
           triggerItineraryGeneration: false,
           contextPatch: {
             ...datePatch,
+            ...conflictingRangeCleared,
             days: parsedDays,
             destination: destLabel || pending.baseDestination || ctx.destination,
             destinationCountry: pending.destinationCountry ?? ctx.destinationCountry,
@@ -3183,7 +3478,10 @@ function resolveDestinationAdviceInternal(
         );
       }
       return {
-        reply: chatRuntimeCopy("cityGoodChoiceDaysExample", locale, { destination: displayDestinationForCopy(dest,userText,locale ?? "zh-TW") }),
+        reply: (() => {
+          const shown = displayDestinationForCopy(dest, userText, locale ?? "zh-TW");
+          return applyKoParticles(chatRuntimeCopy("cityGoodChoiceDaysExample", locale, { destination: shown }), [shown], locale);
+        })(),
         pendingQuestion: pending,
       };
     }
@@ -3191,7 +3489,7 @@ function resolveDestinationAdviceInternal(
       const planMode =
         parseItineraryNextStepSelection(userText) ?? parseItineraryPlanModeIntent(userText);
       if (planMode === "full_itinerary" || planMode === "daily_recommendations") {
-        const abAdvice = resolveItineraryAbSelectionAdvice(planMode, ctx, userText, pending);
+        const abAdvice = resolveItineraryAbSelectionAdvice(planMode, ctx, userText, pending, locale);
         if (abAdvice) return abAdvice;
       }
       return { reply: null };
@@ -3235,7 +3533,7 @@ function resolveDestinationAdviceInternal(
         if (validDays != null) {
           const comboAdvice = resolveDestinationCombinationsAdvice(
             { ...cityCtx, days: validDays, planningDaysConfirmed: true },
-            { ...session, pendingQuestion: undefined }, locale
+            { ...session, pendingQuestion: undefined }, locale, undefined, userText
           );
           if (comboAdvice) return comboAdvice;
           return {
@@ -3243,6 +3541,7 @@ function resolveDestinationAdviceInternal(
               locale,
               weather: cityCtx.weather,
               context: { ...cityCtx, days: validDays, planningDaysConfirmed: true },
+              userText,
             }),
             contextPatch: {
               destination: freeCity,
@@ -3278,7 +3577,7 @@ function resolveDestinationAdviceInternal(
         };
       }
     }
-    const followUpReply = resolvePlanningFollowUpReply(ctx, userText);
+    const followUpReply = resolvePlanningFollowUpReply(ctx, userText, locale);
     if (followUpReply?.reply) {
       return followUpReply;
     }
@@ -3324,6 +3623,7 @@ function resolveDestinationAdviceInternal(
         destination: label,
         days,
         preferences: prefs.length ? prefs : ctx.interests,
+        locale: locale ?? effectiveAppLocale(),
       });
       return {
         reply,
@@ -3347,7 +3647,7 @@ function resolveDestinationAdviceInternal(
     ctx.days &&
     !session.pendingQuestion
   ) {
-    const gen = buildItineraryGenerationAdvice(ctx);
+    const gen = buildItineraryGenerationAdvice(ctx, undefined, locale);
     if (gen) return gen;
   }
   if (
@@ -3359,6 +3659,7 @@ function resolveDestinationAdviceInternal(
     const reply = buildDailyRecommendationsReply(
       ctx,
       ctx.selectedInterests as TripInterest[] | undefined,
+      locale ?? effectiveAppLocale(),
     );
     if (reply) {
       return {
@@ -3383,10 +3684,16 @@ function resolveDestinationAdviceInternal(
     const destLabel = normalizeDestinationLabel(planningDestination);
 
     if (days) {
-      const comboAdvice = resolveDestinationCombinationsAdvice(ctx, session, locale);
+      const comboAdvice = resolveDestinationCombinationsAdvice(ctx, session, locale, undefined, userText);
       if (comboAdvice) return comboAdvice;
       return {
-        reply: `好，我會依${destLabel} ${days} 天的方向繼續幫你安排。`,
+        reply:
+          (locale ?? effectiveAppLocale()) === "zh-TW"
+            ? `好，我會依${destLabel} ${days} 天的方向繼續幫你安排。`
+            : chatRuntimeCopy("continuePlanningDays", locale ?? effectiveAppLocale(), {
+                destination: displayDestinationForCopy(destLabel, userText, locale ?? effectiveAppLocale()),
+                days,
+              }),
         contextPatch: {
           destination: destLabel,
           days,
@@ -3434,11 +3741,11 @@ function resolveDestinationAdviceInternal(
     !detectMustVisitIntent(userText) &&
     !detectPlaceRecommendationIntent(userText)
   ) {
-    const comboAdvice = resolveDestinationCombinationsAdvice(ctx, session, locale);
+    const comboAdvice = resolveDestinationCombinationsAdvice(ctx, session, locale, undefined, userText);
     if (comboAdvice) return comboAdvice;
   }
 
-  const followUpReply = resolvePlanningFollowUpReply(ctx, userText);
+  const followUpReply = resolvePlanningFollowUpReply(ctx, userText, locale);
   if (followUpReply?.reply) {
     return followUpReply;
   }
@@ -3527,13 +3834,19 @@ function resolveDestinationAdviceInternal(
       return {
         reply:
           scenicBuilt?.reply ??
-          sanitizeCountryCitySelectionReply(
-            [
-              `${scenicLabel} 這個月份不同地區的天氣與季節特色可能會有差異。`,
-              "",
-              COUNTRY_CITY_SELECTION_LAST_FALLBACK_ENDING,
-            ].join("\n"),
+          countryCityFallbackReply(
             scenicLabel,
+            parseMonthNumber(ctx.travelMonth) ?? null,
+            locale,
+            () =>
+              sanitizeCountryCitySelectionReply(
+                [
+                  `${scenicLabel} 這個月份不同地區的天氣與季節特色可能會有差異。`,
+                  "",
+                  COUNTRY_CITY_SELECTION_LAST_FALLBACK_ENDING,
+                ].join("\n"),
+                scenicLabel,
+              ),
           ),
         pendingQuestion: pendingQuestionForCountryRegionChoice(
           scenicLabel,
@@ -3576,7 +3889,7 @@ function resolveDestinationAdviceInternal(
     };
   }
 
-  const structuredSuggestion = resolveDestinationCombinationsAdvice(ctx, session, locale);
+  const structuredSuggestion = resolveDestinationCombinationsAdvice(ctx, session, locale, undefined, userText);
   if (
     structuredSuggestion?.reply &&
     structuredSuggestion.contextPatch?.tripPurpose === "combination_suggestions_offered"
@@ -3696,7 +4009,15 @@ function buildDestinationAdviceReplyBody(
     if (purpose === "destination_selection") {
       return null;
     }
-    return `好的，我會依你剛才說的 ${dest} 方向繼續幫你規劃。`;
+    return (locale ?? effectiveAppLocale()) === "zh-TW"
+      ? `好的，我會依你剛才說的 ${dest} 方向繼續幫你規劃。`
+      : chatRuntimeCopy("continuePlanningDirection", locale ?? effectiveAppLocale(), {
+          destination: displayDestinationForCopy(
+            normalizeDestinationLabel(dest),
+            userText,
+            locale ?? effectiveAppLocale(),
+          ),
+        });
   }
 
   const month = ctx.travelMonth;
@@ -3716,6 +4037,7 @@ function buildDestinationAdviceReplyBody(
       userText,
       ctx,
       ctx.weather ?? session.weather ?? null,
+      locale,
     );
     if (scenicReply) return scenicReply;
   }
@@ -3773,6 +4095,7 @@ function buildDestinationAdviceReplyBody(
           locale,
           weather: ctx.weather,
           context: { ...ctx, destination: destLabel, days: resolvedDays },
+          userText,
         }).reply;
       }
       if (!resolvedDays) {
@@ -3803,7 +4126,7 @@ function buildDestinationAdviceReplyBody(
 
   // 國家層級：最佳月份（legacy — 已由通用 entity 回覆覆蓋，保留為後備）
   if (destLabel && isKnownCountryLabel(destLabel) && purpose === "best_time_to_visit") {
-    const reply = buildCountryBestTimeReply(destLabel);
+    const reply = buildCountryBestTimeReply(destLabel, locale);
     if (reply) return reply;
   }
 
@@ -3819,7 +4142,7 @@ function buildDestinationAdviceReplyBody(
     ctx.tripPurpose !== "ready_for_itinerary" &&
     !session.pendingQuestion
   ) {
-    const countryAdvice = buildCountryCityCollectAdvice(destLabel, ctx, userText);
+    const countryAdvice = buildCountryCityCollectAdvice(destLabel, ctx, userText, { locale });
     if (countryAdvice?.reply) return countryAdvice.reply;
   }
 
@@ -3875,6 +4198,107 @@ function buildDestinationAdviceReplyBody(
 
 /** Resolver geography survives local advice templates; templates cannot reassign authority. */
 export function resolveDestinationAdvice(ctx: CanonicalTravelContext, session: ChatPlanningSession, userText: string, locale?: import("@/lib/i18n/types").Locale): DestinationAdviceResult {
+  // 「都不錯但第二天改一下」while choosing combinations: ask what to change, keep the pending open.
+  if (isCombinationChoiceTurn(session) && isCombinationPartialModifyReply(userText)) {
+    return {
+      reply: combinationPartialModifyFollowUp(userText, locale ?? effectiveAppLocale()),
+      pendingQuestion: session.pendingQuestion ?? undefined,
+    };
+  }
+  // 「全部都不要」"none of them": nothing selected, nothing generated; ask what they want instead.
+  if (isCombinationChoiceTurn(session) && isRejectAllCombinationsReply(userText)) {
+    return {
+      reply: chatRuntimeCopy("combinationRejectAll", locale ?? effectiveAppLocale()),
+      pendingQuestion: session.pendingQuestion ?? undefined,
+    };
+  }
+  // 「Sorry it's 12/10-12/13」 while choosing combinations: dates changed, same combinations stay open.
+  const currentDestinationNames = [ctx.destination, ctx.destinationCity, session.pendingQuestion?.baseDestination].filter((d): d is string => Boolean(d?.trim()));
+  if (isCombinationChoiceTurn(session) && isCombinationDateCorrectionReply(userText, [...currentDestinationNames,
+    ...currentDestinationNames.map((d) => displayDestinationForCopy(d, undefined, locale ?? effectiveAppLocale()))])) {
+    // The new range is the user's own confirmed dates; provenance follows the new start / end.
+    const range = parseTravelDateRangeFromText(userText);
+    return {
+      reply: combinationDatesUpdatedCopy(userText, locale ?? effectiveAppLocale()),
+      ...(range.startDate && range.endDate ? { contextPatch: {
+        startDate: range.startDate, endDate: range.endDate, suggestedStartDate: undefined,
+        dateProvenance: { source: "user_date" as const, confirmed: true, startDate: range.startDate, endDate: range.endDate },
+      } } : {}),
+      pendingQuestion: session.pendingQuestion ?? undefined,
+    };
+  }
+  // 「改成1月」"make it January"「1月に変更」「1월로 바꿔」while choosing combinations: the travel
+  // month changed (the merge already moved it), the same combinations stay open — all locales.
+  if (isCombinationChoiceTurn(session) && isCombinationMonthOnlyReply(userText)) {
+    // 「改成12月」on a 12/10–12/14 trip: same month — the dates stay (never "changed to December").
+    return {
+      reply:
+        combinationMonthUnchangedCopy(userText, locale ?? effectiveAppLocale(), ctx.startDate, ctx.endDate) ??
+        combinationMonthUpdatedCopy(userText, locale ?? effectiveAppLocale()),
+      pendingQuestion: session.pendingQuestion ?? undefined,
+    };
+  }
+  // This turn answered the confirm question (「幫我生成」「好」"ok"…): generate with exactly the
+  // confirmed combinations before any branch re-reads the text as「all」.
+  const confirmedTitles = session.lastResolvedPendingQuestion?.confirmCombinationTitles;
+  if (
+    confirmedTitles?.length &&
+    session.adviceSelectionThisTurn &&
+    session.lastResolvedPendingQuestion?.type === "combination_choice"
+  ) {
+    const dest = normalizeDestinationLabel(
+      session.lastResolvedPendingQuestion.baseDestination ?? ctx.destination ?? "",
+    );
+    const days = resolveContextDays(ctx, session);
+    if (dest && days) {
+      const comboGen = buildCombinationSelectionGenerationAdvice({
+        ctx,
+        dest,
+        days,
+        userText: "",
+        titleFallback: confirmedTitles,
+        locale,
+      });
+      if (comboGen) return comboGen;
+    }
+  }
+  // 「第2組的第一天改一下」: select only the named combination(s), no generation yet; ask to confirm.
+  if (isCombinationChoiceTurn(session) && isCombinationRefWithDayReply(userText) && session.pendingQuestion) {
+    const shownLocale = locale ?? effectiveAppLocale();
+    const picked = resolveCombinationRefWithDaySelection(userText, session.pendingQuestion, ctx);
+    if (picked) {
+      const sep = shownLocale === "en" || shownLocale === "ko" ? ", " : "、";
+      const reply = combinationRefDayConfirmCopy(
+        userText,
+        picked.ids.join(sep),
+        shownLocale,
+        picked.missing.length ? picked.missing.join(sep) : undefined,
+      );
+      return {
+        reply,
+        pendingQuestion: {
+          ...session.pendingQuestion,
+          confirmCombinationTitles: picked.titles,
+          confirmQuestion: reply,
+          confirmContextKey: combinationConfirmContextKey(session),
+        },
+        contextPatch: { selectedCombinationIds: picked.ids },
+      };
+    }
+    const dest = session.pendingQuestion.baseDestination ?? ctx.destination;
+    return {
+      reply: chatRuntimeCopy(dest ? "combinationSelectionNudge" : "combinationSelectionNudgeShort", shownLocale),
+      pendingQuestion: session.pendingQuestion,
+    };
+  }
+  // 「第二天不用改」: nothing to change — the selection nudge, pending kept, nothing selected.
+  if (isCombinationChoiceTurn(session) && isDayOrdinalNegatedModifyReply(userText)) {
+    const dest = session.pendingQuestion?.baseDestination ?? ctx.destination;
+    return {
+      reply: chatRuntimeCopy(dest ? "combinationSelectionNudge" : "combinationSelectionNudgeShort", locale ?? effectiveAppLocale()),
+      pendingQuestion: session.pendingQuestion ?? undefined,
+    };
+  }
   const observation: AdviceReturnObservation = {branchCode: "other_advice_return"};
   const result = resolveDestinationAdviceInternal(ctx,session,userText,locale,observation);
   traceCombinationAdviceReturn(session, observation, result);
@@ -3883,4 +4307,21 @@ export function resolveDestinationAdvice(ctx: CanonicalTravelContext, session: C
     destination:ctx.destination,destinationCountry:ctx.destinationCountry,destinationCountryCode:ctx.destinationCountryCode,
     destinationCity:ctx.destinationCity,destinationRegion:ctx.destinationRegion,destinationType:ctx.destinationType,
     destinationCoordinates:ctx.destinationCoordinates,destinationCandidate:ctx.destinationCandidate}};
+}
+
+/**
+ * Combination-choice nudge. A pure category / activity switch (「改去溫泉」"switch to onsen"
+ * 「温泉に変更」「온천으로 바꿔」) that reached here gets an answer to that request (no such
+ * combination; pick one or name a city); every other unclear reply keeps the selection nudge.
+ */
+function combinationChoiceNudgeReply(userText: string, dest: string, locale?: import("@/lib/i18n/types").Locale): string {
+  const shownLocale = locale ?? effectiveAppLocale();
+  const category = dest ? categorySwitchSearchText(userText)?.trim() : undefined;
+  if (dest && category) {
+    return chatRuntimeCopy("combinationCategoryNotInCombinations", shownLocale, {
+      destination: displayDestinationForCopy(dest, undefined, shownLocale),
+      category,
+    });
+  }
+  return chatRuntimeCopy(dest ? "combinationSelectionNudge" : "combinationSelectionNudgeShort", shownLocale);
 }

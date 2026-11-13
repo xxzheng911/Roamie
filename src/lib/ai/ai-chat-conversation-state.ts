@@ -5,6 +5,10 @@ import { resolveMustVisitDestination } from "@/lib/ai/must-visit-places";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import { parseItineraryPlanModeIntent } from "@/lib/ai/itinerary-planning";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
+import type { Locale } from "@/lib/i18n/types";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import { displayDestinationForCopy } from "@/lib/ai/destination-locale-aliases";
 import {
   detectMustVisitIntent,
   detectPlaceRecommendationIntent,
@@ -172,13 +176,20 @@ export function buildDayGroupedPlaceSummary(
   days: number,
   recommendations: RoamieRecommendationItem[],
   style?: TripStyleKey,
+  locale: Locale = effectiveAppLocale(),
 ): string {
   const label = normalizeDestinationLabel(destination);
   const buckets = distributeRecommendationsAcrossDays(recommendations, days);
 
   if (!buckets.some((bucket) => bucket.names.length > 0)) {
+    if (locale !== "zh-TW") {
+      return chatRuntimeCopy("dayPlanLiveUnavailable", locale, {
+        destination: displayDestinationForCopy(label, undefined, locale),
+        days,
+      });
+    }
     return `${label} ${days} 天推薦：\n\n我暫時沒連上即時地點資料，你可以稍後再試。`;
   }
 
-  return buildDayPlanSummaryFromBuckets(label, days, style ?? "mixed", buckets);
+  return buildDayPlanSummaryFromBuckets(label, days, style ?? "mixed", buckets, locale);
 }

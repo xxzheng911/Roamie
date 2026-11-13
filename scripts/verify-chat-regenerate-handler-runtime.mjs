@@ -13,7 +13,10 @@ import {
   buildCombinationSelectionAllowlist,
   buildOfferedCombinationsForSession,
 } from "../src/lib/ai/destination-combination-suggestions.ts";
-import { prepareDirectItineraryFlow } from "../src/lib/ai/ai-itinerary-state-machine.ts";
+import {
+  localizeItineraryFailureMessage,
+  prepareDirectItineraryFlow,
+} from "../src/lib/ai/ai-itinerary-state-machine.ts";
 import { resetPlanningPipelineForRegenerate } from "../src/lib/ai/ai-planning-session.ts";
 import {
   createUnselectedOfferExclusion,
@@ -26,6 +29,11 @@ import { createEmptySession } from "../src/lib/chat-session.ts";
 globalThis.fetch = async () => {
   throw Error("NETWORK_DISABLED");
 };
+const watchdog = setTimeout(() => {
+  console.log("FAIL watchdog: verify-chat-regenerate-handler-runtime exceeded 5 minutes");
+  process.exit(3);
+}, 5 * 60_000);
+watchdog.unref();
 
 // ── Production source blocks ────────────────────────────────────────────────
 const chat = readFileSync("src/routes/_app.chat.tsx", "utf8");
@@ -152,7 +160,8 @@ await check("A2 production failure branch persists FAILED-equivalent state with 
     lastFailureGenerationRequestIdRef: { current: null },
     setMsgs: (m) => firstMsgs.push(...(typeof m === "function" ? m([]) : m)),
     conversation: [{ role: "user", content: "幫我生成" }],
-    chatRuntimeCopy, isChatRuntimeCopyPrefix, locale: "zh-TW",
+    // Imported by _app.chat.tsx (from ai-itinerary-state-machine) and used in this block.
+    chatRuntimeCopy, isChatRuntimeCopyPrefix, localizeItineraryFailureMessage, locale: "zh-TW",
     persistSession: (s) => persisted.push(s),
   });
   failedSession = persisted.at(-1);

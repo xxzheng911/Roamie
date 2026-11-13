@@ -56,6 +56,14 @@ function routeTravel(
   return travelMinutesForArrival(leg, transport);
 }
 
+/** 有到站上限時標記是否超過最後入館；不改時間、順序或項目。 */
+export function withLastEntryFlag(item: RoamieItineraryItem): RoamieItineraryItem {
+  const latest = item.latestArrivalMinutes;
+  const arrival = parseTimeMinutes(item.time);
+  if (latest == null || arrival == null) return item;
+  return { ...item, arrivedAfterLastEntry: arrival >= latest };
+}
+
 function existingArrivalTime(item: RoamieItineraryItem): string {
   const t = item.time?.trim();
   if (t && parseTimeMinutes(t) != null) return formatTimeMinutes(parseTimeMinutes(t)!);
@@ -128,7 +136,7 @@ export function recalculateArrivalTimes(
     };
   }
 
-  return result;
+  return result.map(withLastEntryFlag);
 }
 
 export function recalculateArrivalTimesForDay(
@@ -151,7 +159,7 @@ export function recalculateArrivalTimesForDay(
 
   let result = dayItems.map((item) => ({ ...item }));
   const startIndex = Math.max(0, anchorIndex);
-  if (startIndex >= result.length - 1) return result;
+  if (startIndex >= result.length - 1) return result.map(withLastEntryFlag);
 
   const legOpts: NextStopArrivalOpts = { transitProvisionalWhenMissing: false };
 
@@ -165,7 +173,7 @@ export function recalculateArrivalTimesForDay(
     };
   }
 
-  return result;
+  return result.map(withLastEntryFlag);
 }
 
 export function recalculateDayArrivalTimesInItems(

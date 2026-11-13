@@ -69,9 +69,10 @@ traceCombinationChatReturn(s,'completeAdviceTurn',r.advice);
 // Real Discovery/Advice-created offers; repeating duration is not a combination selection.
 const fallbackCopies={
  'zh-TW':'我還不確定你想用哪幾組。請回覆組合編號（例如 1、3），或說「可以幫我生成」讓我混搭全部組合。',
- en:'I’m not sure which combinations you want. Reply with their numbers (for example, 1, 3), or say “create the itinerary” to use all combinations.',
- ja:'どの組み合わせをご希望か、まだ確認できていません。番号（例：1、3）を返信するか、すべて使う場合は「旅程を作成して」とお伝えください。',
- ko:'어떤 조합을 원하시는지 아직 확인하지 못했어요. 번호(예: 1, 3)를 보내거나, 모든 조합을 사용하려면 “일정을 만들어 주세요”라고 말씀해 주세요.',
+ // TS-CHAT-L10N: en/ja/ko only ask for replies the combination parser accepts (numbers / “all”).
+ en:'I\'m not sure which combinations you want. Reply with their numbers (for example, 1, 3), or reply with every number or “all” to use all combinations.',
+ ja:'どの組み合わせをご希望か、まだ確認できていません。番号（例：1、3）を返信してください。すべて使う場合は、すべての番号か「すべて」と返信してください。',
+ ko:'어떤 조합을 원하시는지 아직 확인하지 못했어요. 번호(예: 1, 3)를 보내 주세요. 모든 조합을 사용하려면 모든 번호를 보내거나 “전부”라고 보내 주세요.',
 };
 for(const locale of ['zh-TW','en','ja','ko']){
  const restored=JSON.parse(JSON.stringify(s));

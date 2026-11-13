@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "./verify-netguard-full.mjs";
 /**
  * #TS-PHOTO3 第 3 輪：isRoamieDefaultImageUrl 來源判斷。
  * 執行：node scripts/verify-roamie-default-image-url.mjs

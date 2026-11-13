@@ -87,7 +87,10 @@ for (const locale of locales) {
   assert.equal(chatMoodDisplay("slow_travel", locale), chatMoodDisplay("慢旅行", locale));
   assert.notEqual(chatMoodDisplay("慢旅行", locale), chatMoodDisplay("慢步調散策", locale));
   if (locale !== "zh-TW") assert.doesNotMatch(chatMoodDisplay("慢旅行", locale), /慢旅行/);
-  const shownDestination = locale === "zh-TW" ? merged.context.destination : "Kyoto";
+  // Spec ruling (TS-CHAT-L10N): en uses the English name; ja / ko use the local-language
+  // name, not the user's Latin spelling. zh-TW keeps the canonical label.
+  const kyotoByLocale = { "zh-TW": "京都", en: "Kyoto", ja: "京都", ko: "교토" };
+  const shownDestination = locale === "zh-TW" ? merged.context.destination : kyotoByLocale[locale];
   const next = buildDateAndDurationQuestionReply(merged.context.destination, undefined, {
     locale,
     context: merged.context,
@@ -123,9 +126,11 @@ for (const locale of locales) {
   assert.equal(
     buildAskTripDurationReply({ interests: [], destination: "Kyoto" }, undefined, locale),
     chatRuntimeCopy("durationQuestion", locale, {
-      destination: normalizeDestinationLabel("Kyoto"),
+      // Routing label stays canonical (京都); only the shown name follows the locale.
+      destination: locale === "zh-TW" ? normalizeDestinationLabel("Kyoto") : kyotoByLocale[locale],
     }),
   );
+  assert.equal(normalizeDestinationLabel("Kyoto"), "京都");
   assert.ok(
     isAlternativeRecommendationOffer(chatRuntimeCopy("noMore", locale)),
     "localized no-more offer remains recognizable after locale switch",

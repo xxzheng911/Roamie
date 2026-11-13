@@ -455,6 +455,7 @@ function SettingsPage() {
             <AlertDialogTitle>{uiT("productionUi.p1c72526e0a")}</AlertDialogTitle>
             <AlertDialogDescription className="space-y-3 text-left leading-relaxed">
               <span className="block">{uiT("productionUi.pe4327fa225")}</span>
+              <span className="block">{uiT("productionUi.deleteAccountSharedTrips")}</span>
               {canManageAppleSubscription ? (
                 <span className="block">{uiT("productionUi.p3fb1f69950")}</span>
               ) : null}

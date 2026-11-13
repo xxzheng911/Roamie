@@ -56,7 +56,7 @@ type DistanceFn = (args: {
   message?: string;
 }>;
 
-type TripLegsFn = (args: { data: { places: LatLng[]; travelMode: RoutesTravelMode } }) => Promise<{
+type TripLegsFn = (args: { data: { places: LatLng[]; travelMode: RoutesTravelMode; region?: string } }) => Promise<{
   ok: boolean;
   data?: Array<{ durationMinutes: number; distanceMeters: number }>;
   statusCode?: number;
@@ -469,6 +469,7 @@ export async function getRouteLegEstimates(
 export async function getTripLegsWithDurations(
   places: LatLng[],
   travelMode: RoutesTravelMode,
+  region?: string,
 ): Promise<Array<{ durationMinutes: number; distanceMeters: number }>> {
   // Not an error — route legs are only meaningful with ≥2 stops after hydration.
   if (places.length < 2) {
@@ -483,7 +484,7 @@ export async function getTripLegsWithDurations(
   try {
     return await routesCache.getOrFetch(key, async () => {
       try {
-        const result = await requireTripLegsFn()({ data: { places, travelMode } });
+        const result = await requireTripLegsFn()({ data: { places, travelMode, region } });
         if (!result.ok || !result.data) {
           // Soft empty during provider/init — not a user-facing route build failure.
           debugRouteOnce(

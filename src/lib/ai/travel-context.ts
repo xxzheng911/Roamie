@@ -1,11 +1,12 @@
 import { displayMetadataMatchesLabel, sameDisplayCountry, type DestinationDisplayMetadata } from "./destination-display-metadata";
-import { globalPlanningTurn, applyGlobalPlanningContext } from './global-planning-context';
+import { globalPlanningTurn, applyGlobalPlanningContext, combinationSwitchDatePatch, isCombinationDestinationSwitchContext, isCombinationSwitchRelistBase } from './global-planning-context';
 import { travelDestinationCandidates, travelMonthSignal } from "./travel-language-signals";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { TripIntentMissingKey } from "@/lib/recommendation/trip-intent";
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
+import { planningCalendarSignals } from "./planning-calendar-signals";
 import {
   isNearbyPlaceIntent,
   userExplicitlyWantsNearbyPlaces,
@@ -22,8 +23,11 @@ import {
   coerceTravelDestination,
   parseDestinationFromText,
   parseDestinationSelectionFromText,
+  parseNegatedDestinationSwitchTurn,
   resolveDestinationFromText,
   isMoodRecommendationSession,
+  isNonPlaceDestinationText,
+  stripTravelWishSuffix,
   type ChatConversationMode,
 } from "@/lib/ai/trip-planning-context";
 import {
@@ -33,6 +37,13 @@ import {
 } from "@/lib/ai/destination-advice";
 import { isPlaceDetailChatActive } from "@/lib/ai/place-detail-chat";
 import { resolveDestinationAreaScope } from "@/lib/ai/destination-travel-profile";
+import {
+  buildDestinationScopeContextPatch,
+  getResolvedDestinationScope,
+  getTrustedProviderLocation,
+} from "@/lib/ai/resolved-destination-scope";
+import { isResolvedDestination } from "@/lib/location/destination-authority";
+import { normalizeAreaEvidence, stripAdministrativeSuffix } from "@/lib/ai/destination-area-aliases";
 import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
 import { finalizePlanningContextAuthority } from "@/lib/ai/planning-context-authority";
 import {
@@ -92,8 +103,14 @@ import type {
   NewTripPlanningReason,
   PreparedDestinationChangeReset,
 } from "@/lib/ai/trip-planning-session-reset";
-import { parseNegatedDestinationSwitch } from "@/lib/ai/continue-recommendation-intent";
 import { updateSessionPreferenceFromExplicitText } from "@/lib/personalization/resolve-effective-preference";
+import {
+  dropStaleCombinationConfirm,
+  isCombinationChoiceTurn,
+  isCombinationHoldReply,
+  isTripLengthOnlyCombinationReply,
+  withoutDayReferences,
+} from "@/lib/ai/combination-partial-modify-reply";
 
 /** Canonical travel context — merged on every user turn */
 /** Minimal first-pass Tourist Quality Gate verdict stored on an offered place (no evidence text). */
@@ -110,7 +127,13 @@ export type CanonicalTravelContext = {
   sessionPreference?: import("@/lib/personalization/types").SessionPreferenceV1;
   destination?: string;
   /** Unverified user text; never coordinates/place authority. */
-  destinationCandidate?: { raw: string; countryHint?: string; status: 'pending' | 'unresolved' | 'conflict' | 'resolved'; locale?: string };
+  destinationCandidate?: { raw: string; countryHint?: string; status: 'pending' | 'unresolved' | 'conflict' | 'resolved'; locale?: string;
+    /** Submitted while choosing combinations: once resolved it is a combination-choice destination switch (dates kept, one reset). */
+    combinationSwitch?: true;
+    /** Submitted on a country-level trip (日本): a geocode-confirmed city of another country is a destination switch. */
+    countryTrip?: true;
+    /** Re-submitted after an unresolved / conflicting candidate (「熱海, 日本」 after a miss). */
+    afterMiss?: true };
   destinationInputNames?: string[];
   destinationClarification?: 'multiple_destinations';
   travelSeason?: 'spring' | 'summer' | 'autumn' | 'winter';
@@ -489,26 +512,274 @@ function parseSetting(text: string, mood?: string): string | undefined {
   return undefined;
 }
 
-function parseTravelDateFromText(text: string): string | undefined {
+const EN_WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
+const EN_WEEKDAY = EN_WEEKDAYS.join("|");
+const KO_WEEKDAYS = "일월화수목금토";
+const EN_KO_RELATIVE_DAY_RE = /\btoday\b|\btomorrow\b|오늘|내일/i;
+/**
+ * en trip nouns only (plan / stay / change / move / switch alone are everyday words). A noun modifier
+ * ("travel ban", "vacation rental") is not a trip.
+ */
+const EN_TRIP_CONTEXT_RE =
+  /\b(?:trips?|travel(?:s|ing|ling|ed|led)?|itinerar(?:y|ies)|vacations?|journeys?)\b(?!\s+(?:bans?|restrictions?|advisor(?:y|ies)|warnings?|alerts?|insurance|agenc(?:y|ies)|agents?|rentals?|homes?|deals?|news|mode|size|bags?|pillows?|time)\b)|\bthe\s+dates?\b/i;
+/** ko trip wording: 「오늘부터 시작」 counts only inside a trip sentence (「오늘부터 여행 시작」). */
+const KO_TRIP_CONTEXT_RE = /여행|일정|휴가|트립/;
+/** Weather / rain wording in four locales (雪梨 is Sydney; 熱門／怕熱／寒假／暑假 are not weather). */
+const WEATHER_RE = new RegExp(
+  [
+    "\\b(?:weather|rain(?:s|y|ing|ed)?|forecasts?|cold(?:er)?|hot(?:ter)?|snow(?:s|y|ing|ed)?|sunny)\\b",
+    "날씨",
+    "(?<![가-힣])비\\s*(?:가|는|도)?\\s*(?:와|온|오|올|내|예보|소식)",
+    "(?<![가-힣])눈\\s*(?:이|은|도)?\\s*(?:와|온|오|올|내)",
+    "춥|추워|추운|덥|더워|더운",
+    "天氣|天气|天気|下雨|雨(?!林)|(?<![太怕避不])冷(?!門|门|氣|气|凍|冻)|(?<![太怕避不])熱(?!門|门|鬧|闹|情|點|点|炒|狗)|寒(?!假)|暑(?!假|期)|雪(?!梨)",
+  ].join("|"),
+  "i",
+);
+/**
+ * Inside a weather sentence only a date phrase right before trip wording (「從明天開始玩」「明天開始去東京玩」
+ * 「明日から3日間京都旅行」「내일부터 여행」「明天出發」) or a reschedule verb (「改成明天」「に変更」「로 바꿔」
+ * "change it to tomorrow") is a trip date; a bare range (「明天到週五都會下雨，行程要改嗎」) is not.
+ */
+const WEATHER_TRIP_DATE_RE = new RegExp(
+  [
+    "(?:今天|今日|明天|明日(?!香)|明晚|後天|后天)\\s*(?:就)?\\s*(?:開始|开始|起)?\\s*(?:玩|旅行|旅遊|旅游|出發|出发|出遊|出游|啟程|启程|行程|去[^\\s，,。.!！?？、]{1,8}?(?:玩|旅行|旅遊|旅游))",
+    "(?:今日|明日(?!香))\\s*(?:から\\s*(?:\\d+\\s*日間\\s*)?[\\p{Script=Han}\\p{Script=Katakana}ー]{0,8}(?:旅行|観光|出発)|(?:出発|発))",
+    "(?:오늘|내일)\\s*(?:부터\\s*(?:\\d+\\s*일(?:\\s*간)?(?:\\s*동안)?\\s*)?여행|(?:부터\\s*|에\\s*)?(?:출발|떠나))",
+    "(?:改成|改到|改為|改为|換成|换成|提前到|延到|延後到|延后到)\\s*(?:今天|今日|明天|明日|明晚|後天|后天)",
+    "(?:に|へ)\\s*(?:変更|ずら)|(?:으로|로)\\s*(?:바꿔|변경|옮겨)",
+    "\\b(?:change|move|switch|reschedule|shift)\\b[^.!?]*\\b(?:today|tomorrow)\\b",
+  ].join("|"),
+  "iu",
+);
+/** A weather / rain sentence is never a trip date unless WEATHER_TRIP_DATE_RE holds (「明天到週五會下雨嗎」「今日から寒くなる」). */
+function isWeatherWithoutTripNoun(text: string): boolean {
+  return WEATHER_RE.test(text) && !WEATHER_TRIP_DATE_RE.test(text);
+}
+/** ko attributive verb (「출발하는 비행기」「떠나는 사람」「시작하는 축제」) modifies a noun; 걸／거／것 (「출발하는 걸로」) still counts. */
+const KO_ATTRIBUTIVE = `(?!(?:하|되)?는\\s*(?!걸|거|것)[가-힣])`;
+
+type RelativeTripDateState = { hasTripDates?: boolean; awaitingDates?: boolean };
+
+/**
+ * en / ko explicit trip start wording → day offset from today (0 today, 1 tomorrow). Counts only with
+ * (a) a trip noun, (b) a reschedule verb on it / them / the dates (or no object) while the session has
+ * dates or is asking for them, or (c) a sentence that is only the date phrase. A whole-sentence phrase
+ * with days or a weekday end ("starting today for 3 days", 「오늘부터 금요일까지」) always counts; a bare
+ * one ("from today", 「오늘부터」) only while dates are being asked.
+ */
+function enKoExplicitTripDayOffset(text: string, state: RelativeTripDateState = {}): number | undefined {
+  if (!EN_KO_RELATIVE_DAY_RE.test(text)) return undefined;
+  const whole = text.trim().replace(/[\s.!?~,。！？]+$/u, "");
+  const enTrip = EN_TRIP_CONTEXT_RE.test(text);
+  const koTrip = KO_TRIP_CONTEXT_RE.test(text);
+  const tripState = Boolean(state.hasTripDates || state.awaitingDates);
+  const awaiting = Boolean(state.awaitingDates);
+  const enDays = `\\s*(?:,\\s*)?for\\s+(?:\\d+|a|one|two|three|four|five|six|seven|eight|nine|ten)\\s+(?:days?|nights?)\\b`;
+  const enRange = `\\s*(?:,\\s*)?(?:through|thru|until|till|to)\\s+(?:${EN_WEEKDAY})\\b`;
+  const enAfter = `(?:${enDays}|${enRange}|\\s*$|\\s*[.!,])`;
+  const enStart = `(?:starting|start|starts|beginning|from)`;
+  const enVerb = `(?:change|move|switch|reschedule|shift)`;
+  const koDays = `(?:\\d+\\s*박(?:\\s*\\d+\\s*일)?|\\d+\\s*일)(?:\\s*간)?(?:\\s*동안)?`;
+  const koRange = `[${KO_WEEKDAYS}]요일\\s*까지`;
+  const koChange = `(?:으로|로)\\s*(?:바꿔|변경|옮겨)`;
+  const matches = (enWord: string, koWord: string): boolean => {
+    // 「today's menu」「tomorrow's forecast」 are never a trip date.
+    const en = `(?:${enWord})\\b(?!['’]s)`;
+    const ko = `(?:${koWord})`;
+    const enRes: string[] = [
+      // (c) whole sentence is the date phrase with days or a weekday end.
+      `^(?:${enStart}\\s+)?${en}(?:${enDays}(?:${enRange})?|${enRange})$`,
+      `^(?:(?:please|can\\s+you|could\\s+you)\\s+)?${enVerb}\\s+(?:(?:it|them)\\s+)?(?:to|for)\\s+${en}(?:${enRange}|${enDays})$`,
+    ];
+    if (awaiting) enRes.push(`^(?:${enStart}\\s+)?${en}$`);
+    if (tripState) enRes.push(`\\b${enVerb}\\s+(?:(?:it|them|(?:the|my|our)\\s+dates?)\\s+)?(?:to|for)\\s+${en}`);
+    if (enTrip) {
+      enRes.push(
+        `\\b${enStart}\\s+${en}(?=${enAfter})`,
+        `\\b${en}${enRange}`,
+        `\\b${enVerb}\\s+(?:(?:it|them|(?:the|my|our)\\s+(?:trip|dates?|itinerary|travel))\\s+)?(?:to|for)\\s+${en}`,
+      );
+    }
+    const koRes: string[] = [
+      `${ko}\\s*(?:부터\\s*|에\\s*)?(?:출발|떠나)${KO_ATTRIBUTIVE}`,
+      `^${ko}\\s*부터\\s*(?:${koDays}|${koRange}|${koDays}\\s*${koRange})(?:\\s*${koChange}[가-힣]*)?$`,
+      `^${ko}\\s*[~\\-–]\\s*[${KO_WEEKDAYS}]요일(?:\\s*까지)?(?:\\s*${koChange}[가-힣]*)?$`,
+    ];
+    if (awaiting) koRes.push(`^${ko}\\s*(?:부터)?$`);
+    if (tripState) {
+      koRes.push(`(?:^|(?:그거|이거|그것|이것|그걸|이걸|날짜)\\s*(?:을|를|은|는|도)?\\s*)${ko}\\s*${koChange}`);
+    }
+    if (koTrip) {
+      koRes.push(
+        `${ko}\\s*부터(?=\\s*(?:${koDays}|${koRange}|여행|시작${KO_ATTRIBUTIVE}|$|[,.!~]))`,
+        `${ko}\\s*${koChange}`,
+        `${ko}\\s*[~\\-–]\\s*[${KO_WEEKDAYS}]요일`,
+      );
+    }
+    const target = (re: string) => (re.startsWith("^") ? whole : text);
+    return (
+      enRes.some((re) => new RegExp(re, "i").test(target(re))) ||
+      koRes.some((re) => new RegExp(re).test(target(re)))
+    );
+  };
+  // 「day after tomorrow」「내일모레」 are not tomorrow.
+  if (matches("(?<!after\\s)tomorrow", "내일(?!\\s*모레)")) return 1;
+  if (matches("today", "오늘")) return 0;
+  return undefined;
+}
+
+/** en 「through Friday」 / ko 「금요일까지」 → weekday index (0 = Sunday). */
+function enKoRangeEndWeekday(text: string): number | undefined {
+  const en = text.match(new RegExp(`\\b(?:through|thru|until|till|to)\\s+(${EN_WEEKDAY})\\b`, "i"));
+  if (en) return EN_WEEKDAYS.indexOf(en[1].toLowerCase() as (typeof EN_WEEKDAYS)[number]);
+  const ko = text.match(new RegExp(`(?:([${KO_WEEKDAYS}])요일\\s*까지|[~\\-–]\\s*([${KO_WEEKDAYS}])요일)`));
+  if (ko) return KO_WEEKDAYS.indexOf(ko[1] ?? ko[2]);
+  return undefined;
+}
+
+function parseTravelDateFromText(text: string, opts?: RelativeTripDateState): string | undefined {
   const now = new Date();
   const toLocalIso = (d: Date) =>
     `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  if (/明天|明日/.test(text)) {
+  // Weather / rain sentences (「明天到週五會下雨嗎」「明日から3日間雨が降るらしい」"will it rain from today
+  // through Friday") never set a relative trip day unless a trip noun is present.
+  if (isWeatherWithoutTripNoun(text)) {
+    const iso = text.match(/\d{4}-\d{2}-\d{2}/);
+    return iso ? iso[0] : undefined;
+  }
+  // 「今天天氣如何」「明天要下雨嗎」「明天開始下雨嗎」「明天至少要帶傘嗎」「今天到底要去哪」 are not
+  // trip dates; only explicit trip-date wording sets the start date: 「今天出發」「明晚出發」
+  // 「從明天開始（玩／N天）」「今天到週五」「改成明天到週五」「明日から」. 開始／起 must be followed by
+  // travel wording or days, 到／至 by a date or weekday. A bare 「（要）去」(「我明天要去台北」) only
+  // counts while the session has no trip dates yet. 明日香 is a place, never 明日.
+  // 「明天開始去東京玩」: 去 + a short place + 玩／旅行 is trip wording too.
+  const TRIP_AFTER = `\\s*(?:玩|旅行|旅遊|旅游|出發|出发|出遊|出游|行程|去[^\\s，,。.!！?？、]{1,8}?(?:玩|旅行|旅遊|旅游)|(?:\\d+|[一二三四五六七八九十兩两]+)\\s*天|$|[，,。.!！])`;
+  const DATE_AFTER = `\\s*(?:\\d|[一二三四五六七八九十]+\\s*[月號号日]|週|周|星期|禮拜|礼拜|明天|後天|后天|下週|下周|下星期|月底|月初)`;
+  const explicitTripDay = (word: string, allowGo: boolean): boolean =>
+    new RegExp(
+      `(?:改成|改到|改為|改为|換成|换成|提前到|延到|延後到|延后到)\\s*(?:${word})` +
+        `|(?:從|从|自)\\s*(?:${word})\\s*(?:(?:開始|开始|起)(?=${TRIP_AFTER})|(?=${TRIP_AFTER})|[到至~～〜\\-—–](?=${DATE_AFTER}))` +
+        `|(?:${word})\\s*(?:就)?\\s*(?:出發|出发|啟程|启程|動身|动身|から|出発|発)` +
+        `|(?:${word})\\s*(?:就)?\\s*(?:開始|开始|起)(?=${TRIP_AFTER})` +
+        `|(?:${word})\\s*[到至~～〜\\-—–](?=${DATE_AFTER})` +
+        (allowGo && !opts?.hasTripDates ? `|(?:${word})\\s*(?:要|會|会)?(?:去|飛|飞)` : ""),
+    ).test(text);
+  const TOMORROW = "明天|明日(?!香)|明晚";
+  if (new RegExp(TOMORROW).test(text) && explicitTripDay(TOMORROW, true)) {
     const d = new Date(now);
     d.setDate(d.getDate() + 1);
     return toLocalIso(d);
   }
-  if (/後天|后天/.test(text)) {
+  if (/後天|后天/.test(text) && explicitTripDay("後天|后天", true)) {
     const d = new Date(now);
     d.setDate(d.getDate() + 2);
     return toLocalIso(d);
   }
-  if (/今天|今日/.test(text)) {
+  if (/今天|今日/.test(text) && explicitTripDay("今天|今日", false)) {
     return toLocalIso(now);
+  }
+  // en / ko: the same explicit trip-date wording only — "starting/from today for 3 days",
+  // "change it to today through Friday", 「오늘부터 3일」「내일부터 금요일까지」. Weather / plain go
+  // questions ("will it rain tomorrow", "let's go tomorrow", 「내일 비 와?」) never match.
+  const enKoOffset = enKoExplicitTripDayOffset(text, opts);
+  if (enKoOffset !== undefined) {
+    const d = new Date(now);
+    d.setDate(d.getDate() + enKoOffset);
+    return toLocalIso(d);
   }
   const iso = text.match(/\d{4}-\d{2}-\d{2}/);
   if (iso) return iso[0];
   return undefined;
+}
+
+/**
+ * 「今天出發」「從明天開始」「明日から」「改成明天到週五」 on a trip that already has dates: the new start
+ * date keeps the trip length (or ends on the named weekday / parsed end date / stated days), so the
+ * old end date never stretches the trip (11/10～12/14). Without existing dates only the start is set.
+ */
+function parseRelativeTripDateRange(
+  text: string,
+  existing: { startDate?: string; endDate?: string; days?: number },
+  parsedEndDate?: string,
+  awaitingDates?: boolean,
+): { startDate: string; endDate?: string; days?: number } | undefined {
+  const startDate = parseTravelDateFromText(text, { hasTripDates: Boolean(existing.startDate), awaitingDates });
+  if (!startDate) return undefined;
+  if (!/今天|今日|明天|明日|明晚|後天|后天/.test(text) && !EN_KO_RELATIVE_DAY_RE.test(text)) return { startDate };
+  const toUtc = (iso: string) => {
+    const [y, m, d] = iso.split("-").map(Number);
+    return Date.UTC(y, m - 1, d);
+  };
+  const toIso = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+  const DAY = 86_400_000;
+  const startMs = toUtc(startDate);
+  if (parsedEndDate && /^\d{4}-\d{2}-\d{2}$/.test(parsedEndDate) && toUtc(parsedEndDate) >= startMs) {
+    return { startDate, endDate: parsedEndDate, days: Math.round((toUtc(parsedEndDate) - startMs) / DAY) + 1 };
+  }
+  // 「到週五」 or ja 「から金曜日まで」 (日月火水木金土 → the same weekday index).
+  const jaWeekday = text.match(/(?:から|[~～〜])\s*([日月火水木金土])曜(?:日)?\s*まで/);
+  const weekday = text.match(/[到至~～〜\-—–]\s*(?:週|周|星期|禮拜|礼拜)\s*([一二三四五六日天])/)
+    ?? (jaWeekday ? [jaWeekday[0], "日一二三四五六"["日月火水木金土".indexOf(jaWeekday[1])]] : null);
+  const enKoWeekday = weekday ? undefined : enKoRangeEndWeekday(text);
+  if (weekday || enKoWeekday !== undefined) {
+    const target = weekday ? "日一二三四五六".indexOf(weekday[1] === "天" ? "日" : weekday[1]) : enKoWeekday!;
+    const offset = (target - new Date(startMs).getUTCDay() + 7) % 7;
+    return { startDate, endDate: toIso(startMs + offset * DAY), days: offset + 1 };
+  }
+  const stated = parseDays(text);
+  const span =
+    existing.startDate && existing.endDate && toUtc(existing.endDate) >= toUtc(existing.startDate)
+      ? Math.round((toUtc(existing.endDate) - toUtc(existing.startDate)) / DAY) + 1
+      : existing.days;
+  const days = stated ?? (existing.startDate ? span : undefined);
+  if (!days || days < 1) return { startDate };
+  return { startDate, endDate: toIso(startMs + (days - 1) * DAY), days };
+}
+
+/** The session is asking for the trip dates / length (ask_days, duration or date confirmation). */
+function isAwaitingTripDates(session: ChatPlanningSession): boolean {
+  const type = session.pendingQuestion?.type;
+  return type === "ask_days" || type === "duration_choice" || type === "date_confirmation";
+}
+
+/** 「明日から3日間雨が降るらしい」「오늘부터 3일 동안 비 온대」: weather with a relative day sets neither dates nor days. */
+function isRelativeDayWeatherSentence(text: string): boolean {
+  return (
+    (/今天|今日|明天|明日(?!香)|明晚|後天|后天/.test(text) || EN_KO_RELATIVE_DAY_RE.test(text)) &&
+    isWeatherWithoutTripNoun(text)
+  );
+}
+
+function relativeTripDateProvenance(range: { startDate: string; endDate?: string }): CanonicalTravelContext["dateProvenance"] {
+  return { source: "user_date", confirmed: true, startDate: range.startDate, endDate: range.endDate ?? range.startDate };
+}
+
+/**
+ * The relative trip range (「從今天開始玩3天」「今日から3日間」「改成今天到週五」) a global planning turn
+ * must carry: a relative start word with a resolved end only. Without one (「3天」) the global turn
+ * keeps its own rule.
+ */
+function globalTurnRelativeTripDateRange(
+  session: ChatPlanningSession,
+  text: string,
+): { startDate: string; endDate: string; days: number } | undefined {
+  if (!/今天|今日|明天|明日(?!香)|明晚|後天|后天/.test(text) && !EN_KO_RELATIVE_DAY_RE.test(text)) return undefined;
+  const dateRange = parseTravelDateRangeFromText(text);
+  if (dateRange.startDate) return undefined;
+  const prev = session.travelContext;
+  const range = parseRelativeTripDateRange(
+    text,
+    {
+      startDate: prev?.startDate ?? session.tripStartDate,
+      endDate: prev?.endDate ?? session.tripEndDate,
+      days: prev?.days ?? session.tripDays,
+    },
+    dateRange.endDate,
+    isAwaitingTripDates(session),
+  );
+  if (!range?.endDate || !range.days) return undefined;
+  return { startDate: range.startDate, endDate: range.endDate, days: range.days };
 }
 
 function parseTravelConstraints(text: string): Partial<CanonicalTravelContext> {
@@ -544,11 +815,12 @@ function parseDestinationFromTurn(text: string, skipDestParse: boolean): string 
   // clause is read, exactly as the same turn without it (same as trip-planning-session-reset).
   // Extended form (「我不想去大阪了，換金澤」): no destination is read from this turn (dates still
   // come from the full turn); the switch target is applied only via applyConfirmedDestinationSwitch.
-  const negatedSwitch = parseNegatedDestinationSwitch(text);
+  const negatedSwitch = parseNegatedDestinationSwitchTurn(text);
   if (negatedSwitch?.form === "extended") return undefined;
   const source = negatedSwitch?.remainderText ?? text;
   // Dates are parsed from the full turn separately; the destination must not include them.
-  const body = stripTravelDateRangeFromText(source);
+  // 「東京へ行きたい」「도쿄에 가고 싶어」: the travel-wish wording is never part of the place.
+  const body = stripTravelWishSuffix(stripTravelDateRangeFromText(source));
   if (body !== source.trim()) {
     // 「11/25-11/30に東京へ行きます」: resolve the single extracted candidate, not the sentence.
     const candidates = travelDestinationCandidates(source);
@@ -556,8 +828,14 @@ function parseDestinationFromTurn(text: string, skipDestParse: boolean): string 
       candidates.length === 1 ? resolveDestinationFromText(candidates[0]!) : undefined;
     if (fromCandidate) return fromCandidate;
   }
-  return resolveDestinationAreaScope(body)?.displayLabel ?? resolveDestinationFromText(body);
+  // 「沖縄へ旅行」「日本へ旅行中」「X観光」: trip wording is never part of a destination name.
+  const ok = (label: string | undefined) => (label && !TRAVEL_WORD_LABEL_RE.test(label) ? label : undefined);
+  const area = resolveDestinationAreaScope(body)?.displayLabel;
+  if (area) return ok(area) ?? ok(resolveDestinationFromText(body));
+  return ok(resolveDestinationFromText(body));
 }
+
+const TRAVEL_WORD_LABEL_RE = /(?:旅行|観光)中?$|(?:への|へ)\s*(?:旅行|観光)/u;
 
 type DeferredStaleScopeClear = { oldDestination: string; newLabel: string };
 
@@ -720,12 +998,29 @@ export function parseTravelContextFromText(
       const nearby = comboContinuation
         ? parseNearbyExtensionsFromText(t, prevDestLabel ?? pq.baseDestination)
         : undefined;
+      const relativeRange = parseRelativeTripDateRange(
+        t,
+        {
+          startDate: prev.startDate ?? session.tripStartDate,
+          endDate: prev.endDate ?? session.tripEndDate,
+          days: prev.days ?? session.tripDays,
+        },
+        undefined,
+        isAwaitingTripDates(session),
+      );
       return {
         destination: prev.destination ?? pq.baseDestination,
         destinationCountry: prev.destinationCountry ?? pq.destinationCountry,
-        days: parseDays(t) ?? prev.days ?? session.tripDays,
+        days:
+          relativeRange?.days ??
+          (isRelativeDayWeatherSentence(t) ? undefined : parseDays(t)) ??
+          prev.days ??
+          session.tripDays,
         travelMonth: parseMonth(t) ?? prev.travelMonth,
-        startDate: parseTravelDateFromText(t) ?? prev.startDate ?? session.tripStartDate,
+        ...(relativeRange?.endDate
+          ? { endDate: relativeRange.endDate, dateProvenance: relativeTripDateProvenance(relativeRange) }
+          : {}),
+        startDate: relativeRange?.startDate ?? prev.startDate ?? session.tripStartDate,
         tripPurpose: prev.tripPurpose,
         vibe: prev.vibe,
         mood: prev.mood,
@@ -801,9 +1096,24 @@ export function parseTravelContextFromText(
   const dateRange = parseTravelDateRangeFromText(t);
   // Only return dates/days found in THIS turn. Session fallbacks belong in merge —
   // otherwise a new destination inherits the previous trip's startDate/endDate/days.
-  const startFromText = dateRange.startDate ?? parseTravelDateFromText(t);
-  const endFromText = dateRange.endDate;
-  const daysFromText = dateRange.days ?? parseDays(t);
+  const relativeRange = dateRange.startDate
+    ? undefined
+    : parseRelativeTripDateRange(
+        t,
+        newlyParsedDest
+          ? { startDate: session.travelContext?.startDate ?? session.tripStartDate }
+          : {
+              startDate: session.travelContext?.startDate ?? session.tripStartDate,
+              endDate: session.travelContext?.endDate ?? session.tripEndDate,
+              days: session.travelContext?.days ?? session.tripDays,
+            },
+        dateRange.endDate,
+        isAwaitingTripDates(session),
+      );
+  const startFromText = dateRange.startDate ?? relativeRange?.startDate;
+  const endFromText = dateRange.endDate ?? relativeRange?.endDate;
+  const daysFromText =
+    dateRange.days ?? relativeRange?.days ?? (isRelativeDayWeatherSentence(t) ? undefined : parseDays(t));
 
   const parsedMood = preset?.mood ?? moodHint ?? parseVibe(t);
   const inheritedMoodEvidenceSource: CanonicalTravelContext["moodEvidenceSource"] | undefined =
@@ -819,6 +1129,7 @@ export function parseTravelContextFromText(
     travelYear: parseTravelYear(t),
     ...(startFromText ? { startDate: startFromText } : {}),
     ...(endFromText ? { endDate: endFromText } : {}),
+    ...(relativeRange?.endDate ? { dateProvenance: relativeTripDateProvenance(relativeRange) } : {}),
     ...(daysFromText != null ? { days: daysFromText } : {}),
     mood: parsedMood,
     moodEvidenceSource: resolveMoodEvidenceSource(t, parsedMood, inheritedMoodEvidenceSource),
@@ -1003,7 +1314,9 @@ function mergeTravelContextLegacy(
       (isMoodRecommendationSession(workingSession) || Boolean(pendingSelection.selectedOption)) &&
       !hasCategoryPlaceQuery(userText);
 
-    const parsedDest = isValidContextValue(parsed.destination) ? parsed.destination : undefined;
+    // 「京都以外」「京都不要」「京都はやめて」: exclusion wording is never a destination.
+    const parsedDest =
+      isValidContextValue(parsed.destination) && !isNonPlaceDestinationText(parsed.destination) ? parsed.destination : undefined;
     const prevDest = isValidContextValue(prev.destination) ? prev.destination : undefined;
     const sessionDest = resolveSessionDestination(workingSession);
 
@@ -1124,7 +1437,8 @@ function mergeTravelContextLegacy(
           workingSession.tripEndDate)
         : (pendingSelection.contextPatch.endDate ?? parsed.endDate),
       suggestedStartDate: inheritTripBoundFields ? prev.suggestedStartDate : undefined,
-      dateProvenance: inheritTripBoundFields ? prev.dateProvenance : undefined,
+      // 「今天出發」「從明天開始」 on a dated trip: this turn's explicit start (with its kept length) is a user date.
+      dateProvenance: parsed.dateProvenance ?? (inheritTripBoundFields ? prev.dateProvenance : undefined),
       planningDaysConfirmed: inheritTripBoundFields
         ? (pendingSelection.contextPatch.planningDaysConfirmed ??
           parsed.planningDaysConfirmed ??
@@ -1517,6 +1831,10 @@ export function applyConfirmedDestinationSwitch(
     requestText: string;
     turnResetBase?: Pick<ChatPlanningSession, "planningSessionId" | "planVersion">;
     resetAlreadyThisTurn: boolean;
+    /** Center the Destination Authority trusted this turn (cross-check for the scope lock). */
+    trustedCenter?: { lat: number; lng: number };
+    /** The Authority's own provider answer this turn (same request that verified the center), if any. */
+    trustedLocation?: ChatPlanningSession["tripDestination"] | null;
   },
 ): ConfirmedDestinationSwitchResult {
   if (opts.resetAlreadyThisTurn) return { applied: false };
@@ -1655,7 +1973,148 @@ export function applyConfirmedDestinationSwitch(
   } catch (error) {
     warnCommitStep("commit", error);
   }
+  // 「不去雪梨了，改去京都」while choosing combinations: the same spec as the global combination
+  // switch — previous dates / days kept (unless this turn gives its own), combinations re-listed.
+  // A candidate submitted while choosing combinations (geocode miss → re-asked) is the same switch.
+  // After a combination was picked / the itinerary was generated: the same switch (isCombinationSwitchRelistBase).
+  if (isCombinationSwitchRelistBase(base)) {
+    session = withCombinationSwitchDates(base, session, requestText);
+    // The previous destination's generation (crashed mid-way) never stays on the new destination.
+    if (session.phase === "generating") session = { ...session, phase: "discover" };
+  }
+  session = withTrustedSwitchScope(session, target, opts.trustedCenter, opts.trustedLocation);
   return { applied: true, session };
+}
+
+const nearCenter = (a: { lat: number; lng: number }, b: { lat: number; lng: number }, tolerance: number) =>
+  Math.abs(a.lat - b.lat) <= tolerance && Math.abs(a.lng - b.lng) <= tolerance;
+
+/**
+ * The provider's name for the switch target: equal after normalisation, or equal once script
+ * variants (臺／台, 區／区) and one administrative suffix are folded (海雲臺區 = 海雲台). Two-character
+ * 府 / 都 / 縣 names keep their last character (別府 = 別府市, never 別).
+ */
+function sameSwitchTargetName(value: string | undefined, target: string): boolean {
+  const raw = value?.trim();
+  if (!raw) return false;
+  if (normalizeDestinationLabel(raw) === target) return true;
+  const fold = (label: string) => {
+    const trimmed = label.trim();
+    const stem = /^\p{Script=Han}[府都縣县]$/u.test(trimmed) ? trimmed : stripAdministrativeSuffix(trimmed);
+    return normalizeAreaEvidence(stem);
+  };
+  const a = fold(raw);
+  return a.length >= 2 && a === fold(target);
+}
+
+/**
+ * A provider-verified switch target the local tables do not know (熱海): the Authority already
+ * locked its center + country this turn (resolveTrustedRecommendationSearchScope). Copy that lock
+ * into the switched travelContext so discovery does not see a label-only destination (desync).
+ * No provider call; known destinations (type already resolved / coordinates present) unchanged.
+ */
+function withTrustedSwitchScope(
+  session: ChatPlanningSession,
+  target: string,
+  trustedCenter: { lat: number; lng: number } | undefined,
+  trustedLocation: ChatPlanningSession["tripDestination"] | null | undefined,
+): ChatPlanningSession {
+  const ctx = session.travelContext;
+  if (!ctx || normalizeDestinationLabel(ctx.destination ?? "") !== target) return session;
+  const typeKnown = Boolean(ctx.destinationType && (ctx.destinationType as string) !== "unknown");
+  if (typeKnown && ctx.destinationCoordinates) return session;
+  const scope = getResolvedDestinationScope(target);
+  if (!scope || normalizeDestinationLabel(scope.normalizedName) !== target) return session;
+  if (!Number.isFinite(scope.latitude) || !Number.isFinite(scope.longitude)) return session;
+  const scopeCenter = { lat: scope.latitude, lng: scope.longitude };
+  if (trustedCenter && !nearCenter(trustedCenter, scopeCenter, 0.5)) return session;
+  // The Authority's provider answer for this very label (same center): the resolved trip
+  // destination (Place ID / country / coordinates), so later turns are not label-only either.
+  // provider_locked (no request this turn): the same verified answer kept with the scope lock.
+  const providerLocation = trustedLocation ?? getTrustedProviderLocation(target);
+  const providerNames = isResolvedDestination(providerLocation)
+    ? [providerLocation.city, providerLocation.region, providerLocation.displayLabel, providerLocation.formattedName]
+    : [];
+  const matchedLocation =
+    isResolvedDestination(providerLocation) &&
+    nearCenter(providerLocation, trustedCenter ?? scopeCenter, 0.05) &&
+    providerNames.some((value) => sameSwitchTargetName(value, target))
+      ? providerLocation
+      : undefined;
+  // Matched only up to script / suffix (海雲臺區 for 海雲台): the display label is the switched
+  // destination's own label, so every later same-label check reads this same resolved place.
+  const location =
+    matchedLocation &&
+    !providerNames.some((value) => Boolean(value?.trim()) && normalizeDestinationLabel(value!) === target)
+      ? { ...matchedLocation, displayLabel: ctx.destination?.trim() || target }
+      : matchedLocation;
+  const patch = buildDestinationScopeContextPatch(scope);
+  // The trusted switch target is a city / area below a country (the Authority never trusts a
+  // country here); a lock without its own type is a city.
+  const lockedType = patch.destinationType && patch.destinationType !== "unknown" && patch.destinationType !== "country"
+    ? patch.destinationType
+    : "city";
+  const travelContext: CanonicalTravelContext = {
+    ...ctx,
+    destinationType: typeKnown
+      ? ctx.destinationType
+      : (lockedType as CanonicalTravelContext["destinationType"]),
+    destinationCountry: ctx.destinationCountry?.trim() || location?.country || patch.destinationCountry,
+    destinationCountryCode: ctx.destinationCountryCode?.trim() || patch.destinationCountryCode,
+    destinationCity: ctx.destinationCity?.trim() || patch.destinationCity,
+    destinationRegion: ctx.destinationRegion?.trim() || patch.destinationRegion,
+    destinationScopeId: ctx.destinationScopeId || patch.destinationScopeId,
+    destinationCoordinates: ctx.destinationCoordinates ?? patch.destinationCoordinates,
+  };
+  return { ...session, travelContext, ...(location ? { tripDestination: location } : {}) };
+}
+
+/** Carries the combination-choice trip's dates / days onto the switched session (combinationSwitchDatePatch). */
+function withCombinationSwitchDates(
+  base: ChatPlanningSession,
+  session: ChatPlanningSession,
+  requestText: string,
+): ChatPlanningSession {
+  const prev = base.travelContext ?? EMPTY_TRAVEL_CONTEXT;
+  const range = parseTravelDateRangeFromText(requestText);
+  const signals = planningCalendarSignals(requestText, new Date(), base.tripDestination?.timezone);
+  const hasRange = Boolean(range.startDate && range.endDate);
+  const days = parseDayCountFromText(requestText) ?? (hasRange ? range.days : undefined) ?? prev.days ?? base.tripDays;
+  if (!days) return session;
+  const patch = combinationSwitchDatePatch(prev, requestText, {
+    ...signals,
+    ...(hasRange ? { startDate: range.startDate, endDate: range.endDate } : {}),
+  });
+  const current = session.travelContext ?? EMPTY_TRAVEL_CONTEXT;
+  const travelContext: CanonicalTravelContext = {
+    ...current,
+    travelMonth: prev.travelMonth,
+    travelYear: prev.travelYear,
+    ...(signals.travelMonth ? { travelMonth: signals.travelMonth } : {}),
+    ...(signals.travelYear ? { travelYear: signals.travelYear } : {}),
+    ...patch,
+    days,
+    // As the global combination switch: the reset's "awaiting_days" no longer applies (days carried).
+    conversationState: undefined,
+  };
+  travelContext.planningDaysConfirmed = Boolean(travelContext.startDate && travelContext.endDate);
+  return {
+    ...session,
+    travelContext,
+    tripDays: days,
+    travelDate: travelContext.startDate,
+    tripStartDate: travelContext.startDate,
+    tripEndDate: travelContext.endDate,
+    tripPlanningContext: session.tripPlanningContext
+      ? {
+          ...session.tripPlanningContext,
+          travelMonth: travelContext.travelMonth,
+          startDate: travelContext.startDate,
+          endDate: travelContext.endDate,
+          days,
+        }
+      : undefined,
+  };
 }
 
 /**
@@ -1671,9 +2130,18 @@ export function wouldMergeTravelContextResetTrip(
   if (session.fromTripAddPlace) {
     // mergeTravelContextLegacy: the trip add-place branch returns before any reset.
     if (session.tripAddPlaceContext) return false;
-  } else if (globalPlanningTurn(session, userText)) {
-    // applyGlobalPlanningContext route: no reset.
-    return false;
+  } else {
+    // Same pre-merge steps as mergeTravelContext (hold reply keeps the context; day references dropped).
+    if (isCombinationChoiceTurn(session) && isTripLengthOnlyCombinationReply(userText)) {
+      userText = withoutDayReferences(userText);
+    }
+    if (isCombinationChoiceTurn(session) && isCombinationHoldReply(userText)) return false;
+    const turn = globalPlanningTurn(session, userText);
+    // applyGlobalPlanningContext route: resets only for the combination-choice destination switch
+    // (applyCombinationDestinationSwitch); every other global turn merges without a reset. A
+    // combination-choice switch candidate resets this turn too, once resolveGlobalPlanningCandidate resolves it.
+    if (turn) return isCombinationDestinationSwitchContext(session, turn)
+      || Boolean(turn.destinationCandidate?.status === 'pending' && turn.destinationCandidate.combinationSwitch);
   }
   const detected = isNewTripPlanning(session, userText);
   return Boolean(detected.isNew && detected.reason);
@@ -1681,9 +2149,37 @@ export function wouldMergeTravelContextResetTrip(
 
 /** General language input is merged before legacy geographic heuristics can discard it. */
 export function mergeTravelContext(session: ChatPlanningSession, userText: string, lastAssistantReply?: string): {context: CanonicalTravelContext; session: ChatPlanningSession} {
+  // The 「第2組的第一天改一下」confirm only covers the very next turn: anything but the confirm
+  // reply drops it, so e.g. 「全部」selects all again.
+  session = dropStaleCombinationConfirm(session, userText, lastAssistantReply ?? session.lastAssistantReply);
   if (session.fromTripAddPlace) return mergeTravelContextLegacy(session,userText,lastAssistantReply);
-  const turn = globalPlanningTurn(session,userText);
-  const result = turn ? applyGlobalPlanningContext(session,turn) : mergeTravelContextLegacy(session,userText,lastAssistantReply);
+  // 「都不錯但第二天改一下」while choosing combinations: 「第二天」is a day ordinal, not trip days,
+  // and nothing is selected — keep the context as it is; the advice turn asks a follow-up.
+  // 1c 「2日目を5日間に変えて」: trip-length parsers read the first number, so drop day references.
+  if (isCombinationChoiceTurn(session) && isTripLengthOnlyCombinationReply(userText)) {
+    userText = withoutDayReferences(userText);
+  }
+  if (isCombinationChoiceTurn(session) && isCombinationHoldReply(userText)) {
+    return {context: session.travelContext ?? {interests: []}, session};
+  }
+  const rawGlobalTurn = globalPlanningTurn(session,userText);
+  // 「明日から3日間雨が降るらしい」"it's going to rain starting today for 3 days": a weather sentence never
+  // changes the trip length either (the global turn reads 3日間 / 3 days as trip days).
+  const globalTurn = rawGlobalTurn && isRelativeDayWeatherSentence(userText)
+    ? {...rawGlobalTurn,days:session.travelContext?.days ?? session.tripDays}
+    : rawGlobalTurn;
+  // 「從今天開始玩3天」「今日から3日間」 on a trip with a destination: the global turn only reads the
+  // length, so the relative start (today / tomorrow …) and its end are applied here, as the legacy parse does.
+  const relativeRange = globalTurn ? globalTurnRelativeTripDateRange(session, userText) : undefined;
+  const turn = globalTurn && relativeRange
+    ? {...globalTurn,startDate:relativeRange.startDate,endDate:relativeRange.endDate,days:relativeRange.days,
+      suggestedStartDate:undefined,dateProvenance:relativeTripDateProvenance(relativeRange)}
+    : globalTurn;
+  const applied = turn ? applyGlobalPlanningContext(session,turn) : mergeTravelContextLegacy(session,userText,lastAssistantReply);
+  const result = relativeRange
+    ? {...applied,session:{...applied.session,tripStartDate:relativeRange.startDate,tripEndDate:relativeRange.endDate,
+      travelDate:relativeRange.startDate,tripDays:relativeRange.days}}
+    : applied;
   const label = result.context.destinationCandidate?.raw ?? result.context.destinationCity ?? result.context.destination;
   const candidates = [session.travelContext?.destinationDisplay, ...(session.travelContext?.offeredDestinationOptions ?? []).map(option => option.destinationDisplay)].filter(Boolean) as DestinationDisplayMetadata[];
   const matched = candidates.filter(candidate => displayMetadataMatchesLabel(candidate, label ?? "") && sameDisplayCountry(candidate.country, result.context.destinationCountry ?? ""));

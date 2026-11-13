@@ -1,3 +1,4 @@
+import "./verify-netguard-full.mjs";
 import assert from "node:assert/strict";
 import { clearCandidatePoolCache } from "../src/lib/ai/places-cost-cache/candidate-pool-cache.ts";
 import {

@@ -1,7 +1,10 @@
 import { bindTripCreationAuthority, type TripCreationAuthority } from "./generated-plan-handoff";
+import { applyEnglishPlaceArticles } from "@/lib/i18n/en-place-articles";
 import { logGeneratedPlanHandoff, type PlanCorrelation } from "./generated-plan-handoff-diagnostic";
 import { unwrapWeatherResult } from "@/lib/ai/unwrap-weather-result";
 import type { Locale } from "@/lib/i18n/types";
+import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import { displayDestinationForCopy } from "@/lib/ai/destination-locale-aliases";
 import { isPlaceOperationalForRecommendation } from "@/lib/place-operational-eligibility";
 import type { PlaceResult } from "@/lib/place-result";
 import type { WeatherSummary } from "@/lib/weather-types";
@@ -153,7 +156,8 @@ import {
   shoppingScopeExhausted,
   type ShoppingSearchScope,
 } from "@/lib/ai/shopping-search-scope";
-import { beginPlacesGenerationSession, isPlacesRateLimited } from "@/lib/places-api-guard";
+import { beginPlacesGenerationSession, getPlacesApiCallStats, isPlacesRateLimited } from "@/lib/places-api-guard";
+import { hasPlacesRateLimitEncountered } from "@/lib/places-classic-landmark-cache";
 import {
   bindSessionCandidatePool,
   ensureSessionDestination,
@@ -168,6 +172,7 @@ import {
   buildDestinationEnglishFallbackQueries,
   filterPlacesByDestinationGuard,
   filterPlacesByDestinationArea,
+  filterTextOnlyDestinationCountryMismatch,
   placesSearchContextPayload,
   type ChatPlaceSearchContext,
 } from "@/lib/ai/chat-place-search-context";
@@ -298,6 +303,7 @@ function buildSummaryText(
   dayBuckets?: DayPlanBucket[],
   composedPlans?: ComposedDayPlan[],
   opts?: { slowTravel?: boolean },
+  locale: Locale = "zh-TW",
 ): string {
   const label = normalizeDestinationLabel(destination);
   const days = context.days;
@@ -321,7 +327,35 @@ function buildSummaryText(
       dayBuckets ?? [],
       composedPlans,
       opts,
+      locale,
     );
+  }
+  if (locale !== "zh-TW" && !recommendations.length) {
+    const shown = displayDestinationForCopy(label, undefined, locale);
+    const landmark = profile?.kind === "landmark";
+    const hint = {
+      en: landmark
+        ? `I couldn't reach live place data around ${shown} right now. Try rephrasing (for example, "spots near ${shown}") and ask again.`
+        : `I couldn't reach live place data for ${shown} right now. Try rephrasing (for example, "must-see spots in ${shown}") and ask again.`,
+      ja: landmark
+        ? `現在、${shown}周辺のリアルタイムのスポット情報に接続できません。言い方を変えて（例：「${shown}周辺の観光スポット」）もう一度お試しください。`
+        : `現在、${shown}のリアルタイムのスポット情報に接続できません。言い方を変えて（例：「${shown}の必見スポット」）もう一度お試しください。`,
+      ko: landmark
+        ? `지금은 ${shown} 주변의 실시간 장소 정보에 연결할 수 없어요. 표현을 바꿔서(예: "${shown} 주변 명소") 다시 시도해 주세요.`
+        : `지금은 ${shown}의 실시간 장소 정보에 연결할 수 없어요. 표현을 바꿔서(예: "${shown} 꼭 가볼 곳") 다시 시도해 주세요.`,
+    }[locale];
+    return [intro, "", applyEnglishPlaceArticles(hint, locale)].join("\n");
+  }
+  if (locale !== "zh-TW") {
+    const lines = recommendations.map(
+      (rec, index) => `${index + 1}. ${rec.name}${rec.reason ? ` — ${rec.reason}` : ""}`,
+    );
+    const closing = {
+      en: "If you'd like to add any to your trip, tell me which ones you want to schedule first.",
+      ja: "旅程に加えたい場合は、まずどれを入れたいか教えてください。",
+      ko: "일정에 넣고 싶다면 가장 먼저 넣고 싶은 곳을 알려 주세요.",
+    }[locale];
+    return [intro, "", ...lines, "", closing].join("\n");
   }
   if (!recommendations.length) {
     const hint =
@@ -673,12 +707,15 @@ async function searchDestinationPlaces(params: {
   }
 
   logDestinationTextSearchResult(filtered.length);
-  if (filtered.length) {
+  // 無座標目的地：地址明確屬於其他國家的同名地點不寫入 Candidate Pool。
+  // 回傳值不在這裡篩（呼叫端的補查迴圈依數量判斷，篩掉會多打查詢）。
+  const poolPlaces = filterTextOnlyDestinationCountryMismatch(filtered, searchContext);
+  if (poolPlaces.length) {
     ingestResolvedPlacesIntoCandidatePool({
       sessionId: sessionId?.trim() || undefined,
       destination: label,
       countryCode: countryCode ?? searchContext?.destinationCountry ?? undefined,
-      places: filtered,
+      places: poolPlaces,
       source: caller || "chat_recommendation",
     });
   }
@@ -886,6 +923,8 @@ export async function buildAlternativeDestinationRecommendations(params: {
       countryCode: altEntity.country ?? undefined,
     });
 
+    // 無座標目的地：剔除地址明確屬於其他國家的同名地點；只篩不補查。
+    places = filterTextOnlyDestinationCountryMismatch(places, searchContext);
     places = filterAlreadyRecommendedPlaces(places, {
       rejectedNames: rejectedPlaceNames,
     });
@@ -901,7 +940,7 @@ export async function buildAlternativeDestinationRecommendations(params: {
       safeChatLog(logChatRenderBlocked, "no_real_places");
     }
 
-    const summary = buildAlternativeRecommendationSummary(recommendations);
+    const summary = buildAlternativeRecommendationSummary(recommendations, locale);
     if (recommendations.length > 0) {
       logChatPlaceCardsRendered(recommendations.length);
     }
@@ -965,6 +1004,8 @@ async function buildDestinationMustVisitRecommendationResult(params: {
   dayPlan?: AiDayPlan;
   payload: RoamiePayloadV2;
   contextPatch: Partial<CanonicalTravelContext>;
+  /** 候選不足（非限流）無法排滿天數；chat 顯示專用文案，不再 fallback 重跑。 */
+  candidateInsufficient?: boolean;
 }> {
   const {
     destination,
@@ -990,6 +1031,7 @@ async function buildDestinationMustVisitRecommendationResult(params: {
     destinationType: context.destinationType,
     countryCode: context.destinationCountry,
     requestedIntent: "must_visit_places",
+    trustedCenter,
   });
   if (scopeGate.placesCallBlocked) {
     logDestinationScopeBlocked(scopeGate);
@@ -1016,8 +1058,10 @@ async function buildDestinationMustVisitRecommendationResult(params: {
       },
       contextPatch: {
         destination: label,
-        destinationType: "country",
-        destinationCountry: label,
+        // 只有真正國家層級才寫 country；省／道／未知名稱不再被當成國家。
+        ...(scopeGate.requiresDestinationRefinement
+          ? { destinationType: "country" as const, destinationCountry: label }
+          : {}),
         tripPurpose: "destination_selection",
       },
     };
@@ -1136,8 +1180,8 @@ async function buildDestinationMustVisitRecommendationResult(params: {
       searchProfile.kind === "landmark" ? (searchProfile.nearestCity ?? label) : label;
     const intro =
       searchProfile.kind === "landmark"
-        ? buildLandmarkCompanionIntro(searchProfile, scene, weather?.available !== false)
-        : buildWeatherAwarePlaceIntro(label, scene, weather?.available !== false);
+        ? buildLandmarkCompanionIntro(searchProfile, scene, weather?.available !== false, locale)
+        : buildWeatherAwarePlaceIntro(label, scene, weather?.available !== false, locale);
 
     if ((useItineraryMode || useStylePlanning) && days && style) {
       logAiRenderItineraryStart();
@@ -1206,6 +1250,7 @@ async function buildDestinationMustVisitRecommendationResult(params: {
       let composedPlans = stylePlan.composedPlans;
       const slowTravel = stylePlan.slowTravel ?? false;
       const poolExpansionExhausted = stylePlan.poolExpansionExhausted ?? false;
+      let candidateInsufficientNotice = false;
 
       // 成功結果凍結後，不允許空 dayPlan / empty cards 覆蓋
       if (!dayPlan?.items.length) {
@@ -1285,13 +1330,21 @@ async function buildDestinationMustVisitRecommendationResult(params: {
           filteredPlacesForPlan.length,
           0,
         );
-        const blockedSummary = ITINERARY_VALIDATOR_BLOCKED_USER_MESSAGE;
+        const blockedSummary =
+          locale === "zh-TW"
+            ? ITINERARY_VALIDATOR_BLOCKED_USER_MESSAGE
+            : chatRuntimeCopy("itineraryValidatorBlocked", locale);
+        // 候選不足（非限流）時，validator 失敗也要帶旗標，讓候選不足文案生效。
+        const validatorCandidateInsufficient =
+          "candidateInsufficient" in stylePlan && Boolean(stylePlan.candidateInsufficient) &&
+          !(hasPlacesRateLimitEncountered() || isPlacesRateLimited() || getPlacesApiCallStats().textRateLimited > 0);
         return {
           summary: blockedSummary,
           recommendations: [],
           dayPlan: undefined,
           payload: buildPayload(blockedSummary, [], planningContext, session),
           contextPatch: buildContextPatch(label),
+          ...(validatorCandidateInsufficient ? { candidateInsufficient: true } : {}),
         };
       }
 
@@ -1305,7 +1358,7 @@ async function buildDestinationMustVisitRecommendationResult(params: {
       const summary = buildPlanningDaySummary(label, days, style, dayBuckets ?? [], composedPlans, {
         slowTravel,
         expansionExhausted: poolExpansionExhausted,
-      });
+      }, locale);
 
       if (itineraryRenderable && recommendations.length > 0 && dayPlan?.items.length) {
         logAiPushPlaceCards(recommendations.length);
@@ -1323,6 +1376,11 @@ async function buildDestinationMustVisitRecommendationResult(params: {
         const blockReason = stylePlan.candidateInsufficient
           ? "insufficient_candidates"
           : "itinerary_plan_incomplete";
+        // 限流（429／cooldown）造成的不足沿用既有流程，不判定為候選不足。
+        const rateLimitedThisTurn =
+          hasPlacesRateLimitEncountered() || isPlacesRateLimited() || getPlacesApiCallStats().textRateLimited > 0;
+        candidateInsufficientNotice =
+          (blockReason === "insufficient_candidates" || poolExpansionExhausted) && !rateLimitedThisTurn;
         safeChatLog(logChatRenderBlocked, blockReason);
         logAiRenderBlocked(blockReason, filteredPlacesForPlan.length, 0);
         if (stylePlan.candidateInsufficient) {
@@ -1362,6 +1420,7 @@ async function buildDestinationMustVisitRecommendationResult(params: {
         dayPlan,
         payload: buildPayload(summary, recommendations, planningContext, session),
         contextPatch: buildContextPatch(label),
+        ...(candidateInsufficientNotice ? { candidateInsufficient: true } : {}),
       };
     }
 
@@ -1395,6 +1454,8 @@ async function buildDestinationMustVisitRecommendationResult(params: {
       countryCode: entity.country ?? undefined,
     });
 
+    // 無座標目的地：剔除地址明確屬於其他國家的同名地點；只篩不補查。
+    places = filterTextOnlyDestinationCountryMismatch(places, searchContext);
     places = rankLandmarkCompanionPlaces(places, searchProfile);
 
     const filteredPlaces = filterAlreadyRecommendedPlaces(places, {
@@ -1408,7 +1469,7 @@ async function buildDestinationMustVisitRecommendationResult(params: {
       logChatPlacesResponse(recommendations.length, "places_api");
     } else {
       logChatPlacesError("places_empty", "all_attempts");
-      const fallback = buildNamedFallbackRecommendations(label);
+      const fallback = buildNamedFallbackRecommendations(label, locale);
       recommendations = filterAlreadyRecommendedPlaces(fallback, {
         rejectedNames: rejectedPlaceNames,
       });
@@ -1419,7 +1480,17 @@ async function buildDestinationMustVisitRecommendationResult(params: {
       }
     }
 
-    const summary = buildSummaryText(label, intro, recommendations, planningContext, searchProfile);
+    const summary = buildSummaryText(
+      label,
+      intro,
+      recommendations,
+      planningContext,
+      searchProfile,
+      undefined,
+      undefined,
+      undefined,
+      locale,
+    );
     if (recommendations.length > 0) {
       logChatPlaceCardsRendered(recommendations.length);
       logChatRenderPlaceList(recommendations.length, "must_visit_place_list");
@@ -1728,8 +1799,8 @@ export async function buildMoreDestinationRecommendations(params: {
     const scene = resolveWeatherScene(weather, label);
     const intro =
       searchProfile.kind === "landmark"
-        ? buildLandmarkCompanionIntro(searchProfile, scene, weather?.available !== false)
-        : buildWeatherAwarePlaceIntro(label, scene, weather?.available !== false);
+        ? buildLandmarkCompanionIntro(searchProfile, scene, weather?.available !== false, locale)
+        : buildWeatherAwarePlaceIntro(label, scene, weather?.available !== false, locale);
 
     const caller = geocodeSucceeded
       ? "chat.morePlaceRecommendations"
@@ -2411,6 +2482,10 @@ export async function buildMoreDestinationRecommendations(params: {
       logChatMorePlacesFetchCount(fetchCount);
     }
 
+    // 無座標目的地：所有查詢（含上方迴圈）都結束後才剔除地址明確屬於其他國家的同名地點。
+    // 迴圈的「還要不要再查」已用篩選前數量判斷完畢；篩完為 0 走下方既有「沒有更多」分支，不補查。
+    filtered = filterTextOnlyDestinationCountryMismatch(filtered, searchContext);
+
     if (category !== "shopping") {
       filtered = rankLandmarkCompanionPlaces(filtered, searchProfile).slice(
         0,
@@ -2531,7 +2606,17 @@ export async function buildMoreDestinationRecommendations(params: {
       recommendations.length > 0
         ? category === "shopping" || category === "cafe" || category === "restaurant"
           ? buildRefreshRecommendationSummary(recommendations, category)
-          : buildSummaryText(label, intro, recommendations, moreContext, searchProfile)
+          : buildSummaryText(
+              label,
+              intro,
+              recommendations,
+              moreContext,
+              searchProfile,
+              undefined,
+              undefined,
+              undefined,
+              locale,
+            )
         : intro;
 
     return {

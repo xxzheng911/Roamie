@@ -18,6 +18,8 @@ import {
 import { resolveDisplayedRecommendationBadge } from "@/lib/ai/recommendation-badge-display";
 import type { Locale } from "@/lib/i18n/types";
 import type { PlaceResult } from "@/lib/place-result";
+import { chatMoodDisplay, chatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import { displayDestinationForCopy } from "@/lib/ai/destination-locale-aliases";
 
 export type LocalFallbackInput = {
   context: CanonicalTravelContext;
@@ -38,11 +40,64 @@ function moodSearchQuery(mood: string, ctx?: CanonicalTravelContext): string {
   return "tourist attraction cafe restaurant park museum";
 }
 
+function buildLocalizedSummary(
+  ctx: CanonicalTravelContext,
+  placeCount: number,
+  internalMood: string | undefined,
+  locale: Locale,
+): string {
+  const rawDest = ctx.destination ?? ctx.currentLocation;
+  const destination = rawDest ? displayDestinationForCopy(rawDest, undefined, locale) : "";
+  const mood = internalMood ? chatMoodDisplay(internalMood, locale) : "";
+  const count = placeCount;
+
+  if (ctx.destination && ctx.days) {
+    return [
+      chatRuntimeCopy("localTripFit", locale, {
+        destination: displayDestinationForCopy(ctx.destination, undefined, locale),
+        days: ctx.days,
+      }),
+      chatRuntimeCopy("localStartDirections", locale),
+      chatRuntimeCopy(placeCount > 0 ? "localPickStart" : "localPreferPrompt", locale),
+    ].join("\n");
+  }
+  if (internalMood && /深夜散步|夜景/.test(internalMood) && placeCount > 0) {
+    return [
+      chatRuntimeCopy("localNightWalkFound", locale, { count }),
+      chatRuntimeCopy("localPickOne", locale),
+    ].join("\n");
+  }
+  if (/下雨|雨/.test(internalMood ?? "")) {
+    return [
+      chatRuntimeCopy("localRainIntro", locale),
+      chatRuntimeCopy(placeCount > 0 ? "localRainLook" : "localRainAsk", locale),
+    ].join("\n");
+  }
+  if (placeCount <= 0) return chatRuntimeCopy("localNoPlaces", locale);
+  if (!mood) {
+    if (placeCount === 1) return chatRuntimeCopy("localOnePlace", locale);
+    return [
+      destination
+        ? chatRuntimeCopy("localPlacesFound", locale, { destination, count })
+        : chatRuntimeCopy("localPlacesFoundNearby", locale, { count }),
+      chatRuntimeCopy("localPickPrompt", locale),
+    ].join("\n");
+  }
+  if (placeCount === 1) return chatRuntimeCopy("localMoodOnePlace", locale, { mood });
+  return [
+    destination
+      ? chatRuntimeCopy("localMoodPlacesFound", locale, { mood, destination, count })
+      : chatRuntimeCopy("localMoodPlacesFoundNearby", locale, { mood, count }),
+    chatRuntimeCopy("localPickPrompt", locale),
+  ].join("\n");
+}
+
 function buildSummary(
   ctx: CanonicalTravelContext,
   placeCount: number,
   places: PlaceResult[] = [],
   session?: ChatPlanningSession,
+  locale: Locale = "zh-TW",
 ): string {
   if (ctx.budgetPreference === "low" || ctx.tripPurpose === "refine_recommendations") {
     return buildBudgetRefinementSummary(ctx, places.slice(0, placeCount));
@@ -50,12 +105,13 @@ function buildSummary(
 
   if (ctx.activity === "camping" || ctx.interests.includes("露營")) {
     if (places.length > 0) {
-      return buildCampingRecommendationSummary(places.slice(0, placeCount), ctx);
+      return buildCampingRecommendationSummary(places.slice(0, placeCount), ctx, locale);
     }
-    return buildCampingIntroReply(ctx);
+    return buildCampingIntroReply(ctx, undefined, locale);
   }
 
   const mood = shouldDisplayMoodPresentation(session, ctx) ? ctx.mood : undefined;
+  if (locale !== "zh-TW") return buildLocalizedSummary(ctx, placeCount, mood, locale);
   const dest = ctx.destination ?? ctx.currentLocation ?? "附近";
   const month = ctx.travelMonth ? `${ctx.travelMonth}的` : "";
   const companion = ctx.companion ? `跟${ctx.companion}` : "你";
@@ -140,7 +196,15 @@ export function generateLocalRecommendationFallback(input: LocalFallbackInput): 
 
   if (!candidates.length) {
     const dest = ctx.destination ?? ctx.currentLocation ?? "附近";
-    const summary = `目前在${dest}暫時找不到符合的地點，可以換個描述或稍後再試。`;
+    const localizedDest = ctx.destination ?? ctx.currentLocation;
+    const summary =
+      locale === "zh-TW"
+        ? `目前在${dest}暫時找不到符合的地點，可以換個描述或稍後再試。`
+        : localizedDest
+          ? chatRuntimeCopy("noResults", locale, {
+              destination: displayDestinationForCopy(localizedDest, undefined, locale),
+            })
+          : chatRuntimeCopy("localNoPlaces", locale);
     return {
       summary,
       payload: {
@@ -158,7 +222,7 @@ export function generateLocalRecommendationFallback(input: LocalFallbackInput): 
     };
   }
 
-  const summary = buildSummary(ctx, candidates.length, places, session);
+  const summary = buildSummary(ctx, candidates.length, places, session, locale);
   const moodTag = resolveDisplayedRecommendationBadge({
     session,
     context: ctx,

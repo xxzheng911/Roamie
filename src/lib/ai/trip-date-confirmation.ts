@@ -93,6 +93,10 @@ export function isCurrentTripDateSnapshot(snapshot: ChatPlanningSession, current
   for (const key of ["workspaceId", "conversationId", "planningSessionId"] as const) {
     if (snapshot[key] && snapshot[key] !== current[key]) return false;
   }
+  // A first-trip snapshot has no planningSessionId; a destination switch (or any reset) since then
+  // opened a new one and bumped planVersion. Only an id assigned without a reset (same planVersion)
+  // keeps the snapshot current.
+  if (!snapshot.planningSessionId && current.planningSessionId && (snapshot.planVersion ?? 0) !== (current.planVersion ?? 0)) return false;
   const a = snapshot.travelContext?.dateProvenance;
   const b = current.travelContext?.dateProvenance;
   return a?.startDate === b?.startDate && a?.endDate === b?.endDate &&

@@ -142,8 +142,13 @@ const merged = mergeTravelContext(tokyo, "我下個月要去台東");
 check(merged.context.destination === "台東", `merged destination=${merged.context.destination}`);
 check(merged.context.startDate == null, `merged startDate=null (got ${merged.context.startDate})`);
 check(merged.context.endDate == null, `merged endDate=null (got ${merged.context.endDate})`);
-check(merged.context.days == null, `merged days=null (got ${merged.context.days})`);
-check(merged.session.tripDays == null, `merged session.tripDays=null (got ${merged.session.tripDays})`);
+// L2 spec (approved): combination-choice destination switch without new dates keeps the previous
+// day count; a different month only clears the old start / end dates (checked above / below).
+check(merged.context.days === 6, `merged days carried=6 (got ${merged.context.days})`);
+check(merged.session.tripDays === 6, `merged session.tripDays carried=6 (got ${merged.session.tripDays})`);
+check(merged.session.travelDate == null, `merged session.travelDate=null (got ${merged.session.travelDate})`);
+check(merged.session.pendingQuestion?.type !== "combination_choice" || merged.session.pendingQuestion?.baseDestination !== "東京",
+  `merged pending no longer Tokyo combination_choice (got ${merged.session.pendingQuestion?.type}/${merged.session.pendingQuestion?.baseDestination})`);
 check(merged.session.tripStartDate == null, "merged session.tripStartDate=null");
 check(merged.session.tripEndDate == null, "merged session.tripEndDate=null");
 check(
@@ -176,14 +181,16 @@ check(Boolean(reply), "has advice reply");
 check(!/2027\/03\/15|2027-03-15|2027\/03\/20/.test(reply), "reply has no Tokyo dates");
 check(!/暫定旅行日期：2027/.test(reply), "reply has no stale tentative Tokyo range");
 
-// Days missing → should ask date/days, not invent 6-day Tokyo window.
+// L2 spec (approved): days carried (6), Tokyo dates dropped. The turn must be about 台東
+// (combinations for 台東 or a date/days question), never Tokyo's combinations or a Tokyo window.
+const turnPending = turn.route?.pendingQuestion ?? turn.session.pendingQuestion ?? turn.advice?.pendingQuestion;
+check(!/東京/.test(reply), `reply does not mention 東京 (reply=${reply.slice(0, 80)})`);
 check(
-  /幾天|天數|日期|哪幾天|什麼時候|预计|預計/.test(reply) ||
-    turn.session.pendingQuestion?.type === "ask_days" ||
-    turn.advice?.pendingQuestion?.type === "ask_days" ||
-    merged.context.days == null,
-  "asks for date/days or leaves days null",
+  /台東/.test(reply) || turnPending?.baseDestination === "台東" ||
+    /幾天|天數|日期|哪幾天|什麼時候|预计|預計/.test(reply) || turnPending?.type === "ask_days",
+  `turn is about 台東 or asks for dates (pending=${turnPending?.type}/${turnPending?.baseDestination})`,
 );
+check((turn.session.travelContext?.days ?? merged.context.days) === 6, "advice turn keeps carried days=6");
 
 console.log("\n=== country→city refinement is NOT a new trip ===\n");
 

@@ -15,6 +15,7 @@ import { EN_CITY_NAMES } from "@/lib/ai/destination-geocode";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import { sanitizeDestinationForGeocode } from "@/lib/ai/itinerary-entity-extraction";
 import { resolveDestinationEntity } from "@/lib/ai/destination-entity";
+import { filterPlacesByCountryAddress } from "@/lib/place-geo-guard";
 import {
   logChatDestinationCoords,
   logChatDeviceCoords,
@@ -470,6 +471,7 @@ export function placesSearchContextPayload(
   cacheDestination?: string;
   cacheCity?: string;
   cacheCountry?: string;
+  destinationCountry?: string;
 } {
   return {
     destinationName: searchContext.destinationName,
@@ -479,5 +481,22 @@ export function placesSearchContextPayload(
     cacheDestination: searchContext.destinationName,
     cacheCity: searchContext.destinationCity ?? searchContext.destinationName,
     cacheCountry: searchContext.destinationCountry,
+    // 只有無座標目的地文字搜尋才帶給 server 補 regionCode；其餘路徑 payload 不變。
+    ...(searchContext.textOnlyDestinationSearch === true && searchContext.destinationCountry
+      ? { destinationCountry: searchContext.destinationCountry }
+      : {}),
   };
+}
+
+/**
+ * 無座標目的地文字搜尋的結果防護：已知目的地國家時，剔除地址明確屬於其他國家的地點；
+ * 地址看不出國家的保留。純函式，不追加任何查詢。其餘路徑原樣回傳。
+ */
+export function filterTextOnlyDestinationCountryMismatch<T extends { address?: string | null }>(
+  places: T[],
+  searchContext: ChatPlaceSearchContext | null | undefined,
+): T[] {
+  if (searchContext?.textOnlyDestinationSearch !== true) return places;
+  if (!searchContext.destinationCountry) return places;
+  return filterPlacesByCountryAddress(places, searchContext.destinationCountry);
 }

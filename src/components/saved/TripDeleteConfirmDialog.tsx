@@ -18,6 +18,8 @@ type Props = {
   onOpenChange: (open: boolean) => void;
   onConfirm: () => void | Promise<void>;
   confirming?: boolean;
+  /** 只停用確認鍵（例如成員資料尚未查回）；取消鍵仍可按。 */
+  confirmDisabled?: boolean;
 };
 
 export function TripDeleteConfirmDialog({
@@ -29,7 +31,9 @@ export function TripDeleteConfirmDialog({
   onOpenChange,
   onConfirm,
   confirming,
+  confirmDisabled = false,
 }: Props) {
+  const confirmLocked = Boolean(confirming) || confirmDisabled;
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent className="max-w-[min(32rem,calc(100vw-2rem))] overflow-x-hidden">
@@ -48,11 +52,13 @@ export function TripDeleteConfirmDialog({
             {cancelLabel}
           </AlertDialogCancel>
           <AlertDialogAction
-            disabled={confirming}
+            disabled={confirmLocked}
+            aria-busy={confirmDisabled || undefined}
             aria-label={confirmLabel}
             className="whitespace-normal break-words bg-destructive text-destructive-foreground hover:bg-destructive/90"
             onClick={(e) => {
               e.preventDefault();
+              if (confirmLocked) return;
               void onConfirm();
             }}
           >

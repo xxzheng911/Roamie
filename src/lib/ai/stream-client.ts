@@ -1,4 +1,11 @@
 import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import type { Locale } from "@/lib/i18n/types";
+import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import {
+  errorMessage,
+  isNetworkFailureError,
+  resolveChatConnectionFallbackMessage,
+} from "@/lib/user-facing-error";
 import { parsePartialRoamieJson } from "./parse-partial";
 import type { RoamieRequestContext } from "./context";
 import { normalizeRoamieResponse, type RoamieResponse as RoamieResponseType } from "./types";
@@ -31,7 +38,8 @@ function validateAssembledJson(raw: string): RoamieResponseType {
 export type StreamRoamieHandlers = {
   onPartial?: (partial: Partial<RoamieResponseType>) => void;
   onDone?: (full: RoamieResponseType) => void;
-  onError?: (message: string) => void;
+  /** info.source "server": the server reported the failure (HTTP error / SSE error event) — never charged. */
+  onError?: (message: string, info?: { source: "server"; code?: string }) => void;
 };
 
 export type ChatStreamFailureCode =
@@ -62,6 +70,23 @@ function streamFailureMessage(code: ChatStreamFailureCode): string {
   if (code === "stream_aborted") return "AI 回應逾時，請再試一次。";
   if (code === "provider_error") return "AI 服務暫時無法使用。";
   return "AI 沒有回應，請再試一次。";
+}
+
+/**
+ * Chat final connection fallback in the App locale. zh-TW is exactly
+ * resolveChatConnectionFallbackMessage; other locales map the same cases to localized copy.
+ */
+export function localizedChatConnectionFallbackMessage(
+  error: unknown,
+  locale: Locale = effectiveAppLocale(),
+): string {
+  if (locale === "zh-TW") return resolveChatConnectionFallbackMessage(error);
+  if (isNetworkFailureError(error)) return chatRuntimeCopy("chatConnectionUnstable", locale);
+  const msg = errorMessage(error);
+  if (msg.includes("AI 沒有回應")) return chatRuntimeCopy("chatAiNoResponse", locale);
+  if (msg.includes("AI 回應格式錯誤")) return chatRuntimeCopy("chatAiFormatError", locale);
+  if (msg.includes("AI 服務暫時無法使用")) return chatRuntimeCopy("chatAiUnavailable", locale);
+  return chatRuntimeCopy("chatReplyFailed", locale);
 }
 
 async function notifyStreamCancellation(
@@ -152,6 +177,7 @@ export async function streamRoamieAI(
   if (!resp.ok) {
     let errMsg = "AI 服務暫時無法使用";
     let failureCode = "http_error";
+    let serverCode: string | undefined;
     try {
       const j = (await resp.json()) as { error?: string; code?: string; status?: number };
       console.error("[Roamie AI] stream HTTP error", {
@@ -161,6 +187,7 @@ export async function streamRoamieAI(
       });
       if (j.error) errMsg = j.error;
       failureCode = j.code ?? j.error ?? failureCode;
+      serverCode = j.code;
     } catch {
       console.error("[Roamie AI] stream HTTP error", { status: resp.status });
     }
@@ -169,7 +196,7 @@ export async function streamRoamieAI(
       rawBytesReceived: 0, deltaEventCount: 0, finalEventCount: 0,
       errorEventCount: 0, doneEventCount: 0, failureCode,
     });
-    handlers.onError?.(errMsg);
+    handlers.onError?.(errMsg, { source: "server", code: serverCode });
     return null;
   }
 
@@ -222,10 +249,13 @@ export async function streamRoamieAI(
           try {
             const payload = JSON.parse(data) as { error?: string; code?: string; status?: number };
             console.error("[Roamie AI] stream SSE error", payload);
-            handlers.onError?.(payload.error ?? "AI 服務暫時無法使用");
+            handlers.onError?.(payload.error ?? "AI 服務暫時無法使用", {
+              source: "server",
+              code: payload.code,
+            });
           } catch {
             console.error("[Roamie AI] stream SSE error (unparseable)", data);
-            handlers.onError?.("AI 服務暫時無法使用");
+            handlers.onError?.("AI 服務暫時無法使用", { source: "server" });
           }
           console.info("[CHAT_API_CLIENT_RESPONSE]", {
             requestId, status: resp.status, ok: true, contentType, contentLength,

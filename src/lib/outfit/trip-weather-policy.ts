@@ -2,6 +2,7 @@ import { CLIMATE_AVAILABLE, type WeatherSourceAvailability } from "./weather-sou
 import type { DailyForecast } from "@/lib/weather-types";
 import type { Locale } from "@/lib/i18n/types";
 import type { TripOutfitSuggestionFields } from "./types";
+import { itineraryDestinationDisplay } from "@/lib/native-qa-display";
 
 export const TRIP_WEATHER_VERSION = "trip-weather-v4";
 export const FORECAST_TTL_MS = 45 * 60_000;
@@ -78,11 +79,17 @@ const labels = {
   ko: ["일기 예보", "일별 강수 확률 평균", "강수 자료 부족", "전체 여행 날짜를 포함하는 신뢰할 수 있는 날씨 자료가 없습니다."],
 } satisfies Record<Locale, string[]>;
 export function unavailableTripWeatherCopy(locale: Locale): string { return labels[locale][3]; }
+/** Date range per locale: zh-TW keeps the caller's existing ～ form; en / ko "A–B"; ja "A〜B" (no spaces). */
+export function formatLocaleDateRange(start: string, end: string, locale: Locale, zhTw = `${start}～${end}`): string {
+  if (locale === "zh-TW") return zhTw;
+  return `${start}${locale === "ja" ? "〜" : "–"}${end}`;
+}
 export function tripForecastSummary(locale: Locale, destination: string, start: string, end: string, rows: DailyForecast[]): string {
   const facts = forecastFacts(rows);
   const copy = labels[locale];
   const condition = locale === "zh-TW" ? [...new Set(rows.map(r => r.condition).filter(Boolean))].join("、") : "";
-  return `${destination} ${start}～${end} · ${copy[0]} · ${Math.round(facts.low)}–${Math.round(facts.high)}°C` +
+  const place = locale === "zh-TW" ? destination : itineraryDestinationDisplay(destination, locale) || destination;
+  return `${place} ${formatLocaleDateRange(start, end, locale)} · ${copy[0]} · ${Math.round(facts.low)}–${Math.round(facts.high)}°C` +
     (condition ? ` · ${condition}` : "") + ` · ${facts.rain == null ? copy[2] : `${copy[1]} ${Math.round(facts.rain)}%`}`;
 }
 

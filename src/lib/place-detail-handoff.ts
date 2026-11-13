@@ -18,6 +18,10 @@ export type PlaceDetailHandoff = {
   address: string | null;
   lat: number | null;
   lng: number | null;
+  /** 地點所屬目的地城市（收藏時的行程目的地／行程點目的地），供名稱解析做地理比對 */
+  contextCity?: string | null;
+  /** 地點所屬國家（名稱或 ISO-2），供名稱解析做地理比對 */
+  contextCountry?: string | null;
   photoUrl?: string | null;
   photoName?: string | null;
   generatedImageUrl?: string | null;

@@ -45,6 +45,7 @@ export async function runGoogleUpstreamAttempt(
     chargeUser: Boolean(userId),
     chargeIp: true,
     includeGlobalBudget: true,
+    guestShare: audience === "guest",
     userId,
     ip: resolveTrustedIp(input.request),
     observation,

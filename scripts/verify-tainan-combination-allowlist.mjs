@@ -1,3 +1,4 @@
+import "./verify-netguard-full.mjs";
 /**
  * Acceptance: 台南 3 天 → 組合 → 選 1、2、4 → allowlist 排除安平港區
  * No chat place cards during generation; no session: place ids in mapped output.

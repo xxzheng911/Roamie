@@ -228,6 +228,7 @@ export function savedPlaceToHandoff(place: SavedPlace): PlaceDetailHandoff {
     address: place.address,
     lat: place.lat,
     lng: place.lng,
+    contextCity: place.city?.trim() || null,
     photoUrl,
     photoName: meta.photoName ?? null,
     generatedImageUrl: fallbackImageUrl,

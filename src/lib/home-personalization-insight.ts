@@ -5,6 +5,7 @@ import type { SavedPlace } from "@/lib/places-storage";
 import type { TravelPreferences } from "@/lib/preferences-storage";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { t } from "@/lib/i18n/translate";
+import { applyKoParticles, koParticle } from "@/lib/ai/destination-locale-aliases";
 import type { Locale } from "@/lib/i18n/types";
 import { formatTravelPaceLabel, formatTravelVibeLabel } from "@/lib/travel-pref-display";
 
@@ -92,6 +93,27 @@ function topSavedCategories(saved: SavedPlace[], locale: Locale, limit = 2): str
     .slice(0, limit);
 }
 
+/** en category labels are title-style; lower-case them mid-sentence (other locales unchanged). */
+function inSentence(value: string, locale: Locale): string {
+  return locale === "en" ? value.toLocaleLowerCase("en") : value;
+}
+
+/**
+ * ko copy hard-codes one particle form after interpolated values; pick 을/를, 이/가, 과/와,
+ * 이에요/예요 from the actual value. Quoted values (“…”를) use the word inside the quotes.
+ */
+function withKoParticles(text: string, words: string[], locale: Locale): string {
+  if (locale !== "ko") return text;
+  let out = applyKoParticles(text, words, locale);
+  for (const word of new Set(words.map((w) => w.trim()).filter(Boolean))) {
+    const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    out = out
+      .replace(new RegExp(`“${escaped}”(을|를)(?=\\s)`, "g"), () => `“${word}”${koParticle(word, "을", "를")}`)
+      .replace(new RegExp(`${escaped}(이에요|예요)(?=[\\s.]|$)`, "g"), () => `${word}${koParticle(word, "이에요", "예요")}`);
+  }
+  return out;
+}
+
 function recentChatHint(session?: ChatPlanningSession | null): string | null {
   const intent = session?.lastUserIntent?.trim();
   if (intent && intent.length >= 4) {
@@ -162,27 +184,28 @@ export function buildHomePlusInsight(input: HomePersonalizationInsightInput): st
     const avoided = avoids.length
       ? t(locale, "uiCoverage.avoidFact", { value: avoids.join(", ") })
       : "";
-    return t(locale, "uiCoverage.insightPreferences", {
-      facts: [liked, avoided].filter(Boolean).join(", "),
-    });
+    const facts = [liked, avoided].filter(Boolean).join(", ");
+    return withKoParticles(t(locale, "uiCoverage.insightPreferences", { facts }), [facts], locale);
   }
 
   if (selectedMood && savedCats.length) {
-    return t(locale, "uiCoverage.insightMoodSaved", {
-      mood: selectedMood,
-      categories: savedCats.join(", "),
-    });
+    const categories = inSentence(savedCats.join(", "), locale);
+    return withKoParticles(
+      t(locale, "uiCoverage.insightMoodSaved", { mood: selectedMood, categories }),
+      [categories],
+      locale,
+    );
   }
 
   if (savedCats.length >= 2) {
-    return t(locale, "uiCoverage.insightSaved", { categories: savedCats.join(", ") });
+    const categories = inSentence(savedCats.join(", "), locale);
+    return withKoParticles(t(locale, "uiCoverage.insightSaved", { categories }), [categories], locale);
   }
 
   if (savedCats.length === 1 && nearbyTypes.length) {
-    return t(locale, "uiCoverage.insightNearbySaved", {
-      saved: savedCats[0],
-      nearby: nearbyTypes.join(", "),
-    });
+    const saved = inSentence(savedCats[0], locale);
+    const nearby = inSentence(nearbyTypes.join(", "), locale);
+    return withKoParticles(t(locale, "uiCoverage.insightNearbySaved", { saved, nearby }), [saved, nearby], locale);
   }
 
   if (chatHint && selectedMood) {
@@ -190,7 +213,7 @@ export function buildHomePlusInsight(input: HomePersonalizationInsightInput): st
   }
 
   if (chatHint) {
-    return t(locale, "uiCoverage.insightChat", { chat: chatHint });
+    return withKoParticles(t(locale, "uiCoverage.insightChat", { chat: chatHint }), [chatHint], locale);
   }
 
   if (prefs?.vibe && prefs.pace) {
@@ -208,7 +231,11 @@ export function buildHomePlusInsight(input: HomePersonalizationInsightInput): st
   }
 
   if (latestTripTitle?.trim()) {
-    return t(locale, "uiCoverage.insightTrip", { title: latestTripTitle });
+    return withKoParticles(
+      t(locale, "uiCoverage.insightTrip", { title: latestTripTitle }),
+      [latestTripTitle],
+      locale,
+    );
   }
 
   if (rainy) {
@@ -216,7 +243,9 @@ export function buildHomePlusInsight(input: HomePersonalizationInsightInput): st
   }
 
   if (evening && nearbyTypes.length) {
-    return t(locale, "uiCoverage.insightEvening", { categories: nearbyTypes.join(", ") });
+    return t(locale, "uiCoverage.insightEvening", {
+      categories: inSentence(nearbyTypes.join(", "), locale),
+    });
   }
 
   if (selectedMood) {
@@ -224,7 +253,8 @@ export function buildHomePlusInsight(input: HomePersonalizationInsightInput): st
   }
 
   if (nearbyTypes.length) {
-    return t(locale, "uiCoverage.insightNearby", { categories: nearbyTypes.join(", ") });
+    const categories = inSentence(nearbyTypes.join(", "), locale);
+    return withKoParticles(t(locale, "uiCoverage.insightNearby", { categories }), [categories], locale);
   }
 
   return t(locale, "uiCoverage.insightDefault");

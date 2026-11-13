@@ -24,6 +24,13 @@ import {
 } from "@/lib/place-runtime-cache";
 import { searchPlaces } from "@/services/placesService";
 import {
+  buildPlaceGeoContext,
+  hasPlaceGeoContext,
+  isCandidateOwnAddressCountryMismatch,
+  judgeCandidateGeo,
+  matchesSoftPlaceGeoContext,
+} from "@/lib/place-geo-guard";
+import {
   buildUnifiedPlaceDetailsCacheKey,
   readUnifiedPlaceDetailsCache,
   writeUnifiedPlaceDetailsCache,
@@ -316,6 +323,12 @@ export function canFetchGooglePlaceDetails(placeId: string): boolean {
   return isGooglePlaceId(placeId);
 }
 
+/**
+ * 國家看似不符（context 國家或座標推得）的候選扣分：大於完全同名 +100 與包含 +40，
+ * 確保排在其他候選之後；它是唯一候選時仍會採用，交由 Details 防線判斷。
+ */
+const GEO_MISMATCH_PENALTY = 150;
+
 /** Specific-venue resolution only; city/district search retains geographic results. */
 export function isAdministrativeDetailCandidate(types?: string[]): boolean {
   const values = (types ?? []).map(type => type.trim().toLowerCase());
@@ -336,8 +349,17 @@ export async function resolveGooglePlaceIdForDetail(
   const name = handoff.name?.trim();
   if (!name) return null;
 
+  const geoContext = buildPlaceGeoContext(handoff);
+  const hasGeoContext = hasPlaceGeoContext(geoContext);
+
+  // 台灣地點沒有自身座標時不帶 center（與修正前相同）；其他國家才用靜態表中心。
+  const isTaiwanHandoff = geoContext.countries.has("TW") || geoContext.softCountries.has("TW");
   const center =
-    handoff.lat != null && handoff.lng != null ? { lat: handoff.lat, lng: handoff.lng } : undefined;
+    handoff.lat != null && handoff.lng != null
+      ? { lat: handoff.lat, lng: handoff.lng }
+      : isTaiwanHandoff
+        ? undefined
+        : (geoContext.center ?? undefined);
 
   const queries = [
     handoff.address?.trim() ? `${name} ${handoff.address.trim()}` : null,
@@ -354,18 +376,39 @@ export async function resolveGooglePlaceIdForDetail(
       if (!venueSuggestions.length) return null;
       const normalizedName = name.toLowerCase();
       const scored = venueSuggestions
-        .map((s) => {
+        .flatMap((s) => {
+          // 只有「自身地址文字國家 vs 候選文字國家」明確不同才丟棄；
+          // context 國家、座標推出的國家只影響排序。
+          if (hasGeoContext && isCandidateOwnAddressCountryMismatch(geoContext, s.secondary)) {
+            console.info(
+              "[PLACE_DETAIL] skip geo-mismatched candidate",
+              s.placeId,
+              "query=",
+              query,
+            );
+            return [];
+          }
+          const verdict = hasGeoContext ? judgeCandidateGeo(geoContext, s.secondary) : "unknown";
+          const geoFits =
+            verdict === "match" ||
+            (hasGeoContext && matchesSoftPlaceGeoContext(geoContext, s.secondary));
           const label = s.label.trim();
           const labelLower = label.toLowerCase();
           let score = 0;
+          // 國家明確不符的候選已在上面丟棄；同名 +100 與修正前相同。
           if (labelLower === normalizedName) score += 100;
+          if (geoFits) score += 20;
+          // 國家看似不符（context 或座標推得）：排到地理相符／未知的候選之後，但不丟棄。
+          if (verdict === "mismatch") score -= GEO_MISMATCH_PENALTY;
           if (label.includes(name) || name.includes(label)) score += 40;
           if (handoff.address?.trim() && s.secondary?.includes(handoff.address.trim())) {
             score += 30;
           }
-          return { suggestion: s, score };
+          return [{ suggestion: s, score }];
         })
         .sort((a, b) => b.score - a.score);
+      // 有場館候選但全數地理不符：不再查第 2 次（查詢次數不多於修正前）。
+      if (!scored.length) return null;
 
       for (const { suggestion } of scored) {
         const placeId = suggestion.placeId?.trim();

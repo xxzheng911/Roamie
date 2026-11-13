@@ -146,6 +146,10 @@ export const RoamieItineraryItemSchema = z.object({
   openNow: z.boolean().nullable().optional(),
   openStatusLabel: z.string().optional(),
   todayHoursLabel: z.string().optional(),
+  /** 該行程日到站上限（目的地當地 0 點起算分鐘，到站須早於此值）；文化類 = 關門 − 60。 */
+  latestArrivalMinutes: z.number().optional(),
+  /** 用戶端重算到站時間後：到站 ≥ latestArrivalMinutes。僅標記，不改排序。 */
+  arrivedAfterLastEntry: z.boolean().optional(),
   website: z.string().optional(),
   phone: z.string().optional(),
   types: z.array(z.string()).optional(),
@@ -311,6 +315,12 @@ export function normalizeItineraryItem(
     ...(raw.openNow !== undefined ? { openNow: raw.openNow } : {}),
     openStatusLabel: raw.openStatusLabel,
     todayHoursLabel: raw.todayHoursLabel,
+    ...(raw.latestArrivalMinutes !== undefined
+      ? { latestArrivalMinutes: raw.latestArrivalMinutes }
+      : {}),
+    ...(raw.arrivedAfterLastEntry !== undefined
+      ? { arrivedAfterLastEntry: raw.arrivedAfterLastEntry }
+      : {}),
     website: raw.website,
     phone: raw.phone,
     types: raw.types,

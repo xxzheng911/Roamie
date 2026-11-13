@@ -196,7 +196,7 @@ export async function generateOutfitSuggestion(
     destinationLocation: input.destinationLocation,
     itinerary: input.items,
   });
-  const dateRangeLabel = formatTripDateRangeLabel(input.startDate, input.endDate);
+  const dateRangeLabel = formatTripDateRangeLabel(input.startDate, input.endDate, locale);
   const transport = transportLabelForPrompt(input.transport);
   const hasNightActivities = inferHasNightActivities(input.items);
   const heavyOutdoorWalking = inferHeavyOutdoorWalking(input.items, input.transport);

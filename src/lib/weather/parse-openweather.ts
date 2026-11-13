@@ -168,8 +168,9 @@ export function aggregateForecast25ToDaily(
   }
 
   return [...byDate.entries()]
-    .filter(([, b]) => !requireCompleteDays || new Set(b.timestamps).size >= 8)
     .sort(([a], [b]) => a.localeCompare(b))
+    // 第一個日期＝目的地今天：有 1 筆以上即保留；其餘日期仍需 8 筆（最後一天殘段照舊排除）。
+    .filter(([, b], idx) => !requireCompleteDays || idx === 0 || new Set(b.timestamps).size >= 8)
     .slice(0, maxDays)
     .map(([date, b]) => ({
       date,

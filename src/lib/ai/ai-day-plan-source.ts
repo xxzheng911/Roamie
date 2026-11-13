@@ -8,14 +8,21 @@ import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   CHAT_DAY_PLAN_MAX_PER_DAY,
   CHAT_DAY_PLAN_MIN_PER_DAY,
+  dayPlanSummaryAddHintForLocale,
+  dayPlanSummaryHeaderForLocale,
   parseTripStyleKey,
   type TripStyleKey,
 } from "@/lib/ai/ai-trip-style";
 import type { SearchAttempt } from "@/lib/ai/chat-place-recommendation";
 import { EN_CITY_NAMES } from "@/lib/ai/destination-geocode";
+import type { Locale } from "@/lib/i18n/types";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import { displayDestinationForCopy } from "@/lib/ai/destination-locale-aliases";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import { classifyTripPlaceCategory, type TripPlaceCategory } from "@/lib/ai/trip-place-scoring";
 import { suggestStayDurationForPace } from "@/lib/ai/required-anchor-runtime";
+import { evaluateTourismQuality } from "@/lib/ai/tourism-quality-gate";
 import {
   logAiBuildDayPlanStart,
   logAiDayPlanFinalSummary,
@@ -40,6 +47,7 @@ import {
   isLargeMallPlace,
   isMarketPlace,
   isMuseumCulturePlace,
+  latestArrivalByWeekdayForPlace,
   isMealSlotEligiblePlace,
   isNightMarketPlace,
   isNonMealActivitySlot,
@@ -2223,10 +2231,12 @@ export function buildBalancedSlowDayPlans(params: {
 }): ComposedDayPlan[] {
   const { places, days, style, plannedDate } = params;
   const safeDays = Math.max(1, days);
+  // Slow fallback bypasses route assembly's canAcceptPlaceForDay; apply the same Q6 gate (no backfill).
+  const gatedPlaces = places.filter((p) => evaluateTourismQuality(p).ok);
   const pool =
     style === "classic_landmarks"
-      ? filterPlacesForClassicLandmark(filterExcludedRetailPlaces(places))
-      : filterExcludedRetailPlaces(places);
+      ? filterPlacesForClassicLandmark(filterExcludedRetailPlaces(gatedPlaces))
+      : filterExcludedRetailPlaces(gatedPlaces);
   const plans = buildStructuredDayPlans({
     places: pool,
     days: safeDays,
@@ -2267,12 +2277,59 @@ export function buildBalancedSlowDayPlans(params: {
   return markItineraryDayCompleteness(ensureAllDayPlansExist(finalized, safeDays), safeDays);
 }
 
+/** Display-only slot labels; internal entry.label values stay zh. */
+const DAY_PLAN_SLOT_LABEL_DISPLAY: Record<Exclude<Locale, "zh-TW">, Record<string, string>> = {
+  en: {
+    早餐: "Breakfast",
+    景點: "Sightseeing",
+    午餐: "Lunch",
+    咖啡: "Cafe",
+    晚餐: "Dinner",
+    酒吧: "Bar",
+    上午: "Morning",
+    中午: "Midday",
+    下午: "Afternoon",
+    晚上: "Evening",
+  },
+  ja: {
+    早餐: "朝食",
+    景點: "観光",
+    午餐: "昼食",
+    咖啡: "カフェ",
+    晚餐: "夕食",
+    酒吧: "バー",
+    上午: "午前",
+    中午: "昼",
+    下午: "午後",
+    晚上: "夜",
+  },
+  ko: {
+    早餐: "아침",
+    景點: "관광",
+    午餐: "점심",
+    咖啡: "카페",
+    晚餐: "저녁",
+    酒吧: "바",
+    上午: "오전",
+    中午: "점심",
+    下午: "오후",
+    晚上: "저녁",
+  },
+};
+
+const DAY_PLAN_SLOW_TRAVEL_INTRO: Record<Exclude<Locale, "zh-TW">, string> = {
+  en: "Here's a slow-travel version of your trip first 🌿",
+  ja: "まずはゆったり旅のプランを組んでみました 🌿",
+  ko: "먼저 느긋한 여행 일정으로 짜 봤어요 🌿",
+};
+
 export function buildComposedDayPlanSummary(
   destination: string,
   days: number,
   style: TripStyleKey,
   plans: ComposedDayPlan[],
   opts?: { slowTravel?: boolean },
+  locale: Locale = effectiveAppLocale(),
 ): string {
   const label = normalizeDestinationLabel(destination);
   const normalized = ensureAllDayPlansExist(plans, days);
@@ -2284,7 +2341,37 @@ export function buildComposedDayPlanSummary(
       validation.reasons,
       Object.fromEntries(normalized.map((p) => [p.day, p.entries.length])),
     );
+    if (locale !== "zh-TW") {
+      return chatRuntimeCopy("dayPlanGenerating", locale, {
+        destination: displayDestinationForCopy(label, undefined, locale),
+        days,
+      });
+    }
     return `${label} ${days} 天推薦：\n\n（行程生成中）`;
+  }
+
+  if (locale !== "zh-TW") {
+    const slotLabels = DAY_PLAN_SLOT_LABEL_DISPLAY[locale];
+    const colon = locale === "ja" ? "：" : ": ";
+    const header = dayPlanSummaryHeaderForLocale(label, days, style, locale);
+    const out: string[] = opts?.slowTravel && style === "slow_nature"
+      ? [DAY_PLAN_SLOW_TRAVEL_INTRO[locale], "", header, ""]
+      : [header, ""];
+    for (const plan of normalized) {
+      if (isDayMealsOnly(plan.entries, classifyPlanPlaceKind)) {
+        logAiStyleCompositionFail("meals_only_day", plan.day);
+        logAiNonMealSlotMissing(plan.day);
+      }
+      out.push(`Day ${plan.day}`);
+      const sortedEntries = sortComposedDayPlans([plan])[0]?.entries ?? plan.entries;
+      for (const entry of sortedEntries) {
+        if (!isAllowedItinerarySlotLabel(entry.label)) continue;
+        out.push(`- ${entry.time} ${slotLabels[entry.label] ?? entry.label}${colon}${entry.name}`);
+      }
+      if (plan.day < days) out.push("");
+    }
+    out.push("", dayPlanSummaryAddHintForLocale(locale));
+    return out.join("\n");
   }
 
   const styleLabels: Record<TripStyleKey, string> = {
@@ -2353,6 +2440,8 @@ export type AiDayPlanItem = {
   localizedDisplayName?: string;
   languageCode?: string;
   localizationSource?: string;
+  /** 星期幾（0=週日）→ 到站上限分鐘（目的地當地）；由生成時既有 periods 推得。 */
+  latestArrivalByWeekday?: Partial<Record<number, number>>;
 };
 
 export type AiDayPlan = {
@@ -2462,6 +2551,7 @@ export function composedPlansToAiDayPlan(params: {
         localizedDisplayName: displayName,
         languageCode: place.languageCode ?? undefined,
         localizationSource: place.localizationSource ?? undefined,
+        latestArrivalByWeekday: latestArrivalByWeekdayForPlace(place),
       };
       items.push(item);
       logAiDayPlanFinal(item);
@@ -2633,7 +2723,18 @@ export function buildItineraryFromDayPlan(
     logTripDetailItemsRender({ ...item, dayIndex: dayNumber }, date || undefined);
     const display =
       (item.localizedDisplayName ?? "").trim() || item.name;
+    const weekday = /^\d{4}-\d{2}-\d{2}$/.test(date)
+      ? new Date(`${date}T12:00:00Z`).getUTCDay()
+      : null;
+    const latestArrivalMinutes =
+      weekday != null ? item.latestArrivalByWeekday?.[weekday] : undefined;
+    const hm = (item.time ?? "").trim().match(/^(\d{1,2}):(\d{2})$/);
+    const arrival = hm ? Number(hm[1]) * 60 + Number(hm[2]) : null;
     return normalizeItineraryItem({
+      ...(latestArrivalMinutes != null ? { latestArrivalMinutes } : {}),
+      ...(latestArrivalMinutes != null && arrival != null
+        ? { arrivedAfterLastEntry: arrival >= latestArrivalMinutes }
+        : {}),
       date,
       time: item.time,
       title: display,

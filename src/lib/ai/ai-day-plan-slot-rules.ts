@@ -7,6 +7,7 @@ import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   isOpenAtScheduled,
   isTimePeriodMismatch,
+  latestArrivalMinutesForWeekday,
   type PlaceHoursData,
 } from "@/lib/filter-available-places";
 import type {
@@ -228,6 +229,33 @@ export function isMuseumCulturePlace(place: PlaceResult): boolean {
   const types = placeTypes(place);
   if (types.has("museum") || types.has("art_gallery") || types.has("library")) return true;
   return MUSEUM_CULTURE_RE.test(placeBlob(place));
+}
+
+/** 文化類（isMuseumCulturePlace）最後入館 = 關門前 60 分；其他類別 0（維持「開始 < 關門」）。 */
+export const CULTURE_LAST_ENTRY_BUFFER_MINUTES = 60;
+
+const LAST_ENTRY_FOOD_TYPES = ["cafe", "coffee_shop", "restaurant", "bar", "food", "bakery", "meal_takeaway"];
+
+export function lastEntryBufferMinutes(place: PlaceResult): number {
+  const types = placeTypes(place);
+  if (LAST_ENTRY_FOOD_TYPES.some((t) => types.has(t))) return 0;
+  return isMuseumCulturePlace(place) ? CULTURE_LAST_ENTRY_BUFFER_MINUTES : 0;
+}
+
+/** 依星期幾（0=週日）的到站上限；無可靠營業時段時回 undefined。 */
+export function latestArrivalByWeekdayForPlace(
+  place: PlaceResult,
+): Partial<Record<number, number>> | undefined {
+  if (!hasOpeningHoursData(place)) return undefined;
+  const hours = placeHoursDataFromPlace(place);
+  const buffer = lastEntryBufferMinutes(place);
+  if (buffer <= 0) return undefined;
+  const out: Partial<Record<number, number>> = {};
+  for (let dow = 0; dow < 7; dow += 1) {
+    const latest = latestArrivalMinutesForWeekday(hours, dow, buffer);
+    if (latest != null) out[dow] = latest;
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 function parseHoursRangeFromLabel(label: string): { openMin: number; closeMin: number } | null {
@@ -1577,7 +1605,9 @@ export function validatePlaceOpenAtTime(
   const at = date ? new Date(`${date}T12:00:00`) : new Date();
   const hours = placeHoursDataFromPlace(place);
   const hasHours = hasOpeningHoursData(place);
-  const scheduled = hasHours ? isOpenAtScheduled(hours, at, plannedTime) : null;
+  const scheduled = hasHours
+    ? isOpenAtScheduled(hours, at, plannedTime, lastEntryBufferMinutes(place))
+    : null;
   if (scheduled === null) diagnostic?.("opening_hours_unknown_hours");
 
   if (scheduled === false) {

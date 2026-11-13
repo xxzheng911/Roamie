@@ -7,6 +7,7 @@
  * 不改 Recommendation / Planner 排序邏輯。
  */
 import {
+  isRejectAllCombinationsReply,
   isUserAllOrAutoCombinationReply,
   parseCombinationSelectionIndices,
 } from "@/lib/ai/destination-combination-suggestions";
@@ -174,6 +175,16 @@ export function parseCombinationSelectionReply(
       isExplicitDestinationSwitch: true,
       switchDestination,
       isCombinationContinuation: false,
+    };
+  }
+
+  // 「全部都不要」"none of them": rejects every combination — selects nothing (never select-all).
+  if (isRejectAllCombinationsReply(t)) {
+    return {
+      selectedCombinationIds: [],
+      nearbyExtensions: [],
+      isExplicitDestinationSwitch: false,
+      isCombinationContinuation: true,
     };
   }
 

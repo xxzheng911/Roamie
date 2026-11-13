@@ -27,9 +27,25 @@ const vietnamCases = [
   { name: "Ghềnh Bàng", types: ["natural_feature", "tourist_attraction"] },
   { name: "Tượng Cá Chép Hóa Rồng", types: ["sculpture", "tourist_attraction", "point_of_interest"] },
 ];
+// D4 (D2 r4/r5): "Ghềnh Bàng" has no known-token 繁中 name — HEAD spelled "Bàng" phonetically
+// (巴恩礁岩, canonical_zh). Phonetic invention is no longer allowed, so without a Google place id the
+// name stays the original (original path); with a place id it is the kept Google name
+// (google_locale, not counted as foreign). The two known-token cases must still translate.
+const KEPT_ORIGINAL = new Set(["Ghềnh Bàng"]);
 
 for (const c of vietnamCases) {
   clearLocalizedPlaceNameCache();
+  if (KEPT_ORIGINAL.has(c.name)) {
+    const noId = resolvePlaceDisplayName({ name: c.name, originalName: c.name, types: c.types, primaryType: c.types[0] }, "zh-TW");
+    assert.equal(noId.localizedDisplayName, c.name, `no place id keeps the original: ${noId.localizedDisplayName}`);
+    assert.equal(noId.localizationSource, "original");
+    clearLocalizedPlaceNameCache();
+    const withId = resolvePlaceDisplayName({ name: c.name, originalName: c.name, placeId: "ChIJD4GhenhBang000001", types: c.types, primaryType: c.types[0] }, "zh-TW");
+    assert.equal(withId.localizedDisplayName, c.name);
+    assert.equal(withId.localizationSource, "google_locale");
+    console.log(`OK VN (kept, no phonetic): ${c.name} → no id ${noId.localizedDisplayName} [${noId.localizationSource}] / id ${withId.localizedDisplayName} [${withId.localizationSource}]`);
+    continue;
+  }
   const resolved = resolvePlaceDisplayName(
     {
       name: c.name,
@@ -64,13 +80,31 @@ const gated = applyItineraryLocalizationGate(
   })),
   { locale: "zh-TW", softPassEnglish: true },
 );
-assert.equal(gated.foreignScriptStops, 0, "foreignScriptStops must be 0");
+// Only the kept-original stop (no place id, Vietnamese diacritics) counts as foreign script.
+assert.equal(gated.foreignScriptStops, KEPT_ORIGINAL.size, "foreignScriptStops = kept-original stops only");
 assert.equal(gated.totalStops, 3);
 for (const item of gated.items) {
+  if (KEPT_ORIGINAL.has(item.originalName)) {
+    assert.equal(item.localizedDisplayName, item.originalName);
+    continue;
+  }
   assert.ok(HAS_CJK_RE.test(item.localizedDisplayName ?? ""), item.placeName);
   assert.ok(!(item.localizedDisplayName ?? "").match(HAS_VIET));
 }
 console.log("OK gate:", gated.items.map((i) => i.localizedDisplayName).join(" | "));
+
+// Same stops with Google place ids: the kept Google name is deliverable (foreignScriptStops = 0).
+clearLocalizedPlaceNameCache();
+const gatedWithIds = applyItineraryLocalizationGate(
+  vietnamCases.map((c, i) => ({
+    date: "2026-08-01", time: "10:00", title: c.name, description: "", placeName: c.name,
+    googlePlaceId: `ChIJD4VnRuntime00000${i}`, lat: 16.05, lng: 108.2, types: c.types, placeType: c.types[0], dayIndex: 0, sortIndex: i,
+  })),
+  { locale: "zh-TW", softPassEnglish: true },
+);
+assert.equal(gatedWithIds.foreignScriptStops, 0, "with place ids foreignScriptStops must be 0");
+assert.equal(gatedWithIds.totalStops, 3);
+console.log("OK gate (place ids):", gatedWithIds.items.map((i) => `${i.localizedDisplayName}[${i.localizationSource}]`).join(" | "));
 
 const repaired = repairItineraryLocalizedNames(
   vietnamCases.map((c) => ({
@@ -84,7 +118,9 @@ const repaired = repairItineraryLocalizedNames(
   })),
   { locale: "zh-TW" },
 );
-assert.ok(repaired.repairedCount >= 3, `repairedCount=${repaired.repairedCount}`);
+// Kept-original stops are unchanged by repair (no phonetic name to write).
+assert.equal(repaired.repairedCount, vietnamCases.length - KEPT_ORIGINAL.size, `repairedCount=${repaired.repairedCount}`);
+for (const item of repaired.items) if (KEPT_ORIGINAL.has(item.originalName ?? item.title)) assert.equal(item.localizedDisplayName, item.originalName ?? item.title);
 console.log("OK repair count", repaired.repairedCount);
 
 // Museum family + daily cap 1

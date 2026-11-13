@@ -13,7 +13,8 @@ import { logChatContextUpdate, logChatNextStep } from "@/lib/ai/chat-debug-log";
 import { resolveInferredTripDays } from "@/lib/ai/ai-trip-style";
 import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
 import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
-import { displayDestinationForCopy } from "@/lib/ai/destination-locale-aliases";
+import { applyKoParticles, displayDestinationForCopy } from "@/lib/ai/destination-locale-aliases";
+import { styleOptionDisplay } from "@/lib/ai/destination-style-guide";
 import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
 import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
 
@@ -162,21 +163,81 @@ export function buildPlanningContextSummary(
   const parts: string[] = [];
   const destination = coerceTravelDestination(ctx.destination);
   if (destination) {
-    parts.push(chatRuntimeCopy("summaryDestination", locale, { destination }));
+    parts.push(chatRuntimeCopy("summaryDestination", locale, {
+      destination: displayDestinationForCopy(destination, undefined, locale ?? effectiveAppLocale()),
+    }));
   }
   if (ctx.days) parts.push(chatRuntimeCopy("summaryDays", locale, { days: ctx.days }));
+  const shownLocale = locale ?? effectiveAppLocale();
   if (ctx.vibe || ctx.travelStyle) {
-    parts.push(chatRuntimeCopy("summaryPreference", locale, { value: ctx.vibe ?? ctx.travelStyle ?? "" }));
+    const value = ctx.vibe ?? ctx.travelStyle ?? "";
+    parts.push(chatRuntimeCopy("summaryPreference", locale, {
+      value: shownLocale === "zh-TW" ? value : styleOptionDisplay(value, shownLocale),
+    }));
   }
   if (ctx.selectedInterests?.length) {
-    parts.push(chatRuntimeCopy("summaryInterests", locale, { interests: ctx.selectedInterests.join("、") }));
+    parts.push(chatRuntimeCopy("summaryInterests", locale, {
+      interests: ctx.selectedInterests.join(shownLocale === "en" || shownLocale === "ko" ? ", " : "、"),
+    }));
   }
-  if (ctx.budgetLevel) parts.push(chatRuntimeCopy("summaryBudget", locale, { budget: ctx.budgetLevel }));
-  if (ctx.companion) parts.push(chatRuntimeCopy("summaryCompanion", locale, { companion: ctx.companion }));
+  if (ctx.budgetLevel) {
+    parts.push(chatRuntimeCopy("summaryBudget", locale, {
+      budget: summaryValueDisplay(ctx.budgetLevel, SUMMARY_BUDGET_DISPLAY, shownLocale),
+    }));
+  }
+  if (ctx.companion) {
+    parts.push(chatRuntimeCopy("summaryCompanion", locale, {
+      companion: summaryValueDisplay(ctx.companion, SUMMARY_COMPANION_DISPLAY, shownLocale),
+    }));
+  }
   if (ctx.excludedCategories?.length) {
-    parts.push(chatRuntimeCopy("summaryExcluded", locale, { excluded: ctx.excludedCategories.join("、") }));
+    parts.push(chatRuntimeCopy("summaryExcluded", locale, {
+      excluded:
+        shownLocale === "zh-TW"
+          ? ctx.excludedCategories.join("、")
+          : ctx.excludedCategories
+              .map((value) => summaryValueDisplay(value, SUMMARY_EXCLUDED_DISPLAY, shownLocale))
+              .join(shownLocale === "ja" ? "、" : ", "),
+    }));
   }
   return parts.join("\n");
+}
+
+type SummaryDisplayTable = Record<string, Record<"en" | "ja" | "ko", string>>;
+
+/** Fixed parser values (travel-context parseBudget) → display label; internal value unchanged. */
+const SUMMARY_BUDGET_DISPLAY: SummaryDisplayTable = {
+  budget: { en: "Budget-friendly", ja: "節約", ko: "알뜰하게" },
+  luxury: { en: "Luxury", ja: "ラグジュアリー", ko: "럭셔리" },
+  quality: { en: "Quality-focused", ja: "品質重視", ko: "퀄리티 중시" },
+};
+
+/** Fixed parser values (parseCompanion / discovery.companionship) → display label. */
+const SUMMARY_COMPANION_DISPLAY: SummaryDisplayTable = {
+  一個人: { en: "Solo", ja: "ひとり", ko: "혼자" },
+  女友: { en: "Partner", ja: "パートナー", ko: "연인" },
+  情侶: { en: "Couple", ja: "カップル", ko: "연인" },
+  朋友: { en: "Friends", ja: "友人", ko: "친구" },
+  家人: { en: "Family", ja: "家族", ko: "가족" },
+};
+
+/** Fixed weather-constraint values (travel-context excludedCategories) → display label. */
+const SUMMARY_EXCLUDED_DISPLAY: SummaryDisplayTable = {
+  戶外曝曬: { en: "Long sun exposure outdoors", ja: "屋外での日差し", ko: "야외 햇볕 노출" },
+  中午戶外: { en: "Outdoor activities at midday", ja: "昼の屋外", ko: "한낮 야외 활동" },
+  戶外長時間: { en: "Long stretches outdoors", ja: "長時間の屋外", ko: "장시간 야외 활동" },
+  戶外: { en: "Outdoor", ja: "屋外", ko: "야외" },
+  長距離步行: { en: "Long walks", ja: "長距離の徒歩", ko: "장거리 도보" },
+};
+
+/** Known option → locale label; free text the user typed is kept as-is. */
+function summaryValueDisplay(
+  value: string,
+  table: SummaryDisplayTable,
+  locale: import("@/lib/i18n/types").Locale,
+): string {
+  if (locale === "zh-TW") return value;
+  return table[value]?.[locale] ?? value;
 }
 
 /** Last-resort planning reply when remote AI is unavailable. */
@@ -226,10 +287,10 @@ export function buildPlanningOfflineReply(
     } else {
       const resolvedLocale = locale ?? effectiveAppLocale();
       const shown = displayDestinationForCopy(dest, userText, resolvedLocale);
-      return [chatRuntimeCopy("destNoted", resolvedLocale, { destination: shown }), summary, "", chatRuntimeCopy("offlineDaysAsk", resolvedLocale)].filter(Boolean).join("\n");
+      return [applyKoParticles(chatRuntimeCopy("destNoted", resolvedLocale, { destination: shown }), [shown], resolvedLocale), summary, "", chatRuntimeCopy("offlineDaysAsk", resolvedLocale)].filter(Boolean).join("\n");
     }
   }
-  const constraintAck = buildWeatherConstraintAcknowledgement(ctx, ctx.weather);
+  const constraintAck = buildWeatherConstraintAcknowledgement(ctx, ctx.weather, locale ?? effectiveAppLocale());
   if (constraintAck && ctx.excludedCategories?.some((c) => /曝曬|中午|高溫|戶外/.test(c))) {
     return constraintAck;
   }
@@ -241,6 +302,7 @@ export function buildPlanningOfflineReply(
   ) {
     const planned = buildWeatherAwarePlanningReply({
       destination: dest,
+      locale,
       days: ctx.days ?? inferredDays ?? 1,
       weather: ctx.weather,
       context: ctx,
@@ -251,6 +313,7 @@ export function buildPlanningOfflineReply(
 
   const planned = buildWeatherAwarePlanningReply({
     destination: dest,
+    locale,
     days: ctx.days ?? inferredDays ?? 1,
     weather: ctx.weather,
     context: ctx,

@@ -1,6 +1,16 @@
 import type { RoamieItineraryItem, TripPlanSettings } from "@/lib/ai/types";
 import { scheduledDateKeysFromSettings, TRIP_UNASSIGNED_DATE } from "@/lib/saved-trip/apply-trip-date-range";
 
+/** 改站點日期；日期實際改變時清除依原日星期算出的到站上限與旗標（寧可不提醒也不提醒錯）。 */
+export function withStopDate(item: RoamieItineraryItem, date: string): RoamieItineraryItem {
+  const next: RoamieItineraryItem = { ...item, date };
+  if ((item.date ?? "") !== date) {
+    delete next.latestArrivalMinutes;
+    delete next.arrivedAfterLastEntry;
+  }
+  return next;
+}
+
 export function groupStopsByDate(items: RoamieItineraryItem[]): Map<string, RoamieItineraryItem[]> {
   const groups = new Map<string, RoamieItineraryItem[]>();
   for (const item of items) {
@@ -58,7 +68,7 @@ export function insertStopOnDate(
   const groups = groupStopsByDate(items);
   const dateKey = opts.date.trim() || "未指定日期";
   const dayList = [...(groups.get(dateKey) ?? [])];
-  const next = { ...stop, date: dateKey };
+  const next = withStopDate(stop, dateKey);
 
   if (opts.afterPlaceName) {
     const idx = dayList.findIndex(
@@ -108,7 +118,9 @@ export function updateStop(
   const groups = groupStopsByDate(items);
   const dayList = [...(groups.get(date) ?? [])];
   if (!dayList[indexInDay]) return items;
-  dayList[indexInDay] = { ...dayList[indexInDay]!, ...patch };
+  const merged = { ...dayList[indexInDay]!, ...patch };
+  dayList[indexInDay] =
+    patch.date !== undefined ? withStopDate({ ...merged, date: dayList[indexInDay]!.date }, patch.date) : merged;
   groups.set(date, dayList);
   return flattenStopGroups(groups);
 }
@@ -228,7 +240,7 @@ export function moveStopAcrossDays(
   else groups.set(sourceDate, normalizeDayStopOrder(sourceList, sourceDayIndex, sourceDate));
 
   const targetList = [...(groups.get(targetDate) ?? [])];
-  const next: RoamieItineraryItem = { ...moved!, date: targetDate };
+  const next: RoamieItineraryItem = withStopDate(moved!, targetDate);
 
   if (position.kind === "start") {
     targetList.unshift(next);

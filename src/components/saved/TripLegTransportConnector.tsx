@@ -12,6 +12,8 @@ type Props = {
   walkFallbackHint?: string | null;
   onTransportChange: (label: TripTransportOptionLabel) => void;
   onOpenTransitMaps?: (() => void) | null;
+  /** Optional button label; defaults to nativeQa.route. */
+  openMapsLabel?: string;
 };
 
 /** 兩張地點卡片之間：交通方式 + 路程時間（兩者皆依 resolvedMode） */
@@ -21,6 +23,7 @@ export function TripLegTransportConnector({
   walkFallbackHint,
   onTransportChange,
   onOpenTransitMaps,
+  openMapsLabel,
 }: Props) {
   const { t } = useI18n();
   return (
@@ -37,7 +40,7 @@ export function TripLegTransportConnector({
         ) : null}
         {onOpenTransitMaps ? (
           <button type="button" className={mapsBtnClass} onClick={onOpenTransitMaps}>
-            {t("nativeQa.route")}
+            {openMapsLabel ?? t("nativeQa.route")}
           </button>
         ) : null}
         {walkFallbackHint ? (

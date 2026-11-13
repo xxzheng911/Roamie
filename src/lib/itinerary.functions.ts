@@ -584,15 +584,32 @@ export const generateItinerary = createServerFn({ method: "POST" })
         setGenerationPhase(result.success ? "credits_commit" : "credits_rollback");
         generationSettlement(operation, "pending");
         try {
-          const { data: settlementData, error: settlementError } = await context.supabase.rpc(
-            result.success ? "credits_commit" : "credits_rollback",
-            {
-              p_ledger_id: context.itineraryCreditReservation.ledgerId,
-              p_idempotency_key: context.itineraryCreditReservation.idempotencyKey,
-            },
+          // Service role bound to the verified user (see requireItineraryCredits).
+          const { serverCreditsClient, serverCreditsRpc } = await import(
+            "@/lib/ai/endpoint-guard.server"
           );
+          const settle = () =>
+            serverCreditsRpc(
+              result.success ? "credits_commit" : "credits_rollback",
+              {
+                p_ledger_id: context.itineraryCreditReservation.ledgerId,
+                p_idempotency_key: context.itineraryCreditReservation.idempotencyKey,
+                p_user_id: context.userId,
+              },
+              serverCreditsClient(),
+            );
+          let { data: settlementData, error: settlementError } = await settle();
+          // Commit is idempotent: an RPC error may hide a committed row, retry once.
+          if (settlementError && result.success) {
+            ({ data: settlementData, error: settlementError } = await settle());
+          }
           generationSettlementResponse(operation, settlementData, settlementError);
           if (settlementError) throw creditSettlementException(settlementError);
+          // A rejected commit (ok:false) is a failure: the result is not delivered
+          // (the middleware then releases the reservation).
+          if (result.success && (settlementData as { ok?: boolean } | null)?.ok !== true) {
+            throw creditSettlementException(new Error("credits_commit_rejected"));
+          }
           emitGenerationDiagnostic("settled");
         } catch (error) {
           generationSettlement(operation, "failed");
@@ -2515,6 +2532,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
       });
       const pace = effectivePace;
       const localizedGate = applyItineraryLocalizationGate(coalesceItineraryItems(ai.itinerary), {
+        locale: data.locale,
         softPassEnglish: true,
       });
       ai = { ...ai, itinerary: localizedGate.items };
@@ -2546,6 +2564,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
 
     setGenerationPhase("response");
     const gated = applyItineraryLocalizationGate(coalesceItineraryItems(ai.itinerary), {
+      locale: data.locale,
       softPassEnglish: true,
     });
     const itineraryItems = gated.items;

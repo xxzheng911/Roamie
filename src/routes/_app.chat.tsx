@@ -1,13 +1,22 @@
 import { traceCombinationChatReturn, combinationDiscoveryCorrelation, observeCombinationDiscovery, traceCombinationDisplayed, traceCombinationPersisted } from '@/lib/ai/combination-selection-diagnostics';
 import { discardExpiredSelection, rejectNumericSelection, isNumericSelection, hasNumericStyleAuthority } from "@/lib/ai/numeric-selection-authority";
+import {
+  isCombinationChoiceTurn,
+  dropStaleCombinationConfirm,
+  isCombinationHoldReply,
+  isCombinationPartialModifyReply,
+} from "@/lib/ai/combination-partial-modify-reply";
+import { applyEnglishPlaceArticles } from "@/lib/i18n/en-place-articles";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
 import { matchesDateGenerationAction, traceDateGenerationContinuation } from '@/lib/ai/date-generation-continuation';
 import { generatedTripCopy } from "@/lib/native-qa-display";
 import { attachDestinationDisplay } from "@/lib/ai/destination-display-metadata";
+import { applyKoParticles, displayDestinationForCopy } from "@/lib/ai/destination-locale-aliases";
 import { prepareTripDateConfirmation, isRepeatedTripDateConfirmation, isCurrentTripDateSnapshot, consumeTripDateConfirmation, tripDateConfirmationCopy, type DateContinuation } from "@/lib/ai/trip-date-confirmation";
 import { workspaceTitleDisplay } from "@/lib/trip/title-display";
 import { sessionForAnsweredDurationDiscovery } from "@/lib/ai/pending-duration-discovery";
 import { hasDeliverableCombinationCount } from "@/lib/ai/combination-deliverability";
-import { resolveGlobalPlanningCandidate, isGlobalResolutionCurrent, globalPlanningTurn } from "@/lib/ai/global-planning-context";
+import { resolveGlobalPlanningCandidate, isGlobalResolutionCurrent, globalPlanningTurn, isCombinationSwitchRelistBase } from "@/lib/ai/global-planning-context";
 import { createExplicitCreateLoading } from "@/lib/ai/explicit-create-loading";
 import { isPlacesRateLimited as discoveryCooldownActive } from "@/lib/places-api-guard";
 import { createCombinationDiscoveryTrace } from "@/lib/ai/combination-discovery-trace";
@@ -70,7 +79,7 @@ import {
 import { searchPlaces } from "@/lib/places.functions";
 import { getPlaceDetailsServerFnViaGateway } from "@/lib/pie/places-gateway";
 import { createUnifiedSearchPlacesFn } from "@/lib/places-search-unified";
-import { streamRoamieAI, fetchRoamieAI } from "@/lib/ai/stream-client";
+import { streamRoamieAI, fetchRoamieAI, localizedChatConnectionFallbackMessage } from "@/lib/ai/stream-client";
 import { PreferenceQuizCta } from "@/components/PreferenceQuizCta";
 import { useAddToTrip } from "@/hooks/use-add-to-trip";
 import { tripPlaceFromRecommendation } from "@/lib/trip/trip-place-input";
@@ -287,7 +296,6 @@ import {
   useChatGenerationLock,
 } from "@/lib/ai/chat-generation-lock";
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
-import { resolveChatConnectionFallbackMessage } from "@/lib/user-facing-error";
 import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
 import { generateItineraryViaNativeApi } from "@/lib/ai/itinerary-transport";
 import { useAccess } from "@/hooks/use-access";
@@ -439,6 +447,8 @@ import { planningSelectionTurnNearbyAnchor } from "@/lib/ai/chat-turn-destinatio
 import type { DestinationResolution } from "@/lib/ai/destination-resolution";
 import {
   advanceDestinationSwitchPending,
+  buildCityCategoryContinuationText,
+  buildParentScopeCategoryUserText,
   buildPendingGeographicClarification,
   buildPendingParentScopeClarification,
   canAskDestinationSwitchAgain,
@@ -458,7 +468,12 @@ import {
 } from "@/lib/ai/destination-geographic-clarification";
 import type { PendingGeographicClarification } from "@/lib/ai/destination-geographic-clarification";
 import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
-import { coerceTravelDestination } from "@/lib/ai/trip-planning-context";
+import {
+  buildDestinationPlanningClarify,
+  categorySwitchSearchText,
+  cityOnlyAnswerDestination,
+  coerceTravelDestination,
+} from "@/lib/ai/trip-planning-context";
 import {
   filterRecommendationsForExplicitDestinationScope,
   isolateSessionToExplicitDestination,
@@ -671,6 +686,7 @@ import {
 import { getEffectiveLocationSnapshot } from "@/lib/effective-location";
 import {
   filterPlacesByDestinationGuard,
+  filterTextOnlyDestinationCountryMismatch,
   placesSearchContextPayload,
   resolveChatPlaceSearchContext,
   resolveDestinationNameForSearch,
@@ -736,6 +752,7 @@ import {
 import {
   AI_ITINERARY_SUCCESS_REDIRECT_MESSAGE,
   createItineraryFromSession,
+  localizeItineraryFailureMessage,
   logAiItinerarySuccess,
   logAiState,
   prepareDirectItineraryFlow,
@@ -793,6 +810,7 @@ import {
   generateLocalRecommendationFallback,
 } from "@/lib/ai/local-recommendation-fallback";
 import { getTripLegsWithDurations, travelLabelToRoutesMode } from "@/services/routesService";
+import { resolveDirectionsRegion } from "@/lib/directions-endpoint";
 import { buildSavedTripTransitLegs } from "@/lib/saved-trip/saved-trip-transit-legs";
 import { applyPlanTripDetails } from "@/lib/plan-form-trip-payload";
 import { attachCoreTripToPayload, toCoreTrip, type CoreTrip } from "@/lib/trip/core-trip";
@@ -2450,12 +2468,13 @@ function Chat() {
             };
             const label =
               resolveConversationDestination(placeCtx, live) ?? placeCtx.destination?.trim();
-            const namedRecs = label ? buildNamedFallbackRecommendations(label) : [];
+            const namedRecs = label ? buildNamedFallbackRecommendations(label, locale) : [];
             if (namedRecs.length && label) {
               const intro = buildWeatherAwarePlaceIntro(
                 label,
                 resolveWeatherScene(live.weather ?? null, label),
                 false,
+                locale,
               );
               const summary = [
                 intro,
@@ -2513,6 +2532,7 @@ function Chat() {
     },
     [
       uiT,
+      locale,
       persistPlanningAdviceTurn,
       pauseForTripDates,
       stopDiscoveringLoadingAnimation,
@@ -3153,7 +3173,8 @@ function Chat() {
       name: rec.name,
       category: rec.type,
       address: rec.address || null,
-      city: session.location?.city ?? null,
+      // 存聊聊目的地（地點所在城市）；沒有目的地才退回使用者所在城市。
+      city: workspaceDestinationOfSession(session) || session.location?.city || null,
       lat: rec.lat ?? null,
       lng: rec.lng ?? null,
       notes: rec.reason,
@@ -5461,6 +5482,7 @@ function Chat() {
         dayPlan?: AiDayPlan,
         resultAuthority: TripCreationAuthority | undefined = creationAuthority,
         resultOwnerId: string = resultGenerationId,
+        candidateInsufficient = false,
       ) => {
         // A2 F2: a late result of a replaced Session (e.g. Osaka after the switch to Kanazawa)
         // never reads that Session's frozen plan, writes messages / Session / Planner state or
@@ -5560,7 +5582,7 @@ function Chat() {
           (alignedDayPlan?.days ?? 0) > 0 &&
           (!requestedTripDays || alignedDayPlan!.days === requestedTripDays);
 
-        if (itineraryRender && !itineraryRenderSuccess) {
+        if ((itineraryRender || candidateInsufficient) && !itineraryRenderSuccess) {
           logGeneratedPlanHandoff("handoff_skipped", { reason: "incomplete_render_result", renderable: false });
           safeChatLog(
             logAiRenderBlocked,
@@ -5582,6 +5604,11 @@ function Chat() {
             withChatPlanningState(sessionForPlan, "idle", "itinerary_plan_incomplete"),
           );
           await settlePlaceCredits(false);
+          // 候選不足（非限流）：顯示專用文案並結束，不進 applyLocalFallback 重跑推薦／再 reserve。
+          if (candidateInsufficient && requestedTripDays) {
+            setMsgs([...conversation, { role: "assistant", content: chatRuntimeCopy("itineraryCandidatesInsufficient", locale, { destination: displayDestinationForCopy(destination, undefined, locale), days: requestedTripDays }) }]);
+            return true;
+          }
           return false;
         }
 
@@ -5717,7 +5744,7 @@ function Chat() {
             )
           : enrichContextForItineraryMode(userText, { ...placeCtx, destination }, sessionForPlan);
 
-        const { summary, recommendations, payload, contextPatch, dayPlan, tripCreationAuthority: returnedAuthority, generationId: returnedGenerationId } =
+        const { summary, recommendations, payload, contextPatch, dayPlan, tripCreationAuthority: returnedAuthority, generationId: returnedGenerationId, candidateInsufficient } =
           await buildDestinationMustVisitRecommendation({
             creationAuthority,
             generationId: resultGenerationId,
@@ -5736,7 +5763,7 @@ function Chat() {
             session: sessionForPlan, trustedCenter: trustedScope.center,
           });
 
-        return await renderDestinationReply(summary, recommendations, payload, contextPatch, dayPlan, returnedAuthority, returnedGenerationId);
+        return await renderDestinationReply(summary, recommendations, payload, contextPatch, dayPlan, returnedAuthority, returnedGenerationId, candidateInsufficient === true);
       } catch (error) {
         console.warn("[CHAT_PLACES_ERROR]", error instanceof Error ? error.message : String(error));
         if (styleReselect) {
@@ -5749,8 +5776,16 @@ function Chat() {
         const itineraryRequested = shouldUseItineraryMode(userText, placeCtx, sessionForPlan);
         if (itineraryRequested) {
           logChatRenderPlaceList(0, "itinerary_planner_error");
-          const intro = buildWeatherAwarePlaceIntro(label, resolveWeatherScene(null, label), false);
-          const summary = [intro, "", `${label} 的行程還在整理中，稍後再試一次。`].join("\n");
+          const intro = buildWeatherAwarePlaceIntro(label, resolveWeatherScene(null, label), false, locale);
+          const summary = [
+            intro,
+            "",
+            locale === "zh-TW"
+              ? `${label} 的行程還在整理中，稍後再試一次。`
+              : chatRuntimeCopy("itineraryStillPreparing", locale, {
+                  destination: displayDestinationForCopy(label, undefined, locale),
+                }),
+          ].join("\n");
           await settlePlaceCredits(false);
           return await renderDestinationReply(
             summary,
@@ -5777,8 +5812,8 @@ function Chat() {
             },
           );
         }
-        const namedRecs = buildNamedFallbackRecommendations(label);
-        const intro = buildWeatherAwarePlaceIntro(label, resolveWeatherScene(null, label), false);
+        const namedRecs = buildNamedFallbackRecommendations(label, locale);
+        const intro = buildWeatherAwarePlaceIntro(label, resolveWeatherScene(null, label), false, locale);
         const summary = namedRecs.length
           ? [
               intro,
@@ -5789,7 +5824,15 @@ function Chat() {
               "",
               uiT("productionUi.p15ca8c2fae"),
             ].join("\n")
-          : [intro, "", `我暫時沒連上${label}的即時地點資料，你可以稍後再試或換個說法。`].join(
+          : [
+              intro,
+              "",
+              locale === "zh-TW"
+                ? `我暫時沒連上${label}的即時地點資料，你可以稍後再試或換個說法。`
+                : chatRuntimeCopy("livePlacesUnavailable", locale, {
+                    destination: displayDestinationForCopy(label, undefined, locale),
+                  }),
+            ].join(
               "\n",
             );
         const payload: RoamiePayloadV2 = {
@@ -5909,7 +5952,7 @@ function Chat() {
               canAskDestinationSwitchAgain(
                 switchPending,
                 conversation,
-                chatRuntimeCopy("destinationSwitchConfirm", locale, switchVars),
+                applyKoParticles(chatRuntimeCopy("destinationSwitchConfirm", locale, switchVars), [switchVars.destination], locale),
                 [
                   chatRuntimeCopy("destinationSwitchStopped", locale, switchVars),
                   chatRuntimeCopy("destinationSwitchCapped", locale, switchVars),
@@ -5921,10 +5964,14 @@ function Chat() {
             ),
             {
               role: "assistant",
-              content: chatRuntimeCopy(
-                askSwitchAgain ? "destinationSwitchConfirm" : "destinationSwitchStopped",
+              content: applyKoParticles(
+                chatRuntimeCopy(
+                  askSwitchAgain ? "destinationSwitchConfirm" : "destinationSwitchStopped",
+                  locale,
+                  switchVars,
+                ),
+                [switchVars.destination],
                 locale,
-                switchVars,
               ),
             },
           ];
@@ -6127,6 +6174,7 @@ function Chat() {
             shoppingSessionForSearch.activeSearchCity ??
               shoppingSessionForSearch.destination ??
               destination,
+            locale,
           );
           const exhaustedMsgs = [
             ...conversation.filter(
@@ -6420,6 +6468,7 @@ function Chat() {
             ? shoppingAlreadyExhausted
               ? buildShoppingExhaustedFollowupMessage(
                   shoppingRecForNoMore?.activeSearchCity ?? destination,
+                  locale,
                 )
               : chatRuntimeCopy("shoppingNoMore", locale)
             : chatRuntimeCopy("noMore", locale);
@@ -6514,13 +6563,27 @@ function Chat() {
         fromClarification?: boolean;
         /** The persisted session at send() start (pending consumed), before any mid-turn persist. */
         turnStartSession?: ChatPlanningSession;
+        /**
+         * City-only answer to "which city?" after a category wish only: the stored intent (userText
+         * 「東京海邊」 is the search text) and the wish sentence for this turn's context merge; the
+         * destination is the session's answered city (same as a category wish on that destination).
+         */
+        categoryContinuation?: {
+          intents: import("@/lib/ai/chat-place-category-types").ChatPlaceCategoryIntent[];
+          turnText: string;
+          /** Stored category word (「海邊」「박물관」) for the attraction Places queries. */
+          categoryQueryWord?: string;
+        };
       },
     ): Promise<boolean> => {
       // Explicit Nearby requests belong to the Nearby dispatcher. Their full
       // query is not a provisional destination label.
       if (userExplicitlyWantsNearbyPlaces(userText)) return false;
       const requestSessionAuthority = captureSessionAuthority();
-      const merged = mergeTravelContext(activeSession, userText);
+      const continuation = opts?.categoryContinuation?.intents.length
+        ? opts.categoryContinuation
+        : undefined;
+      const merged = mergeTravelContext(activeSession, continuation?.turnText ?? userText);
       const placeCtx = mergeContextForPlaceFetch(merged.context, activeSession);
       const shortcutNearby =
         merged.session.normalizedShortcutRequest?.structured === true &&
@@ -6536,7 +6599,7 @@ function Chat() {
         });
         return false;
       }
-      const intents = parseChatPlaceIntents(userText);
+      const intents = continuation ? [...continuation.intents] : parseChatPlaceIntents(userText);
       if (!intents.length) return false;
       // Single turn DestinationResolution; a pending known-parent tail gets the one
       // existing provider validation (same geocode query as before), classify → apply.
@@ -6545,7 +6608,8 @@ function Chat() {
           resolveCategoryTurnDestination({
             ctx: placeCtx,
             session: merged.session,
-            userText,
+            // 「改去博物館」"switch to cafe": switch / negated / category wording is no area name.
+            userText: continuation || categorySwitchSearchText(userText) ? "" : userText,
             locale,
           }),
         { locale, geocodeFn: geocodeLocationFn },
@@ -6641,7 +6705,7 @@ function Chat() {
         (await resolveTrustedContextTurnDestination({
           ctx: placeCtx,
           session: merged.session,
-          userText,
+          userText: continuation ? "" : userText,
           locale,
           geocodeFn: geocodeLocationFn,
         }));
@@ -6708,6 +6772,9 @@ function Chat() {
               hasPlusAccess,
             }),
             trustedCenter: trustedScope.center,
+            ...(continuation?.categoryQueryWord
+              ? { categoryQueryWord: continuation.categoryQueryWord }
+              : {}),
           });
         // A2 F2: late result of a replaced Session — no message / Session write, no charge.
         if (!isSessionAuthorityCurrent(requestSessionAuthority, "category_places")) {
@@ -6830,7 +6897,12 @@ function Chat() {
                         ? uiT("productionUi.p84d7a9a63b")
                         : uiT("productionUi.p925108e2c8");
                 return [
-                  chatRuntimeCopy("destinationPlaces", locale, { destination: destination ?? "" }),
+                  chatRuntimeCopy("destinationPlaces", locale, {
+                    destination:
+                      locale === "zh-TW"
+                        ? (destination ?? "")
+                        : displayDestinationForCopy(normalizeDestinationLabel(destination ?? ""), undefined, locale),
+                  }),
                   "",
                   heading,
                   list,
@@ -6990,7 +7062,12 @@ function Chat() {
                   )
                   .join("\n");
                 return [
-                  chatRuntimeCopy("destinationPlaces", locale, { destination: destination ?? "" }),
+                  chatRuntimeCopy("destinationPlaces", locale, {
+                    destination:
+                      locale === "zh-TW"
+                        ? (destination ?? "")
+                        : displayDestinationForCopy(normalizeDestinationLabel(destination ?? ""), undefined, locale),
+                  }),
                   "",
                   uiT("productionUi.p10dbff0071"),
                   list,
@@ -8022,10 +8099,12 @@ function Chat() {
             console.warn("[CHAT_PLACES_REQUEST] failed", fallbackErr);
           }
         }
+        // 國家篩選放在迴圈後：break 以篩選前數量判斷，查詢次數與修正前相同。
+        placeResults = filterTextOnlyDestinationCountryMismatch(placeResults, searchCtx);
       }
 
       if (isCampingFlow && !placeResults.length) {
-        const intro = buildCampingIntroReply(context, scopedSession);
+        const intro = buildCampingIntroReply(context, scopedSession, locale);
         setMsgs((prev) => {
           const trimmedPrev = prev.filter(
             (m, i) => !(i === prev.length - 1 && m.role === "assistant" && !m.content),
@@ -8217,6 +8296,11 @@ function Chat() {
       abortRef.current = controller;
       const timeoutMs = 60_000;
       const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+      // Server-reported failure (never charged): this stream's partial must not stay visible.
+      let serverReportedError = false;
+      // Every partial this stream wrote: msgsRef syncs after commit, so it may still hold an earlier one.
+      const streamPartials = new WeakSet<object>();
+      let lastStreamPartial: Partial<RoamieResponse> | null = null;
 
       try {
         const { data: authSession } = await supabase.auth.getSession();
@@ -8239,6 +8323,8 @@ function Chat() {
           req,
           {
             onPartial: (p) => {
+              lastStreamPartial = p;
+              streamPartials.add(p);
               setPartial(p);
               setMsgs((prev) => {
                 const next = [...prev];
@@ -8253,7 +8339,8 @@ function Chat() {
                 return next;
               });
             },
-            onError: (msg) => {
+            onError: (msg, info) => {
+              if (info?.source === "server") serverReportedError = true;
               throw new Error(msg);
             },
           },
@@ -8287,21 +8374,57 @@ function Chat() {
             intentForGuard.destinationCity ??
             (sessionOverride ?? session).tripDestination?.city ??
             "釜山";
-          const fallbackSummary = [
-            `${destination} 11 月通常約 9-17°C，早晚偏涼，海風明顯，建議薄羽絨或防風外套。`,
-            "你剛說想要放鬆、拍照、美食都有，我先幫你抓 3 個方向：",
-            `1) 海景放鬆：廣安里海邊散步 + The Bay 101 夜景`,
-            "2) 情侶拍照：海東龍宮寺 + 白淺灘文化村",
-            "3) 在地美食：札嘎其市場海鮮 + 南浦洞街區小吃",
-            "要不要我接著幫你排成 5 天的輕鬆情侶行程？",
-          ].join("\n");
+          const shownDestination = displayDestinationForCopy(destination, userText, locale);
+          const fallbackSummary =
+            locale === "en"
+              ? [
+                  `${shownDestination} in November is usually around 9–17°C, cool in the mornings and evenings with a noticeable sea breeze, so bring a light down or windproof jacket.`,
+                  "You said you'd like a mix of relaxing, photos and food, so here are 3 directions to start:",
+                  "1) Seaside relaxing: a walk along Gwangalli Beach + The Bay 101 night view",
+                  "2) Couple photos: Haedong Yonggungsa Temple + Huinnyeoul Culture Village",
+                  "3) Local food: seafood at Jagalchi Market + street snacks around Nampo-dong",
+                  "Want me to turn this into a relaxed 5-day couple itinerary next?",
+                ].join("\n")
+              : locale === "ja"
+                ? [
+                    `${shownDestination}の11月はだいたい9〜17°C。朝晩は冷え込み、海風も強めなので、薄手のダウンかウインドブレーカーがおすすめです。`,
+                    "リラックス、写真、グルメ全部楽しみたいとのことなので、まず3つの方向性を挙げますね：",
+                    "1) 海辺でのんびり：広安里ビーチ散歩 + The Bay 101の夜景",
+                    "2) カップル写真：海東龍宮寺 + 白瀬文化村（フィンヨウル文化村）",
+                    "3) ローカルグルメ：チャガルチ市場の海鮮 + 南浦洞の屋台グルメ",
+                    "このまま5日間のゆったりカップル旅程に組みましょうか？",
+                  ].join("\n")
+                : locale === "ko"
+                  ? [
+                      `${shownDestination}의 11월은 보통 9–17°C 정도로 아침저녁에 쌀쌀하고 바닷바람이 강하니, 경량 패딩이나 바람막이를 추천해요.`,
+                      "휴식, 사진, 맛집을 모두 원하신다고 해서 먼저 3가지 방향을 골라 봤어요:",
+                      "1) 바다 보며 휴식: 광안리 해변 산책 + 더베이101 야경",
+                      "2) 커플 사진: 해동용궁사 + 흰여울문화마을",
+                      "3) 현지 맛집: 자갈치시장 해산물 + 남포동 거리 간식",
+                      "이어서 5일짜리 여유로운 커플 일정으로 짜 드릴까요?",
+                    ].join("\n")
+                  : [
+                      `${destination} 11 月通常約 9-17°C，早晚偏涼，海風明顯，建議薄羽絨或防風外套。`,
+                      "你剛說想要放鬆、拍照、美食都有，我先幫你抓 3 個方向：",
+                      `1) 海景放鬆：廣安里海邊散步 + The Bay 101 夜景`,
+                      "2) 情侶拍照：海東龍宮寺 + 白淺灘文化村",
+                      "3) 在地美食：札嘎其市場海鮮 + 南浦洞街區小吃",
+                      "要不要我接著幫你排成 5 天的輕鬆情侶行程？",
+                    ].join("\n");
           setMsgs((prev) => {
             const next = [...prev];
             next[next.length - 1] = {
               role: "assistant",
               content: fallbackSummary,
               roamie: {
-                title: `${destination} 情侶慢旅行方向`,
+                title:
+                  locale === "en"
+                    ? applyEnglishPlaceArticles(`Slow couple trip ideas for ${shownDestination}`, locale)
+                    : locale === "ja"
+                      ? `${shownDestination}のカップルゆったり旅の方向性`
+                      : locale === "ko"
+                        ? `${shownDestination} 커플 느린 여행 방향`
+                        : `${destination} 情侶慢旅行方向`,
                 summary: fallbackSummary,
                 moodTag: resolveDisplayedRecommendationBadge({
                   session: sessionOverride ?? session,
@@ -8381,6 +8504,18 @@ function Chat() {
         });
         setPartial({});
       } catch (e) {
+        if (serverReportedError && lastStreamPartial) {
+          // Reset this stream's message to the empty placeholder, so the existing empty-placeholder
+          // removal below drops it; msgsRef too, so a fallback persistSession never saves the partial.
+          const dropStreamPartial = (prev: ChatMsg[]): ChatMsg[] =>
+            prev[prev.length - 1]?.role === "assistant" &&
+            streamPartials.has(prev[prev.length - 1]?.roamie ?? {})
+              ? [...prev.slice(0, -1), { role: "assistant", content: "" }]
+              : prev;
+          msgsRef.current = dropStreamPartial(msgsRef.current);
+          setMsgs(dropStreamPartial);
+          setPartial({});
+        }
         if ((e as Error).name === "AbortError") {
           const activeForTimeout = sessionOverride ?? session;
           const activeUserText = opts?.userText ?? "";
@@ -8494,7 +8629,7 @@ function Chat() {
                 fallbackMerged.session,
                 activeUserText,
                 locale,
-              ) ?? resolveChatConnectionFallbackMessage(e),
+              ) ?? localizedChatConnectionFallbackMessage(e, locale),
           };
           setMsgs((prev) => {
             const trimmedPrev = prev.filter(
@@ -8577,8 +8712,11 @@ function Chat() {
 
     defaultGreetingTouchedRef.current = true;
     beginUserTurn(msgsRef.current.length);
-    const userLine = `想聊聊 ${placeDisplayName(item)}`;
-    const assistantLine = buildPlaceDetailReply(item, nextSession);
+    const userLine =
+      locale === "zh-TW"
+        ? `想聊聊 ${placeDisplayName(item)}`
+        : chatRuntimeCopy("placeDetailUserLine", locale, { place: placeDisplayName(item) });
+    const assistantLine = buildPlaceDetailReply(item, nextSession, locale);
     setMsgs((prev) => [
       ...prev,
       { role: "user", content: userLine },
@@ -8664,6 +8802,20 @@ function Chat() {
     if (!trimmed || streaming || generating) return;
     // L1: 只靠 UI disabled 不夠；生成鎖住時一律不送出新請求。
     if (isChatGenerationLocked()) return;
+    // 「第2組的第一天改一下」confirm: valid only for the very next reply, before any branch below
+    // (nearby / early returns never carry it to a later 「幫我生成」).
+    {
+      const lastAssistantForConfirm = [...msgsRef.current]
+        .reverse()
+        .find((m) => m.role === "assistant" && m.content?.trim())?.content;
+      const keptConfirm = dropStaleCombinationConfirm(session, trimmed, lastAssistantForConfirm);
+      if (keptConfirm !== session) {
+        session = keptConfirm;
+        sessionRef.current = keptConfirm;
+        // State too (render re-syncs sessionRef from it); no persist / network here.
+        setSession(keptConfirm);
+      }
+    }
     const action =
       opts?.source === "home_mood"
         ? "mood_shortcut"
@@ -8842,7 +8994,7 @@ function Chat() {
         stopState === "C_commit_unconfirmed"
           ? chatRuntimeCopy("destinationSwitchCommitUnconfirmed", locale)
           : applied
-            ? chatRuntimeCopy("destinationSwitchAppliedSyncPending", locale, { destination: applied })
+            ? applyKoParticles(chatRuntimeCopy("destinationSwitchAppliedSyncPending", locale, { destination: applied }), [applied], locale)
             : chatRuntimeCopy("destinationSwitchCommitNotSynced", locale),
         stopState,
       );
@@ -8872,7 +9024,7 @@ function Chat() {
       session = saved0;
     }
     if (session.pendingQuestion?.type === "date_confirmation" && turnSwitch.state === "NO_SWITCH") {
-      const conversation: ChatMsg[] = [...msgsRef.current, {role:"user",content:trimmed}];
+      const conversation: ChatMsg[] = [...msgsRef.current, {role:"user",content:displayMessage}];
       setText("");
       setMsgs(conversation);
       let failureOwner = session;
@@ -9133,10 +9285,14 @@ function Chat() {
         const replied = replyDestinationSwitchTurn(
           updatePending ? "e1_pending" : "e1_ask",
           updatePending
-            ? chatRuntimeCopy("destinationSwitchConfirm", locale, {
-                destination: updatePending.rawGeographicLabel,
-                previous: previous ?? "",
-              })
+            ? applyKoParticles(
+                chatRuntimeCopy("destinationSwitchConfirm", locale, {
+                  destination: updatePending.rawGeographicLabel,
+                  previous: previous ?? "",
+                }),
+                [updatePending.rawGeographicLabel],
+                locale,
+              )
             : chatRuntimeCopy("destinationSwitchExpired", locale),
         );
         if (updatePending) {
@@ -9312,7 +9468,14 @@ function Chat() {
         requestText: trimmed,
         turnResetBase,
         resetAlreadyThisTurn: false,
+        trustedCenter: trustedScope.center,
+        trustedLocation:
+          switchProbe.providerCalls > 0 ? switchProbe.captured?.envelope.location ?? null : null,
       });
+      // Switching while choosing combinations (or after a candidate miss there): this turn re-lists
+      // the new destination's combinations, as the plain 「改去熱海」 does (no E3 early return).
+      // After a combination was picked / the itinerary was generated: the same switch.
+      const switchRelistsCombinations = isCombinationSwitchRelistBase(switchBase);
       if ("stop" in switchResult || !switchResult.applied) {
         // A: every wrapper stop / not-applied result returns before its Commit.
         replyDestinationSwitchTurn(
@@ -9489,7 +9652,7 @@ function Chat() {
           switchRoute === "NEW_RECOMMENDATION" ||
           switchRoute === "MORE_RECOMMENDATIONS" ||
           switchRoute === "RECOMMENDATION_REFINEMENT");
-      if (!turnRequestsRecommendation) {
+      if (!turnRequestsRecommendation && !switchRelistsCombinations) {
         // #PL-FIX-T8: a confirmed selection switch goes on to this turn's recommendations.
         if (!confirmedSelectionSwitchTarget) { // #PL-FIX-T8
         replyDestinationSwitchTurn(
@@ -9520,7 +9683,7 @@ function Chat() {
     }
     if (rejectNumericSelection(session, trimmed)) {
       const conversation: ChatMsg[] = [...msgsRef.current,
-        {role: "user", content: trimmed},
+        {role: "user", content: displayMessage},
         {role: "assistant", content: chatRuntimeCopy("numericSelectionUnavailable", locale)}];
       setText(""); setMsgs(conversation);
       persistSession(discardExpiredSelection(session), conversation);
@@ -9564,6 +9727,8 @@ function Chat() {
     if (
       !turnSwitchVerified &&
       isPlanningSelectionMode(sessionRef.current) &&
+      // 「幫我生成」answering the combination confirm question goes to parsePendingOptionSelection.
+      !(isCombinationChoiceTurn(sessionRef.current) && sessionRef.current.pendingQuestion?.confirmCombinationTitles?.length) &&
       /^(?:生成行程|生成完整行程|幫我生成)$/.test(trimmed)
     ) {
       if (selectionGenerateInFlightRef.current) return;
@@ -10638,8 +10803,10 @@ function Chat() {
         nextSession = enterPlaceDetailChat(nextSession, focus);
         persistSession(nextSession);
         const reply =
-          buildPlaceDetailFollowUpReply("add_to_trip", nextSession) ??
-          `好的，已把「${placeDisplayName(focus)}」記下來。`;
+          buildPlaceDetailFollowUpReply("add_to_trip", nextSession, locale) ??
+          (locale === "zh-TW"
+            ? `好的，已把「${placeDisplayName(focus)}」記下來。`
+            : chatRuntimeCopy("placeDetailNoted", locale, { place: placeDisplayName(focus) }));
         setMsgs([...baseConversation, { role: "assistant", content: reply }]);
         return;
       }
@@ -10650,7 +10817,7 @@ function Chat() {
           void openExternal(buildPlaceMapsUrl(focus.lat, focus.lng, focus.name));
         }
         const reply =
-          buildPlaceDetailFollowUpReply("view_route", session) ??
+          buildPlaceDetailFollowUpReply("view_route", session, locale) ??
           uiT("productionUi.p29b7d8cd97");
         setMsgs([...baseConversation, { role: "assistant", content: reply }]);
         return;
@@ -10681,7 +10848,7 @@ function Chat() {
         });
         const followUpKind = parsePlaceDetailFollowUp(trimmed);
         const preface =
-          buildPlaceDetailFollowUpReply(followUpKind, nextSession) ??
+          buildPlaceDetailFollowUpReply(followUpKind, nextSession, locale) ??
           chatRuntimeCopy("placeFocusNearby", locale, {
             place: placeDisplayName(nextSession.placeDetailFocus!),
           });
@@ -10759,6 +10926,12 @@ function Chat() {
     const sessionForTurn: ChatPlanningSession = turnPendingGeographic && !destinationUpdatePending
       ? { ...session, pendingClarification: turnPendingGeographic }
       : session;
+    // 「都不錯但第二天改一下」while choosing combinations: a change request answered by the advice
+    // follow-up; 「第二天」is neither the trip length nor a candidate ordinal. 「第二天不用改」
+    // (day + negated modify) changes nothing either: no pick, no trip-length change.
+    const dayNegatedTurn = isCombinationChoiceTurn(sessionForTurn) && isCombinationHoldReply(trimmed);
+    const combinationPartialModifyTurn =
+      (isCombinationChoiceTurn(sessionForTurn) && isCombinationPartialModifyReply(trimmed)) || dayNegatedTurn;
     let nextSession = explicitNearbyAuthority
       ? {
           ...sessionForTurn,
@@ -10767,7 +10940,9 @@ function Chat() {
           nearbySemanticFamily: explicitNearbyAuthority.semanticFamily,
           activeChatIntent: explicitNearbyAuthority.intent,
         }
-      : applyTripIntentToSession(trimmed, sessionForTurn);
+      : combinationPartialModifyTurn
+        ? sessionForTurn
+        : applyTripIntentToSession(trimmed, sessionForTurn);
     if (turnSwitchVerified && switchedSession && switchTrustedDestination) {
       // 8837 pin (7.2): the verified switch owns the destination fields; Authority country
       // (7.4.3); the previous scope id never survives. Dates / days / discovery are not pinned.
@@ -11005,7 +11180,7 @@ function Chat() {
           ? canAskDestinationSwitchAgain(
               switchPending,
               next,
-              chatRuntimeCopy("destinationSwitchConfirm", locale, copyVars),
+              applyKoParticles(chatRuntimeCopy("destinationSwitchConfirm", locale, copyVars), [copyVars.destination], locale),
               [
                 chatRuntimeCopy("destinationSwitchStopped", locale, copyVars),
                 chatRuntimeCopy("destinationSwitchCapped", locale, copyVars),
@@ -11066,7 +11241,7 @@ function Chat() {
                 : isDestinationSwitchCapped(switchPending)
                   ? chatRuntimeCopy("destinationSwitchCapped", locale, copyVars)
                   : askSwitchAgain
-                    ? chatRuntimeCopy("destinationSwitchConfirm", locale, copyVars)
+                    ? applyKoParticles(chatRuntimeCopy("destinationSwitchConfirm", locale, copyVars), [copyVars.destination], locale)
                     : chatRuntimeCopy("destinationSwitchStopped", locale, copyVars);
         const replied: ChatMsg[] = [...next, { role: "assistant", content: switchReply }];
         setMsgs(replied);
@@ -11150,6 +11325,68 @@ function Chat() {
         return;
       }
       // decline / unresolved / trip-planning override: general flow with this turn's text.
+    }
+    // 「我想去博物館」→ asked which city → 「東京」「Tokyo」「도쿄」: the category wish continues in that
+    // city through the same destination-category path as the wish on a trip with a destination.
+    // Any other answer (「東京 3天」「12/10去東京」「算了」) goes to the general flow; the pending was
+    // consumed at turn start either way (valid for this one turn only).
+    if (
+      pendingGeographic?.kind === "destination_area" &&
+      !nearbyShortcutTurn &&
+      !pendingGeographic.rawGeographicLabel.trim() &&
+      pendingGeographic.originalUserText?.trim()
+    ) {
+      nextSession = { ...nextSession, pendingClarification: undefined };
+      const wishText = pendingGeographic.originalUserText.trim();
+      const answeredCity = isPlaceClarificationTripPlanningOverride(trimmed)
+        ? undefined
+        : cityOnlyAnswerDestination(trimmed);
+      // A country answer (「日本」「Japan」「일본」) needs a region first: the general flow lists the
+      // country's regions (no category search on a country scope).
+      if (answeredCity && !isCountryLevelDestination(answeredCity) && categorySwitchSearchText(wishText)) {
+        const next: ChatMsg[] = [...msgs, { role: "user", content: displayMessage }];
+        setMsgs(next);
+        setText("");
+        const sessionForRec: ChatPlanningSession = {
+          ...nextSession,
+          pendingClarification: undefined,
+          activeCategoryIntent: pendingGeographic.categoryIntent,
+          travelContext: {
+            ...(nextSession.travelContext ?? { interests: [] }),
+            destination: answeredCity,
+          },
+        };
+        persistSession(sessionForRec, next);
+        // 「{city}{category words}」(「東京海邊」「東京 박물관」) with the stored intent; a pending without
+        // stored words keeps the wish text (category intent) or the existing category request text.
+        const continuationText = buildCityCategoryContinuationText(pendingGeographic, answeredCity);
+        const categoryText =
+          continuationText ??
+          (parseChatPlaceIntents(wishText).length
+            ? wishText
+            : buildParentScopeCategoryUserText(pendingGeographic, answeredCity));
+        const applied = await pushDestinationCategoryPlaceRecommendation(sessionForRec, categoryText, next, {
+          fromClarification: true,
+          turnStartSession,
+          ...(continuationText
+            ? {
+                categoryContinuation: {
+                  intents: [pendingGeographic.categoryIntent],
+                  turnText: wishText,
+                  categoryQueryWord: pendingGeographic.categorySearchWord,
+                },
+              }
+            : {}),
+        });
+        if (applied) return;
+        const emptyMsgs: ChatMsg[] = [
+          ...next,
+          { role: "assistant", content: chatRuntimeCopy("noResults", locale, { destination: answeredCity }) },
+        ];
+        setMsgs(emptyMsgs);
+        persistSession(sessionForRec, emptyMsgs);
+        return;
+      }
     }
     if (pendingGeographic?.kind === "destination_area" && !nearbyShortcutTurn) {
       const restored = isPlaceClarificationTripPlanningOverride(trimmed)
@@ -11242,7 +11479,8 @@ function Chat() {
     }
 
     if (isReplanIntent(trimmed)) {
-      nextSession = resetChatPlanningForReplan(nextSession, "user_replan_intent");
+      // 「第二天重新安排」while choosing combinations is a held day turn: keep the combination list.
+      if (!combinationPartialModifyTurn) nextSession = resetChatPlanningForReplan(nextSession, "user_replan_intent");
     }
 
     const explicitNearbyKeywordForTurn = explicitNearbyAuthority?.rawKeyword ?? null;
@@ -11502,6 +11740,17 @@ function Chat() {
       await completeAdviceTurn(turn,nextSession,keepSelectionAdviceContext(merged.context, turn.session),next);
       return;
     }
+    if (combinationPartialModifyTurn) {
+      // Follow-up question only: no selection, no generation, days unchanged; the
+      // combination_choice pending stays open for 「2」「全部」「幫我生成」 next turn.
+      const adviceTurn = processAdviceTurn(trimmed, nextSession, merged.context, undefined, locale);
+      const next: ChatMsg[] = [...msgs, { role: "user", content: displayMessage }];
+      setMsgs(next);
+      setText("");
+      scrollToUserMessage(next.length - 1);
+      await completeAdviceTurn(adviceTurn, nextSession, merged.context, next);
+      return;
+    }
     if (isBudgetRefinementText(trimmed)) {
       nextSession = applyBudgetRefinementToSession(trimmed, {
         ...nextSession,
@@ -11653,8 +11902,15 @@ function Chat() {
           ),
         });
         parseStage = "apply_delta";
+        // 「第2組」 on the combination menu picks an offered combination, not a shown place card.
+        const combinationMenuGroupPick =
+          contextRequirement.reason === "group_reference" &&
+          isCombinationChoiceTurn(sessionForTurn) &&
+          (nextSession.travelContext?.offeredCombinations?.length ?? 0) > 0;
         unresolvedPlanningCandidateContext =
-          contextRequirement.requiresCandidateContext && shownCandidates.length === 0;
+          contextRequirement.requiresCandidateContext &&
+          shownCandidates.length === 0 &&
+          !combinationMenuGroupPick;
         if (!unresolvedPlanningCandidateContext) {
           nextSession = applyPlanningConstraintDelta(
             nextSession,
@@ -12368,7 +12624,9 @@ function Chat() {
       const turnDestination = resolveCategoryTurnDestination({
         ctx: placeFetchContext,
         session: nextSession,
-        userText: trimmed,
+        // 「不去海邊了，改去博物館」"switch to cafe": the negated clause / switch wording names
+        // no area; a category-only target reads the trip destination.
+        userText: categorySwitchSearchText(trimmed) ? "" : trimmed,
         locale,
         providerResolvedTurnDestination,
       });
@@ -12452,6 +12710,59 @@ function Chat() {
         selectedAuthority: earlyRouteAuthority,
         phase: "early_dispatch",
       });
+
+      // 「我想去博物館」"I want to go to a museum"「美術館に行きたい」「박물관에 가고 싶어」 on a chat with
+      // no destination: ask which city / area (never the empty-destination noResults copy, no
+      // Places). Nearby asks (「推薦咖啡廳」) keep the Nearby route; any destination keeps its flow.
+      if (
+        earlyRouteAuthority === "other" &&
+        categorySwitchSearchText(trimmed) &&
+        !resolveDestinationForCategorySearch(refreshedPlaceCtx, nextSession, trimmed) &&
+        !nextSession.pendingQuestion &&
+        !nextSession.pendingClarification &&
+        !nextSession.pendingNearbyLocationRequest &&
+        !nextSession.fromMoodFlow &&
+        !nextSession.fromMoodCard &&
+        !nextSession.homeMoodShortcutEntry &&
+        !isTripAddPlaceSession(nextSession)
+      ) {
+        const askCity = buildDestinationPlanningClarify(
+          refreshedPlaceCtx,
+          nextSession,
+          "destination",
+          locale,
+        );
+        const askMsgs: ChatMsg[] = [
+          ...msgs,
+          { role: "user", content: displayMessage },
+          { role: "assistant", content: askCity },
+        ];
+        setMsgs(askMsgs);
+        setText("");
+        // The answered city (「東京」) starts the normal planning flow, not a place-recommendation refinement.
+        // The wish is kept on the existing geographic clarification pending (empty area label: the
+        // generic area restore never reads it) so a city-only answer next turn continues the
+        // category search; it is consumed at the next turn start like every clarification.
+        persistSession(
+          {
+            ...nextSession,
+            lastAssistantReply: askCity,
+            pendingClarification: buildPendingGeographicClarification({
+              rawGeographicLabel: "",
+              categoryIntent: parseChatPlaceIntents(trimmed)[0] ?? "attraction",
+              originalUserText: trimmed,
+              categorySearchWord: categorySwitchSearchText(trimmed),
+            }),
+            travelContext:
+              nextSession.travelContext?.tripPurpose === "recommend_places"
+                ? { ...nextSession.travelContext, tripPurpose: undefined }
+                : nextSession.travelContext,
+          },
+          askMsgs,
+        );
+        logRtResponseBranch("destination_clarification");
+        return;
+      }
 
       if (earlyRouteAuthority === "destination_category") {
         const intents = parseChatPlaceIntents(trimmed);
@@ -12924,8 +13235,24 @@ function Chat() {
               valid: false,
               nextState: "waitingTripDays",
             });
+            // No destination yet (「明天去海邊」"I want to go to the beach" on a new chat): ask where
+            // to go — never "Let's plan your trip to this trip." / 「我們以這趟為主往下規劃」.
+            if (!destLabel) {
+              stopDiscoveringLoadingAnimation("cancelled");
+              setMsgs([
+                ...stripDiscoveringLoadingMessage(next),
+                {
+                  role: "assistant",
+                  content: buildDestinationPlanningClarify(planningCtx, nextSession, "destination", locale),
+                },
+              ]);
+              setStreaming(false);
+              persistSession({ ...nextSession, travelContext: planningCtx });
+              logRtResponseBranch("destination_clarification");
+              return;
+            }
             const dateAsk = buildDateAndDurationQuestionReply(
-              destLabel || "這趟",
+              destLabel,
               planningCtx.destinationCountry,
               {
                 context: planningCtx,
@@ -12975,10 +13302,17 @@ function Chat() {
               `hasDestination=${discoveryGuard.hasDestination}`,
             );
           }
-          const failureBody = isDestResolutionFailed
+          // App language switched during discovery (and again during its re-run): reply in the
+          // current App language, not this closure's locale captured before the switch.
+          const isLocaleSwitched = discoveryFailure?.reason === "locale_switched";
+          const replyLocale = isLocaleSwitched ? effectiveAppLocale() : locale;
+          const failureBody = isLocaleSwitched
+            ? buildDestinationRecommendationFailedMessage(destLabel, "locale_switched", replyLocale)
+            : isDestResolutionFailed
             ? buildDestinationRecommendationFailedMessage(
                 destLabel,
                 discoveryFailure?.reason ?? "destination_resolution_failed",
+                locale,
               )
             : uiT("productionUi.p7fe9e2ed49");
           // Last resort — keep destination/days, offer refresh (not itinerary failure).
@@ -12991,11 +13325,11 @@ function Chat() {
               role: "assistant",
               content: [
                 buildDestinationDirectionAck({
-                  destination: destLabel || chatRuntimeCopy("tripFallback", locale),
+                  destination: destLabel || chatRuntimeCopy("tripFallback", replyLocale),
                   tripDays: days,
                   startDate: planningCtx.startDate,
                   endDate: planningCtx.endDate,
-                  locale,
+                  locale: replyLocale,
                 }),
                 "",
                 failureBody,
@@ -13428,7 +13762,7 @@ function Chat() {
           return;
         }
         if (nearbyIntent === "camping") {
-          const intro = buildCampingIntroReply(merged.context, nextSession);
+          const intro = buildCampingIntroReply(merged.context, nextSession, locale);
           persistSession({
             ...nextSession,
             activeChatIntent: "camping",
@@ -13628,7 +13962,7 @@ function Chat() {
 
       setMsgs((prev) => {
         const hasUserTurn = prev.some(
-          (m, i) => i === prev.length - 1 && m.role === "user" && m.content === trimmed,
+          (m, i) => i === prev.length - 1 && m.role === "user" && m.content === displayMessage,
         );
         const base = hasUserTurn ? prev : [...prev, { role: "user" as const, content: displayMessage }];
         const last = base[base.length - 1];
@@ -14001,10 +14335,11 @@ function Chat() {
         });
         if (!prepared.ok) {
           logItineraryFailureReason(prepared.message);
-          setMsgs((prev) => [...prev, { role: "assistant", content: prepared.message }]);
+          const preparedFailureText = localizeItineraryFailureMessage(prepared.message, locale);
+          setMsgs((prev) => [...prev, { role: "assistant", content: preparedFailureText }]);
           // L1: 不在原對話時只留 finally 的單一失敗提示（此訊息無 i18n key，用通用文案）。
           if (prepared.apiEmpty && isOriginalConversation(generationOriginSessionId)) {
-            toast.error(prepared.message);
+            toast.error(preparedFailureText);
           }
           persistSession({
             ...workingSession,
@@ -14096,6 +14431,7 @@ function Chat() {
           await import("@/lib/ai/estimate-place-visit-duration");
         const { resolvePlannerPaceFromProfile } = await import("@/lib/ai/required-anchor-runtime");
         const gated = applyItineraryLocalizationGate(rawItineraryItems, {
+          locale,
           softPassEnglish: true,
         });
         const itineraryItems = gated.items;
@@ -14374,10 +14710,11 @@ function Chat() {
       if (!createResult.ok) {
         logTripLifecycle("aborted", { failureCode: "generation_failed" });
         logItineraryFailureReason(createResult.message);
-        setMsgs((prev) => [...prev, { role: "assistant", content: createResult.message }]);
+        const createFailureText = localizeItineraryFailureMessage(createResult.message, locale);
+        setMsgs((prev) => [...prev, { role: "assistant", content: createFailureText }]);
         // L1: 不在原對話時只留 finally 的單一失敗提示（此訊息無 i18n key，用通用文案）。
         if (createResult.offerMustVisit && isOriginalConversation(generationOriginSessionId)) {
-          toast.error(createResult.message);
+          toast.error(createFailureText);
         }
         persistSession(createResult.session);
         return;
@@ -14665,6 +15002,7 @@ function Chat() {
       const legEnrichment = getTripLegsWithDurations(
         legPlaces,
         travelLabelToRoutesMode(workingSession.transportation ?? "步行"),
+        resolveDirectionsRegion(workingSession.tripDestination?.country ?? workingSession.tripDestination?.formattedName ?? destination),
       );
       emitSavedTripPersistenceEvent({
         event: "cover_enrichment_started",
@@ -14919,8 +15257,8 @@ function Chat() {
           {
             role: "assistant",
             content: prepared.message.includes("重新生成") || isChatRuntimeCopyPrefix(prepared.message, "retryHint")
-              ? prepared.message
-              : `${prepared.message}\n\n${chatRuntimeCopy("retryHint", locale)}`,
+              ? localizeItineraryFailureMessage(prepared.message, locale)
+              : `${localizeItineraryFailureMessage(prepared.message, locale)}\n\n${chatRuntimeCopy("retryHint", locale)}`,
           },
         ]);
         persistSession(failedSession);

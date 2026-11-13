@@ -14,6 +14,8 @@ import {
 import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
 import type { Locale } from "@/lib/i18n/types";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
+import { applyKoParticles, displayDestinationForCopy } from "@/lib/ai/destination-locale-aliases";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
 import {
   assertDestinationConsistency,
   hasCompleteResolvedDestination,
@@ -330,8 +332,13 @@ export function buildDestinationDirectionAck(params: {
   startDate?: string | null;
   endDate?: string | null;
   locale?: Locale;
+  /** User's own wording; display fallback when no localized name is known. */
+  userText?: string;
 }): string {
-  const label = normalizeDestinationLabel(params.destination) || chatRuntimeCopy("tripFallback", params.locale);
+  const normalized = normalizeDestinationLabel(params.destination);
+  const label = normalized
+    ? displayDestinationForCopy(normalized, params.userText, params.locale ?? effectiveAppLocale())
+    : chatRuntimeCopy("tripFallback", params.locale);
   const start = params.startDate?.trim();
   const end = params.endDate?.trim();
   if (start && end && /^\d{4}-\d{2}-\d{2}$/.test(start) && /^\d{4}-\d{2}-\d{2}$/.test(end)) {
@@ -349,5 +356,9 @@ export function buildDestinationDirectionAck(params: {
   if (days != null) {
     return chatRuntimeCopy("directionAckDays", params.locale, { destination: label, days });
   }
-  return chatRuntimeCopy("directionAckOpen", params.locale, { destination: label });
+  return applyKoParticles(
+    chatRuntimeCopy("directionAckOpen", params.locale, { destination: label }),
+    [label],
+    params.locale ?? effectiveAppLocale(),
+  );
 }

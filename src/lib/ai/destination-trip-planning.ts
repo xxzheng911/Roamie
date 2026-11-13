@@ -6,6 +6,9 @@ import { logTripRuntime } from "@/lib/ai/trip-runtime-diagnostic";
 import { logCandidateDiagnostic } from "@/lib/ai/candidate-insufficient-diagnostic";
 import { logTripLifecycle } from "@/lib/ai/trip-lifecycle-diagnostic";
 import type { Locale } from "@/lib/i18n/types";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import { displayDestinationForCopy } from "@/lib/ai/destination-locale-aliases";
 import type { PlaceResult } from "@/lib/place-result";
 import type { WeatherSummary } from "@/lib/weather-types";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
@@ -241,7 +244,11 @@ import {
   refillMissingDaySlots,
   resolveAdaptiveMinPerDay,
 } from "@/lib/ai/ai-multi-day-planner";
-import { expandPlacePoolUntilSufficient } from "@/lib/ai/place-pool-expansion";
+import {
+  createPoolExpansionQueryBudget,
+  expandPlacePoolUntilSufficient,
+  type PoolExpansionQueryBudget,
+} from "@/lib/ai/place-pool-expansion";
 import { resolveTripPlaceId } from "@/lib/ai/ai-trip-place-allocator";
 import {
   evaluateIncompletePayloadDegradation,
@@ -266,6 +273,7 @@ export type DestinationPlaceSearchFn = (params: {
   planningTargetCount?: number;
   classicLandmarkMode?: boolean;
   radius?: number;
+  disableAutomaticSupplement?: boolean;
 }) => Promise<PlaceResult[]>;
 
 export function shouldUseTripStylePlanning(
@@ -321,11 +329,12 @@ export function buildPlanningDaySummary(
   buckets: DayPlanBucket[],
   composedPlans?: ComposedDayPlan[],
   opts?: { slowTravel?: boolean; expansionExhausted?: boolean },
+  locale: Locale = effectiveAppLocale(),
 ): string {
   const destLabel = normalizeDestinationLabel(destination);
   if (composedPlans?.length) {
     if (isItineraryRenderable(composedPlans, days, style)) {
-      return buildComposedDayPlanSummary(destination, days, style, composedPlans, opts);
+      return buildComposedDayPlanSummary(destination, days, style, composedPlans, opts, locale);
     }
     const validation = validateGeneratedDays(composedPlans, days, style);
     logAiRenderBlockedIncompleteDay(
@@ -333,12 +342,24 @@ export function buildPlanningDaySummary(
       validation.reasons,
       Object.fromEntries(composedPlans.map((p) => [p.day, p.entries.length])),
     );
+    if (locale !== "zh-TW") {
+      return chatRuntimeCopy("dayPlanGenerating", locale, {
+        destination: displayDestinationForCopy(destLabel, undefined, locale),
+        days,
+      });
+    }
     return `${destLabel} ${days} 天推薦：\n\n（行程生成中）`;
   }
   if (!buckets.some((bucket) => bucket.names.length > 0)) {
+    if (locale !== "zh-TW") {
+      return chatRuntimeCopy("dayPlanLiveUnavailable", locale, {
+        destination: displayDestinationForCopy(destLabel, undefined, locale),
+        days,
+      });
+    }
     return `${normalizeDestinationLabel(destination)} ${days} 天推薦：\n\n我暫時沒連上即時地點資料，你可以稍後再試。`;
   }
-  return buildDayPlanSummaryFromBuckets(destination, days, style, buckets);
+  return buildDayPlanSummaryFromBuckets(destination, days, style, buckets, locale);
 }
 
 export async function resolvePlanningReasonProfile(): Promise<
@@ -994,10 +1015,12 @@ export async function expandPlanningCandidatePool(params: {
   templateNameSearchAttempts: (destination: string) => SearchAttempt[];
   searchDestinationPlaces: DestinationPlaceSearchFn;
   existingPlaces: PlaceResult[];
+  queryBudget?: PoolExpansionQueryBudget;
 }): Promise<PlaceResult[]> {
   const planningOpts = destinationPlanningSearchOpts(params.days, params.style);
 
   return expandPlacePoolUntilSufficient({
+    queryBudget: params.queryBudget,
     label: params.label,
     lat: params.lat,
     lng: params.lng,
@@ -1023,6 +1046,8 @@ export async function expandPlanningCandidatePool(params: {
         searchContext: params.searchContext,
         radius: radiusM,
         ...planningOpts,
+        // 擴池批次本身就是補搜，不再每批重送固定的「標籤＋景點」與英文 fallback
+        disableAutomaticSupplement: true,
       }),
   });
 }
@@ -1073,7 +1098,7 @@ export async function ensureMinPlanningCandidatePool(params: {
       persistPlanningCandidatePool(params.label, params.style, pool);
     }
 
-    if (realPool().length <= before && round > 0) break;
+    if (realPool().length <= before) break;
   }
 
   return realPool();
@@ -1169,6 +1194,8 @@ export async function fetchComposedCategoryPlaces(params: {
   /** Bind Layer-2 pool to chat/planning session */
   sessionId?: string | null;
   countryCode?: string;
+  /** 同一次生成共用的擴池搜尋預算 */
+  queryBudget?: PoolExpansionQueryBudget;
 }): Promise<PlaceResult[]> {
   const {
     label,
@@ -1396,6 +1423,7 @@ export async function fetchComposedCategoryPlaces(params: {
       finalPlaces.length < minCandidatePoolSize(days)
     ) {
       finalPlaces = await expandPlanningCandidatePool({
+        queryBudget: params.queryBudget,
         label,
         lat,
         lng,
@@ -1701,6 +1729,7 @@ export async function fetchComposedCategoryPlaces(params: {
 
   if (collected.length < minCandidatePoolSize(days) && !shouldSkipPlanningPlacesApi()) {
     collected = await expandPlanningCandidatePool({
+      queryBudget: params.queryBudget,
       label,
       lat,
       lng,
@@ -2260,12 +2289,15 @@ export async function generateTripPlanFromStyle(input: {
   const styleAttempts = buildTripStyleSearchAttempts(label, style);
   logAiStyleSearchAttempts(label, style, styleAttempts.length);
 
+  // 同一次生成內所有擴池共用同一份搜尋預算
+  const expansionBudget = createPoolExpansionQueryBudget();
   let places = await fetchComposedCategoryPlaces({
     ...params,
     caller: geocodeSucceeded ? `${caller}.stylePlan` : `${caller}.stylePlan.textOnly`,
     templateNameSearchAttempts,
     searchDestinationPlaces,
     sessionId: planningSessionId,
+    queryBudget: expansionBudget,
   });
   logTripRuntime("discovery", { discoveryInitial: places.length, afterGeographicFilter: null });
   let searchCount = places.length;
@@ -2419,6 +2451,7 @@ export async function generateTripPlanFromStyle(input: {
 
   if (places.length < minCandidatePoolSize(days) && !shouldSkipPlanningPlacesApi()) {
     places = await expandPlanningCandidatePool({
+      queryBudget: expansionBudget,
       label,
       lat: params.lat,
       lng: params.lng,
@@ -2502,6 +2535,7 @@ export async function generateTripPlanFromStyle(input: {
 
   if (!isPlannerPoolReady(places, days) && !shouldSkipPlanningPlacesApi()) {
     places = await expandPlanningCandidatePool({
+      queryBudget: expansionBudget,
       label,
       lat: params.lat,
       lng: params.lng,
@@ -2534,6 +2568,7 @@ export async function generateTripPlanFromStyle(input: {
 
   const expandPool = (existing: PlaceResult[], expandCaller: string) =>
     expandPlanningCandidatePool({
+      queryBudget: expansionBudget,
       label,
       lat: params.lat,
       lng: params.lng,
@@ -2572,7 +2607,7 @@ export async function generateTripPlanFromStyle(input: {
     logAiStylePlacesResult(places.length, `pre_plan_expand_r${prePlanRound + 1}`);
 
     const poolAfter = countRealPlanningPool(places);
-    if (poolAfter <= poolBefore && prePlanRound > 0) break;
+    if (poolAfter <= poolBefore) break;
   }
 
   const poolReady = isPlannerPoolReady(places, days);
@@ -2833,7 +2868,8 @@ export async function generateTripPlanFromStyle(input: {
       });
 
       const poolAfter = filterRealPlanningPlaces(bestFrozenPlaces).length;
-      if (poolAfter <= poolBefore && round > 0) {
+      // 池子已達標時保留 round 0 的 refill；未達標且沒有新增就停止
+      if (poolAfter <= poolBefore && (round > 0 || !isPlannerPoolReady(bestFrozenPlaces, days))) {
         poolExpansionExhausted = true;
         break;
       }

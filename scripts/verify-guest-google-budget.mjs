@@ -3,6 +3,7 @@
  * Enforcement may be unset. Anonymous billable Google calls still admit once
  * through the AbuseGuard Durable Object, and authenticated calls do not.
  */
+import "./verify-netguard-full.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createMemoryAbuseGuard } from "../src/lib/abuse-guard-memory.ts";

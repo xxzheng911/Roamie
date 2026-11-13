@@ -4,6 +4,13 @@ import type { GuardBucket } from "@/lib/abuse-guard-logic";
 export const GOOGLE_USER_DAILY_WEIGHT = 4_000;
 export const GOOGLE_IP_DAILY_WEIGHT = 12_000;
 export const GOOGLE_GLOBAL_DAILY_UNITS_DEFAULT = 100_000;
+/** All unauthenticated guests together may use at most this share of the global daily units. */
+export const GOOGLE_GUEST_GLOBAL_SHARE_PERCENT = 15;
+
+export function guestGlobalDailyUnits(globalLimit: number): number {
+  // Integer math: 100000 -> 15000, 2000 -> 300.
+  return Math.floor((globalLimit * GOOGLE_GUEST_GLOBAL_SHARE_PERCENT) / 100);
+}
 
 export const GOOGLE_FAMILY_LIMITS = {
   places_text: { daily: 200, weight: 8 },
@@ -17,6 +24,7 @@ export const GOOGLE_FAMILY_LIMITS = {
 } as const;
 
 export type GoogleBillingFamily = keyof typeof GOOGLE_FAMILY_LIMITS;
+const GOOGLE_MAX_FAMILY_WEIGHT = Math.max(...Object.values(GOOGLE_FAMILY_LIMITS).map((spec) => spec.weight));
 
 export const AI_FAIR_USE = {
   chat: { minute: 8, hour: 60, day: 400 },
@@ -98,17 +106,22 @@ export function googleGlobalBuckets(
   family: GoogleBillingFamily,
   globalLimit: number,
   now = guardNow(),
+  guest = false,
 ): GuardBucket[] {
   const day = utcDay(now);
   const retryAt = now + secondsUntilUtcMidnight(now) * 1000;
+  const delta = GOOGLE_FAMILY_LIMITS[family].weight;
   return [
-    {
-      key: `global:weight:${day}`,
-      limit: globalLimit,
-      delta: GOOGLE_FAMILY_LIMITS[family].weight,
-      reason: "global_weight",
-      retryAt,
-    },
+    { key: `global:weight:${day}`, limit: globalLimit, delta, reason: "global_weight", retryAt },
+    // Guest sub-budget lives in the same global object so both buckets are charged atomically.
+    // Headroom for the heaviest family keeps one "exhausted" state across all guest families.
+    ...(guest
+      ? [{
+          key: `global:guest:weight:${day}`,
+          limit: Math.max(0, guestGlobalDailyUnits(globalLimit) - (GOOGLE_MAX_FAMILY_WEIGHT - delta)),
+          delta, reason: "guest_global_weight", retryAt,
+        }]
+      : []),
   ];
 }
 

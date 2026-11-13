@@ -1,3 +1,4 @@
+import "./verify-netguard-full.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { extractGooglePlacePhotoName } from "../src/lib/safe-image-url.ts";

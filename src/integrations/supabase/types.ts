@@ -779,15 +779,24 @@ export type Database = {
           p_idempotency_key: string
           p_amount?: number
           p_metadata?: Json
+          p_user_id?: string | null
         }
         Returns: Json
       }
       credits_commit: {
-        Args: { p_ledger_id?: string | null; p_idempotency_key?: string | null }
+        Args: {
+          p_ledger_id?: string | null
+          p_idempotency_key?: string | null
+          p_user_id?: string | null
+        }
         Returns: Json
       }
       credits_rollback: {
-        Args: { p_ledger_id?: string | null; p_idempotency_key?: string | null }
+        Args: {
+          p_ledger_id?: string | null
+          p_idempotency_key?: string | null
+          p_user_id?: string | null
+        }
         Returns: Json
       }
       credits_debug_set: {
@@ -842,6 +851,14 @@ export type Database = {
           invite_id: string
           invite_token: string
         }[]
+      }
+      remove_trip_member: {
+        Args: { p_trip_id: string; p_member_user_id: string }
+        Returns: boolean
+      }
+      transfer_owned_shared_trips_for_deletion: {
+        Args: { p_user_id: string }
+        Returns: number
       }
       set_trip_invite_link_enabled: {
         Args: { p_trip_id: string; p_enabled: boolean }

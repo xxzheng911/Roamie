@@ -25,6 +25,7 @@ import {
 import { distanceMeters } from "@/lib/map-explore";
 import { DEFAULT_SEARCH_RADIUS_M, MAX_PLACE_DISTANCE_M } from "@/lib/places-search-config";
 import { geocodeRegionFromCoordinates, placesRegionCodeFromCoordinates } from "@/lib/geo-region";
+import { countryCodeFromCountryText } from "@/lib/place-geo-guard";
 import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
 import { localeToGoogleLanguageCode } from "@/lib/i18n/places-language";
 import { coerceLocale } from "@/lib/i18n/resolve-locale";
@@ -123,6 +124,8 @@ const ExploreSearchInput = z.object({
   destinationName: z.string().max(80).optional(),
   searchMode: z.enum(["destination", "nearby"]).optional(),
   skipLocationBias: z.boolean().optional(),
+  /** 無座標目的地文字搜尋時的目的地國家（國名或 ISO 兩碼），只用來補 regionCode */
+  destinationCountry: z.string().max(80).optional(),
   intentCategory: z.string().max(32).optional(),
   planningSelectionStyle: z.string().max(32).optional(),
   placesLane: z.string().max(64).optional(),
@@ -611,8 +614,12 @@ async function searchText(
   userLocale?: Locale,
   stats?: PlacesSearchStats,
   skipLocationBias = false,
+  fallbackRegionCode?: string,
 ): Promise<{ places: PlaceResult[]; error: string | null } & SearchMetadata> {
-  const { languageCode, regionCode } = exploreLocale(lat, lng, userLocale);
+  const locale = exploreLocale(lat, lng, userLocale);
+  const languageCode = locale.languageCode;
+  // 座標推得的 region 優先；只有座標推不出（無座標目的地）時才用目的地國家補上。
+  const regionCode = locale.regionCode ?? fallbackRegionCode;
   const body: Record<string, unknown> = {
     textQuery: query,
     languageCode,
@@ -929,6 +936,19 @@ export async function lookupPlacesHoursBatchWithIdentity(
   return map;
 }
 
+/**
+ * 無座標目的地文字搜尋（skipLocationBias + destination）時，以目的地國家補 regionCode（只影響排序）。
+ * 台灣維持原本不送 regionCode 的行為；探索頁自由搜尋不帶 destinationCountry，不受影響。
+ */
+function textOnlyDestinationRegionCode(
+  data: z.infer<typeof ExploreSearchInput>,
+): string | undefined {
+  if (data.skipLocationBias !== true || data.searchMode !== "destination") return undefined;
+  if (data.placesCaller === "map.freeTextSearch") return undefined;
+  const code = countryCodeFromCountryText(data.destinationCountry);
+  return code && code !== "TW" ? code : undefined;
+}
+
 async function runExploreSearch(
   data: z.infer<typeof ExploreSearchInput>,
   apiKey: string,
@@ -982,6 +1002,7 @@ async function runExploreSearch(
       userLocale,
       stats,
       data.skipLocationBias === true,
+      textOnlyDestinationRegionCode(data),
     );
   } else {
     result = { places: [], error: null };

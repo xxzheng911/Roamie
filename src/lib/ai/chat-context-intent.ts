@@ -1,4 +1,7 @@
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
+import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import { displayDestinationForCopy } from "@/lib/ai/destination-locale-aliases";
+import type { Locale } from "@/lib/i18n/types";
 import { isMoodNearbyRelaxationRequest } from "@/lib/mood-nearby-intent";
 import { parseItineraryPlanModeIntent } from "@/lib/ai/itinerary-planning";
 import { isBestTravelTimeIntent } from "@/lib/ai/best-travel-time-intent";
@@ -130,16 +133,47 @@ export function parseActivityPreferencesFromText(text: string): string[] {
   return prefs;
 }
 
+/** Display labels for the internal zh preference values (values themselves never change). */
+const PREFERENCE_DISPLAY: Record<string, { en: string; ja: string; ko: string }> = {
+  極光: { en: "aurora", ja: "オーロラ", ko: "오로라" },
+  滑雪: { en: "skiing", ja: "スキー", ko: "스키" },
+  櫻花: { en: "cherry blossoms", ja: "桜", ko: "벚꽃" },
+  楓葉: { en: "autumn leaves", ja: "紅葉", ko: "단풍" },
+  自然風光: { en: "nature", ja: "自然風景", ko: "자연 풍경" },
+  城市: { en: "city", ja: "街歩き", ko: "도시" },
+  海島: { en: "islands", ja: "島", ko: "섬" },
+  景點: { en: "sights", ja: "観光スポット", ko: "명소" },
+  購物: { en: "shopping", ja: "ショッピング", ko: "쇼핑" },
+  美食: { en: "food", ja: "グルメ", ko: "맛집" },
+  夜市: { en: "night markets", ja: "ナイトマーケット", ko: "야시장" },
+  按摩: { en: "massage", ja: "マッサージ", ko: "마사지" },
+};
+
 export function buildCreateItineraryAckReply(params: {
   destination: string;
   days: number;
   preferences?: string[];
+  locale?: Locale;
 }): string {
   const { destination, days, preferences = [] } = params;
   const prefLabel = preferences.length ? preferences.join("＋") : "你的偏好";
   const wantsWinter =
     preferences.some((p) => /極光|滑雪/.test(p)) ||
     /極光|滑雪/.test(prefLabel);
+  const locale = params.locale ?? "zh-TW";
+  if (locale !== "zh-TW") {
+    const shownPrefs = preferences
+      .map((p) => PREFERENCE_DISPLAY[p.trim()]?.[locale])
+      .filter((p): p is string => Boolean(p));
+    return chatRuntimeCopy("createItineraryAck", locale, {
+      destination: displayDestinationForCopy(destination, undefined, locale),
+      days,
+      prefs: shownPrefs.length
+        ? shownPrefs.join(locale === "ja" ? "＋" : " + ")
+        : chatRuntimeCopy("createItineraryAckDefaultPrefs", locale),
+      season: wantsWinter ? chatRuntimeCopy("createItineraryAckSeason", locale) : "",
+    });
+  }
   const seasonHint = wantsWinter ? "建議時間會以冬季 12～2 月為主，" : "";
 
   return `可以，我幫你用${destination} ${days} 天安排${prefLabel}主題行程。${seasonHint}接下來我會先抓實際地點並安排路線。`;

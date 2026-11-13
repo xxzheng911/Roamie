@@ -98,6 +98,11 @@ async function rpcCommit(
     return { ok: false, reason: "error" };
   }
   const result = (data ?? { ok: false, reason: "empty" }) as CreditsCommitResult;
+  if (!result.ok) {
+    // ok:false is a failed settlement (not a silent success); surface it.
+    console.warn("[CREDITS_COMMIT] rejected", result.reason ?? "unknown");
+    return result;
+  }
   if (typeof result.available_credits === "number") {
     const account = await fetchCreditAccount();
     if (account) setCachedCreditAccount(account);

@@ -1,6 +1,7 @@
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import {
+  categorySwitchSearchText,
   coerceTravelDestination,
   resolveDestinationFromText,
 } from "@/lib/ai/trip-planning-context";
@@ -30,8 +31,11 @@ export function resolveDestinationForCategorySearch(
   session: ChatPlanningSession,
   userText?: string,
 ): string | undefined {
-  // 1. Explicit city/region in this message wins over trip context
-  if (userText?.trim()) {
+  // 1. Explicit city/region in this message wins over trip context.
+  // 「不去海邊了，改去博物館」"switch to cafe": the negated clause, switch wording and category
+  // words name no area — the trip destination below is searched.
+  const categoryOnly = Boolean(userText?.trim() && categorySwitchSearchText(userText));
+  if (userText?.trim() && !categoryOnly) {
     const areaScope = resolveDestinationAreaScope(userText);
     if (areaScope) {
       logChatPlaceDestination(areaScope.displayLabel, "user_text");

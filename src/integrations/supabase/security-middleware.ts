@@ -8,6 +8,7 @@ import { CREDITS_COSTS } from "@/lib/credits/constants";
 import { InsufficientCreditsError } from "@/lib/credits/errors";
 import { authorizeAiUse } from "@/lib/abuse-guard.server";
 import { isAbuseGuardEnforcementOn } from "@/lib/abuse-guard-enforcement.server";
+import { serverCreditsClient, serverCreditsRpc } from "@/lib/ai/endpoint-guard.server";
 
 /** Server-function boundary for Plus-only capabilities. Client tier flags are ignored. */
 export const requireSupabasePlus = createMiddleware({ type: "function" })
@@ -66,7 +67,9 @@ export const requireItineraryCredits = createMiddleware({ type: "function" })
     const idempotencyKey = `server:${context.userId}:ITINERARY_GENERATION:${requestId}`;
     observeCreditReserveAttempt(observation, hasPlusAccess);
     generationSettlement("reserve", "pending");
-    const { data: reservationData, error: reservationError } = await context.supabase.rpc(
+    // Service role bound to the verified user (getClaims): settlement does not
+    // depend on the user's JWT, and the client cannot release this reservation.
+    const { data: reservationData, error: reservationError } = await serverCreditsRpc(
       "credits_reserve",
       {
         p_feature_type: "ITINERARY_GENERATION",
@@ -74,7 +77,9 @@ export const requireItineraryCredits = createMiddleware({ type: "function" })
         p_idempotency_key: idempotencyKey,
         p_amount: CREDITS_COSTS.ITINERARY_GENERATION,
         p_metadata: { authority: "server_function" },
+        p_user_id: context.userId,
       },
+      serverCreditsClient(),
     );
     const reservation = reservationData as {
       ok?: boolean;
@@ -111,10 +116,11 @@ export const requireItineraryCredits = createMiddleware({ type: "function" })
       setGenerationPhase("credits_rollback");
       generationSettlement("rollback", "pending");
       try {
-        const { data: rollbackData, error: rollbackError } = await context.supabase.rpc("credits_rollback", {
+        const { data: rollbackData, error: rollbackError } = await serverCreditsRpc("credits_rollback", {
           p_ledger_id: reservation.ledger_id ?? null,
           p_idempotency_key: reservation.ledger_id ? null : idempotencyKey,
-        });
+          p_user_id: context.userId,
+        }, serverCreditsClient());
         generationSettlementResponse("rollback", rollbackData, rollbackError);
         if (rollbackError) captureGenerationException(rollbackError, "cleanup");
         else emitGenerationDiagnostic("settled");

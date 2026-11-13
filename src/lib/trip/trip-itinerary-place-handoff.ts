@@ -63,9 +63,16 @@ function itineraryItemToPlaceResult(item: RoamieItineraryItem, googlePlaceId: st
   };
 }
 
+/** 行程目的地（供 Place Detail 名稱解析做地理比對；不觸發任何查詢） */
+export type TripItineraryPlaceDestination = {
+  city?: string | null;
+  country?: string | null;
+};
+
 export function itineraryItemToPlaceHandoff(
   item: RoamieItineraryItem,
   locale: Locale = "zh-TW",
+  destination?: TripItineraryPlaceDestination | null,
 ): PlaceDetailHandoff {
   void locale;
   const googlePlaceId = item.googlePlaceId?.trim() ?? "";
@@ -99,6 +106,14 @@ export function itineraryItemToPlaceHandoff(
     address: place.address,
     lat: place.lat,
     lng: place.lng,
+    // 延伸行程點屬於延伸目的地；其餘用行程目的地。
+    contextCity:
+      (item.destinationScope === "nearby_extension" ? item.extensionDestination?.trim() : "") ||
+      destination?.city?.trim() ||
+      null,
+    // 延伸點也帶主目的地國家：只作為 Details 防線的距離錨點與排序依據（延伸點可能跨國，
+    // 只在「距主目的地國家所有已知地點都很遠」且明確寫出他國時才拒絕）。
+    contextCountry: destination?.country?.trim() || null,
     category: place.primaryType,
     categoryId,
     reason,
@@ -122,11 +137,13 @@ export function openTripItineraryPlaceDetail(
   opts?: {
     /** Previous stop on the same day — used for distance/transport (not device GPS). */
     previousItem?: RoamieItineraryItem | null;
+    /** 行程目的地城市／國家 */
+    destination?: TripItineraryPlaceDestination | null;
   },
 ): { handoff: PlaceDetailHandoff; navigateOptions: NavigateOptions } {
   saveTripDetailViewState(viewState);
   persistTripDetailSelectedDay(viewState.tripId, viewState.activeDayIndex);
-  const handoff = itineraryItemToPlaceHandoff(item, locale);
+  const handoff = itineraryItemToPlaceHandoff(item, locale, opts?.destination);
   const previous = opts?.previousItem;
   const originLat = previous?.lat ?? item.lat ?? undefined;
   const originLng = previous?.lng ?? item.lng ?? undefined;

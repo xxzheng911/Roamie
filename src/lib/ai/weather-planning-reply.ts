@@ -116,6 +116,7 @@ export function buildWeatherAwarePlanningReply(params: {
 export function buildWeatherConstraintAcknowledgement(
   context: CanonicalTravelContext,
   weather?: WeatherSummary | null,
+  locale: import("@/lib/i18n/types").Locale = "zh-TW",
 ): string | null {
   const dest = context.destination?.trim();
   if (!dest) return null;
@@ -126,6 +127,18 @@ export function buildWeatherConstraintAcknowledgement(
   const temp = weather?.feelsLikeC ?? weather?.tempC;
   const tempLabel = formatTempLabel(temp);
   const label = normalizeDestinationLabel(dest);
+
+  if (locale !== "zh-TW") {
+    const shown = displayDestinationForCopy(label, undefined, locale);
+    return [
+      tempLabel
+        ? chatRuntimeCopy("weatherHotTemp", locale, { destination: shown, temp: tempLabel })
+        : chatRuntimeCopy("weatherAvoidSun", locale),
+      chatRuntimeCopy("weatherIndoorMix", locale),
+      "",
+      chatRuntimeCopy("weatherNextCombos", locale),
+    ].join("\n");
+  }
 
   return [
     tempLabel ? `最近${label}白天約 ${tempLabel}，確實偏熱。` : `我會避開讓你太曬的行程。`,

@@ -15,6 +15,7 @@ import { deleteTripDialogLabels } from "@/lib/i18n/delete-trip-dialog";
 import { deleteTrip } from "@/lib/saved-trip/delete-trip";
 import { TripDeleteConfirmDialog } from "@/components/saved/TripDeleteConfirmDialog";
 import { TripSharePanel } from "@/components/trip/TripSharePanel";
+import { listTripMembers } from "@/lib/trip/trip-collab";
 import { applyCoreTripCover, listCoreTrips, type CoreTrip, resolveCoreTripTitle } from "@/lib/trip/core-trip";
 import { isMissingTableError } from "@/lib/supabase-errors";
 import {
@@ -141,7 +142,20 @@ function Saved() {
   const [loading, setLoading] = useState(
     () => Boolean(cachedUserId) && initialTrips.length === 0 && initialPlaces.length === 0,
   );
-  const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{
+    id: string;
+    title: string;
+    hasOtherMembers?: boolean;
+  } | null>(null);
+  // 刪除視窗成員查詢逾時計時器：關閉視窗、換目標或卸載時清除
+  const deleteMembersTimerRef = useRef<number | null>(null);
+  const clearDeleteMembersTimer = useCallback(() => {
+    if (deleteMembersTimerRef.current != null) {
+      window.clearTimeout(deleteMembersTimerRef.current);
+      deleteMembersTimerRef.current = null;
+    }
+  }, []);
+  useEffect(() => clearDeleteMembersTimer, [clearDeleteMembersTimer]);
   const [shareTarget, setShareTarget] = useState<{
     id: string;
     title: string;
@@ -527,6 +541,28 @@ function Saved() {
                       e.preventDefault();
                       e.stopPropagation();
                       setDeleteTarget({ id: trip.id, title: resolveCoreTripTitle(trip) });
+                      // 列表沒有成員資料：開啟刪除視窗時查一次成員；查回前停用確認鍵。
+                      // 失敗或 5 秒逾時視為有其他成員（顯示提醒後開放）；已決定後不再被晚到的結果改寫。
+                      const targetId = trip.id;
+                      const resolveMembers = (hasOtherMembers: boolean) =>
+                        setDeleteTarget((prev) =>
+                          prev?.id === targetId && prev.hasOtherMembers === undefined
+                            ? { ...prev, hasOtherMembers }
+                            : prev,
+                        );
+                      clearDeleteMembersTimer();
+                      deleteMembersTimerRef.current = window.setTimeout(() => {
+                        deleteMembersTimerRef.current = null;
+                        resolveMembers(true);
+                      }, 5000);
+                      listTripMembers(targetId)
+                        .then((rows) => {
+                          resolveMembers(rows.some((m) => !m.is_owner && m.status === "accepted"));
+                        })
+                        .catch((err) => {
+                          console.warn("[SAVED] listTripMembers failed", err);
+                          resolveMembers(true);
+                        });
                     }}
                     className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-card/95 text-muted-foreground shadow-soft hover:bg-secondary"
                     aria-label={t("saved.deleteAria")}
@@ -673,11 +709,15 @@ function Saved() {
       <TripDeleteConfirmDialog
         open={deleteTarget != null}
         onOpenChange={(open) => {
-          if (!open) setDeleteTarget(null);
+          if (!open) {
+            clearDeleteMembersTimer();
+            setDeleteTarget(null);
+          }
         }}
         onConfirm={handleConfirmDeleteTrip}
         confirming={deleting}
-        {...deleteTripDialogLabels(locale)}
+        confirmDisabled={deleteTarget != null && deleteTarget.hasOtherMembers === undefined}
+        {...deleteTripDialogLabels(locale, { hasOtherMembers: deleteTarget?.hasOtherMembers })}
       />
 
       <TripSharePanel

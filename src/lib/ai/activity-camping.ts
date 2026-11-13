@@ -2,6 +2,10 @@ import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { PlaceResult } from "@/lib/place-result";
 import { isExplicitCampingPlace } from "@/lib/camping-place-classification";
+import type { Locale } from "@/lib/i18n/types";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import { displayDestinationForCopy } from "@/lib/ai/destination-locale-aliases";
 
 const CAMPING_REQUEST_RE =
   /(露營|營區|營地|campground|campsite|camping|glamping|豪華露營|野營|車宿)/i;
@@ -43,6 +47,7 @@ export function campingSearchAttempts(): Array<{
 export function buildCampingIntroReply(
   ctx: CanonicalTravelContext,
   session?: ChatPlanningSession,
+  locale: Locale = effectiveAppLocale(),
 ): string {
   const hasLocation = Boolean(
     session?.location?.lat != null &&
@@ -50,6 +55,18 @@ export function buildCampingIntroReply(
       (Math.abs(session.location.lat) > 0.001 || Math.abs(session.location.lng) > 0.001),
   );
   const nearLabel = ctx.currentLocation ?? session?.location?.city;
+
+  if (locale !== "zh-TW") {
+    return [
+      chatRuntimeCopy("campingIntroLead", locale),
+      hasLocation && nearLabel
+        ? chatRuntimeCopy("campingIntroNear", locale, {
+            place: displayDestinationForCopy(nearLabel, undefined, locale),
+          })
+        : chatRuntimeCopy("campingIntroNearby", locale),
+      chatRuntimeCopy("campingIntroRegion", locale),
+    ].join("\n");
+  }
 
   const lines = [
     "想露營的話，我會先看你想要山區、海邊，還是比較新手友善的營區。",
@@ -65,11 +82,28 @@ export function buildCampingIntroReply(
 export function buildCampingRecommendationSummary(
   picks: Array<{ name: string }>,
   ctx: CanonicalTravelContext,
+  locale: Locale = effectiveAppLocale(),
 ): string {
   const list = picks
     .slice(0, 5)
     .map((place, index) => `${index + 1}. ${place.name}`)
     .join("\n");
+
+  if (locale !== "zh-TW") {
+    const near = ctx.currentLocation ?? ctx.destination;
+    return [
+      chatRuntimeCopy("campingSummaryLead", locale),
+      "",
+      list,
+      "",
+      near
+        ? chatRuntimeCopy("campingSummaryArea", locale, {
+            place: displayDestinationForCopy(near, undefined, locale),
+          })
+        : chatRuntimeCopy("campingSummaryAreaNearby", locale),
+      chatRuntimeCopy("campingSummaryFollowUp", locale),
+    ].join("\n");
+  }
 
   const nearLabel = ctx.currentLocation ?? ctx.destination ?? "附近";
 

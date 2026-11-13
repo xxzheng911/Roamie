@@ -3,6 +3,7 @@ import { formatDateRangeLabel } from "@/lib/picker-utils";
 import { formatTripLocationLabel } from "@/lib/location/format";
 import type { PlanTripFormInput } from "@/lib/plan-trip-handoff";
 import type { Locale } from "@/lib/i18n/types";
+import { applyEnglishPlaceArticles } from "@/lib/i18n/en-place-articles";
 
 export function buildPlanTripHandoffOpening(
   form: PlanTripFormInput,
@@ -31,7 +32,10 @@ export function buildPlanTripHandoffOpening(
           ? `You're planning ${formatDateRangeLabel(form.startDate, form.endDate, { withYear: true })} in ${dest}`
           : `You're heading to ${dest}`;
       const styleBit = styles ? `, and I noted you like ${styles}` : "";
-      return `${dateBit}${styleBit} ☺️ ${seasonHint}; ${weatherBit}. I'll suggest a few spots worth slotting in—tell me which ones you'd like first.`;
+      return applyEnglishPlaceArticles(
+        `${dateBit}${styleBit} ☺️ ${seasonHint}; ${weatherBit}. I'll suggest a few spots worth slotting in—tell me which ones you'd like first.`,
+        locale,
+      );
     }
     case "ja": {
       const seasonHint =
@@ -102,7 +106,10 @@ export function buildPlanAiHandoffOpening(
   if (locale === "en") {
     const styleBit = styles ? ` with ${styles}` : "";
     const moodBit = mood ? ` and a ${mood} mood` : "";
-    return `Based on your ${days}-day trip to ${dest}${styleBit}${moodBit}, I found a few spots worth checking out. Tell me which ones you like—or ask for more cafes, night views, or a fresh batch.`;
+    return applyEnglishPlaceArticles(
+      `Based on your ${days}-day trip to ${dest}${styleBit}${moodBit}, I found a few spots worth checking out. Tell me which ones you like—or ask for more cafes, night views, or a fresh batch.`,
+      locale,
+    );
   }
   if (locale === "ja") {
     const styleBit = styles ? `、${styles}` : "";

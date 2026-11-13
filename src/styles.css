@@ -2534,3 +2534,12 @@ html.duo-rail.duo-two-pane .place-duo-root .place-split-right-bottom {
 html.duo-rail.duo-two-pane .place-duo-root .place-split-right-bottom > :first-child {
   margin-top: 0;
 }
+/*
+ * 聊天泡泡 Latin 字型：只在 en／ko 介面生效。
+ * Noto Sans TC 的 ’ “ ” 為 CJK 全形寬度，英文句子會變成「I’ ll」；改用系統 Latin 字型，CJK 字元仍退回 Noto Sans TC。
+ * zh-TW、ja 不命中此規則，外觀不變。
+ */
+:root:lang(en) .chat-latin-text,
+:root:lang(ko) .chat-latin-text {
+  font-family: ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", Arial, "Noto Sans TC", sans-serif;
+}

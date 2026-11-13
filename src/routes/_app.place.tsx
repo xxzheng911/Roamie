@@ -38,6 +38,11 @@ import {
   type PlaceDetailViewModel,
 } from "@/lib/place-detail-resolve";
 import type { PlaceDetailsScreenResult } from "@/lib/places.functions";
+import {
+  buildPlaceGeoContext,
+  hasHardPlaceGeoContext,
+  isResolvedPlaceGeoConsistent,
+} from "@/lib/place-geo-guard";
 import { logPlaceDetailResultBoundary } from "@/lib/place-detail-failure-telemetry";
 import {
   fetchGooglePlaceDetailsForHandoffViaGateway,
@@ -264,7 +269,27 @@ function PlaceDetailPageContent() {
       }
     };
 
+    // 名稱解析得到的 placeId 須通過地理防護，才可覆蓋原本的名稱／地址／照片。
+    let resolvedByName = false;
+    const resolvedNeedsGeoCheck = () =>
+      resolvedByName && hasHardPlaceGeoContext(buildPlaceGeoContext(handoff));
+
     const applyFetched = (fetched: PlaceDetailsScreenResult, resolvedPlaceId: string) => {
+      if (
+        resolvedNeedsGeoCheck() &&
+        !isResolvedPlaceGeoConsistent(handoff, {
+          lat: fetched.lat,
+          lng: fetched.lng,
+          address: fetched.googleFormattedAddress ?? fetched.googleShortFormattedAddress ?? null,
+        })
+      ) {
+        console.info("[PLACE_DETAIL] discard geo-mismatched resolved place", resolvedPlaceId);
+        setPlace(base);
+        setPhotoResolution("settled");
+        setFetchError(null);
+        setUsedFallback(true);
+        return;
+      }
       logPlaceDetailFetchSuccess(resolvedPlaceId);
       setPlace(mergeFetchedPlace(base, fetched, locale, hasCanonicalReasonRef.current));
       setPhotoResolution("settled");
@@ -278,7 +303,10 @@ function PlaceDetailPageContent() {
       if (!canFetchGooglePlaceDetails(placeId)) {
         const resolved = await resolveGooglePlaceIdForDetail(handoff, locale);
         if (cancelled) return;
-        if (resolved) placeId = resolved;
+        if (resolved) {
+          placeId = resolved;
+          resolvedByName = true;
+        }
       }
 
       if (!canFetchGooglePlaceDetails(placeId)) {
@@ -296,7 +324,8 @@ function PlaceDetailPageContent() {
         return;
       }
 
-      if (placeId !== base.id) {
+      // 未經地理驗證前不先換成解析出的 id，避免此時收藏寫入錯誤的 placeId。
+      if (placeId !== base.id && !resolvedNeedsGeoCheck()) {
         setPlace((prev) => (prev ? { ...prev, id: placeId } : prev));
       }
 
@@ -592,6 +621,8 @@ function PlaceDetailPageContent() {
       primaryType: place.primaryType,
       types: place.types ?? undefined,
       address: place.address,
+      // 目的地城市（行程／收藏交接帶入）；沒有時維持原本不存。
+      city: handoffRef.current?.contextCity?.trim() || null,
       lat: place.lat,
       lng: place.lng,
       notes: place.reason,

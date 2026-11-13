@@ -446,7 +446,8 @@ P("\n══ I. Credits 隔離 ══");
 {
   const sc = {
     rpc: {
-      ...rpcFor({ reserve: async (args, who) => (who === "user-IA" ? INSUFFICIENT() : RESERVED()) }),
+      // 任務單 #6：credits_* 改由 service role 呼叫並以 p_user_id 綁定已驗證使用者（who＝service_role）。
+      ...rpcFor({ reserve: async (args) => (args?.p_user_id === "user-IA" ? INSUFFICIENT() : RESERVED()) }),
     },
     planner: async () => ({ success: false, errorCode: "planner_mock_failure", message: "mock" }),
   };
@@ -463,10 +464,13 @@ P("\n══ I. Credits 隔離 ══");
   const rpcB = [...rpcLog];
   const keyA = rpcA.find((x) => x.name === "credits_reserve")?.args?.p_idempotency_key;
   const keyB = rpcB.find((x) => x.name === "credits_reserve")?.args?.p_idempotency_key;
-  expect("I1-user-isolation", ra.status === 402 && handlerA === 0 && rb.status === 200 && handlerCalls.length === 1 && keyA !== keyB && keyA === "server:user-IA:ITINERARY_GENERATION:req-I1" && keyB === "server:user-IB:ITINERARY_GENERATION:req-I1" && rpcA.every((x) => x.who === "user-IA") && rpcB.every((x) => x.who === "user-IB"), `A=${ra.status}（handler=${handlerA}，key=${keyA}）；B 同 requestId=${rb.status}（handler=${handlerCalls.length}，key=${keyB}）`);
+  // 屬於使用者 U 的 RPC：credits_* 由 service role 帶 p_user_id＝U；其餘（entitlement）以 U 的 JWT 呼叫。
+  const ownedBy = (u) => (x) =>
+    /^credits_/.test(x.name) ? x.who === "service_role" && x.args?.p_user_id === u : x.who === u;
+  expect("I1-user-isolation", ra.status === 402 && handlerA === 0 && rb.status === 200 && handlerCalls.length === 1 && keyA !== keyB && keyA === "server:user-IA:ITINERARY_GENERATION:req-I1" && keyB === "server:user-IB:ITINERARY_GENERATION:req-I1" && rpcA.every(ownedBy("user-IA")) && rpcB.every(ownedBy("user-IB")) && [...rpcA, ...rpcB].some((x) => x.name === "credits_reserve"), `A=${ra.status}（handler=${handlerA}，key=${keyA}）；B 同 requestId=${rb.status}（handler=${handlerCalls.length}，key=${keyB}）；RPC=${J([...rpcA, ...rpcB].map((x) => `${x.name}@${x.who}:${x.args?.p_user_id ?? "-"}`))}`);
   const all = [...rpcA, ...rpcB];
   expect("I2-feature-isolation", all.filter((x) => x.name === "credits_reserve").every((x) => x.args?.p_feature_type === "ITINERARY_GENERATION" && x.args?.p_amount === 7 && x.args?.p_metadata?.authority === "server_function") && !J(all).includes("PLACE_RECOMMENDATION"), `reserve=${J(all.filter((x) => x.name === "credits_reserve").map((x) => `${x.args?.p_feature_type}:${x.args?.p_amount}`))}；無 PLACE_RECOMMENDATION`);
-  expect("I3-no-settlement-for-insufficient-user", !rpcA.some((x) => x.name === "credits_commit" || x.name === "credits_rollback") && !rpcB.some((x) => x.who !== "user-IB"), `A（不足）結算 RPC=${J(rpcA.filter((x) => /commit|rollback/.test(x.name)).map((x) => x.name))}；B 的 RPC 全部屬於 user-IB`);
+  expect("I3-no-settlement-for-insufficient-user", !rpcA.some((x) => x.name === "credits_commit" || x.name === "credits_rollback") && rpcB.every(ownedBy("user-IB")), `A（不足）結算 RPC=${J(rpcA.filter((x) => /commit|rollback/.test(x.name)).map((x) => x.name))}；B 的 RPC 全部屬於 user-IB（credits_* 為 service_role＋p_user_id＝user-IB）`);
   unverified("I3-handler-finish-settlement", "reserve 成功後的 commit／rollback 在正式 handler 的 finish()（itinerary.functions.ts L582-601）；本腳本以記錄器取代 handler（正式規劃器），該段未執行。規劃例外 → middleware rollback 已由 A4／B2 驗證");
 }
 {

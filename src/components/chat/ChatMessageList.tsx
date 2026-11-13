@@ -196,7 +196,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
         onClick={handleDuoSelect}
       >
         {m.role === "user" ? (
-          <p className="whitespace-pre-wrap text-[15px] leading-relaxed">{m.content}</p>
+          <p className="chat-latin-text whitespace-pre-wrap text-[15px] leading-relaxed">{m.content}</p>
         ) : roamieData ? (
           <RoamieResponseView
             data={roamieData}
@@ -219,7 +219,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
             selectionMode={selectionMode}
           />
         ) : (
-          <p className="whitespace-pre-wrap text-[15px] leading-relaxed">
+          <p className="chat-latin-text whitespace-pre-wrap text-[15px] leading-relaxed">
             {textContent || (
               <span className="inline-flex gap-1">
                 <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground/60" />

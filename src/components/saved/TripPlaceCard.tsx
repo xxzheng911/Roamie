@@ -134,6 +134,9 @@ export function TripPlaceCard({
         onSetArrivalTime={onSetArrivalTime}
         onSetDurationMinutes={onSetDurationMinutes}
       />
+      {item.arrivedAfterLastEntry === true ? (
+        <p className="mt-2 text-xs text-muted-foreground">{uiT("saved.mayBePastLastEntry")}</p>
+      ) : null}
     </article>
   );
 }

@@ -39,6 +39,13 @@ export function pendingQuestionForAskDays(
   });
 }
 
+/** Display name for copy; the internal "這趟" fallback is shown as the localized "this trip". */
+function shownCityLabel(label: string, userText: string | undefined, locale: Locale): string {
+  return label === "這趟" && locale !== "zh-TW"
+    ? chatRuntimeCopy("tripFallback", locale)
+    : displayDestinationForCopy(label, userText, locale);
+}
+
 /**
  * After a city is confirmed but date/days are still missing:
  * optional month climate note → always ask date or duration.
@@ -89,7 +96,7 @@ export function buildDateAndDurationQuestionReply(
   );
 
   const locale = options?.locale ?? effectiveAppLocale();
-  const shownDestination = displayDestinationForCopy(label, options?.userText, locale);
+  const shownDestination = shownCityLabel(label, options?.userText, locale);
   let reply: string;
   if (options?.context && hasMonth) {
     reply = buildScenicMonthPlanningResult({
@@ -117,6 +124,8 @@ export function buildCityDaysConfirmedReply(
     weather?: WeatherSummary | null;
     locale?: Locale;
     context?: CanonicalTravelContext;
+    /** User's own wording; display-only fallback for the destination name. */
+    userText?: string;
   },
 ): {
   reply: string;
@@ -127,7 +136,10 @@ export function buildCityDaysConfirmedReply(
   const label = normalizeDestinationLabel(destination);
   const startDate = options?.context?.startDate;
   const endDate = options?.context?.endDate;
+  // Same rule as the zh / en combination reply: only dates whose provenance confirms them.
+  const provenance = options?.context?.dateProvenance;
   const hasExactDate =
+    provenance?.confirmed === true && provenance.startDate === startDate && provenance.endDate === endDate &&
     Boolean(startDate) &&
     /^\d{4}-\d{2}-\d{2}$/.test(startDate!.trim()) &&
     Boolean(endDate) &&
@@ -151,7 +163,9 @@ export function buildCityDaysConfirmedReply(
     locale: options?.locale,
     startDate: hasExactDate ? startDate : undefined,
     endDate: hasExactDate ? endDate : undefined,
-    weatherLine: chatRuntimeCopy("directionAckDays", options?.locale, { destination: displayDestinationForCopy(label, undefined, options?.locale ?? effectiveAppLocale()), days }),
+    weatherLine: chatRuntimeCopy("directionAckDays", options?.locale, { destination: shownCityLabel(label, options?.userText, options?.locale ?? effectiveAppLocale()), days }),
+    tentativeDates: hasExactDate,
+    userText: options?.userText,
   });
   if (suggestion) {
     return {

@@ -4,6 +4,7 @@ import { matchedCombinationScope } from "./destination-scope";
 import { planningContextText } from "@/lib/i18n/planning-context-copy";
 import { displayDestinationForCopy } from "./destination-locale-aliases";
 import { generationDiscoverySearchScope, discoverySearchStopped, DiscoverySearchStopped } from "./discovery-search-scope";
+import { translate } from "@/lib/i18n/translate";
 import { createCombinationDiscoveryTrace, discoveryFailure, type DiscoveryFailure, type CombinationDiscoveryTrace } from "./combination-discovery-trace";
 import { isDevVerboseLog } from "@/lib/dev-verbose-log";
 /**
@@ -44,6 +45,8 @@ import {
   readSessionCandidatePool,
   ingestResolvedPlacesIntoCandidatePool,
   logPlacesSearchSkipped,
+  clearCandidatePoolCache,
+  clearSessionCandidatePool,
 } from "@/lib/ai/places-cost-cache";
 import {
   validateCandidateIntent,
@@ -102,6 +105,7 @@ import {
   deriveCombinationThemeTitle,
   isMechanicalCombinationTitle,
   localizeCombinationThemeTitle,
+  revalidateDerivedViewTitle,
 } from "@/lib/ai/combination-theme-titles";
 import { classifyDailyDiversityCategory } from "@/lib/ai/daily-category-diversity";
 import { isHardGooglePlaceId } from "@/lib/ai/planning-place-id";
@@ -187,7 +191,9 @@ export type DestinationDiscoveryFailureReason =
   | "combination_insufficient"
   | "invalid_destination_scope"
   | "blocked_country"
-  | "timeout";
+  | "timeout"
+  /** App language changed during the run and again during its one re-run in the new language. */
+  | "locale_switched";
 
 let lastDiscoveryFailure: {
   destination: string;
@@ -226,6 +232,11 @@ export function buildDestinationRecommendationFailedMessage(
   locale: import("@/lib/i18n/types").Locale = "zh-TW",
 ): string {
   const label = normalizeDestinationLabel(destination) || "這個目的地";
+  if ((reason ?? lastDiscoveryFailure?.reason) === "locale_switched") {
+    return translate(locale, "chatRuntime.localeSwitchedRecommendationsUpdating", {
+      destination: displayDestinationForCopy(label, undefined, locale),
+    });
+  }
   if (locale !== "zh-TW") return planningContextText("unavailable",locale,displayDestinationForCopy(label,undefined,locale));
   const r = (reason ?? lastDiscoveryFailure?.reason ?? "").toLowerCase();
   const detail = (lastDiscoveryFailure?.detail ?? "").toLowerCase();
@@ -488,7 +499,7 @@ export function buildDiscoveryQueryLaneTraceFixture(
 }
 
 const NON_ATTRACTION_NAME_RE =
-  /停車場|停車格|便利商店|超商|加油站|銀行|診所|醫院|藥局|學校|派出所|戶政|地政|公所|清潔隊|垃圾|回收|長照|殯儀|宅配|物流|協會|學會|創價|辦公室|總部|股份有限|有限公司|企業社|私人會所|會員中心/;
+  /停車場|停車格|便利商店|超商|加油站|銀行|診所|醫院|藥局|學校|派出所|戶政|地政|公所|清潔隊|垃圾|回收|長照|殯儀|宅配|物流|協會|學會|創價|辦公室|總部|股份有限|有限公司|企業社|私人會所|會員中心|社區館|活動中心|里民活動|集會所|公民會館|주민센터|복지관|公民館|集会所/;
 
 const THEME_DEFS: Array<{
   key: string;
@@ -627,6 +638,21 @@ function logCombinationValidationOnce(
   }
 }
 
+/** Leftover-chunk groups (derived titles) need 3 places; predefined themes keep their own minimum. */
+function meetsDerivedCombinationMinimum(combo: StructuredCombinationOption): boolean {
+  return !combo.combinationId?.includes(":extra:") ||
+    (combo.primaryCandidates ?? combo.placeCandidates).length >= 3;
+}
+
+/** Drop short `:extra:` groups only while MIN_DELIVERABLE_COMBINATIONS remain; fewest places (then later index) go first. */
+function dropShortDerivedCombinations(combos: StructuredCombinationOption[]): StructuredCombinationOption[] {
+  const size = (c: StructuredCombinationOption) => (c.primaryCandidates ?? c.placeCandidates).length;
+  const short = combos.map((c, i) => ({ i, n: size(c), ok: meetsDerivedCombinationMinimum(c) }))
+    .filter((x) => !x.ok).sort((a, b) => a.n - b.n || b.i - a.i);
+  const drop = new Set(short.slice(0, Math.max(0, combos.length - MIN_DELIVERABLE_COMBINATIONS)).map((x) => x.i));
+  return combos.filter((_, i) => !drop.has(i));
+}
+
 function localizeCachedCombinations(
   combinations: StructuredCombinationOption[],
   locale: Locale = effectiveAppLocale(),
@@ -661,6 +687,7 @@ export function getCachedDiscoveredCombinations(
   opts?: { log?: boolean; locale?: Locale; skipLocalizationGate?: boolean },
 ): StructuredCombinationOption[] | null {
   const shouldLog = opts?.log === true;
+  syncCombinationCachesToDeviceLocale();
   const locale = opts?.locale ?? effectiveAppLocale();
   // Prefer TTL'd Layer-3 cache (destination + style + group)
   const layered = readCombinationCache<StructuredCombinationOption>({
@@ -681,7 +708,8 @@ export function getCachedDiscoveredCombinations(
     }
     if (opts?.skipLocalizationGate) return layered;
     const localized = localizeCachedCombinations(layered, locale);
-    return localized ? enforcePlanningCombinationComposition(localized) : null;
+    // Short `:extra:` drop counts only groups that survive gate + composition.
+    return localized ? dropShortDerivedCombinations(enforcePlanningCombinationComposition(localized)) : null;
   }
 
   const key = normalizeDestinationLabel(destination);
@@ -719,7 +747,7 @@ export function getCachedDiscoveredCombinations(
   }
   if (opts?.skipLocalizationGate) return cached.combinations;
   const localized = localizeCachedCombinations(cached.combinations, locale);
-  return localized ? enforcePlanningCombinationComposition(localized) : null;
+  return localized ? dropShortDerivedCombinations(enforcePlanningCombinationComposition(localized)) : null;
 }
 
 export function setCachedDiscoveredCombinations(
@@ -729,6 +757,7 @@ export function setCachedDiscoveredCombinations(
   group?: string,
 ): void {
   const label = normalizeDestinationLabel(destination);
+  syncCombinationCachesToDeviceLocale();
   discoveryCache.set(label, { combinations, at: Date.now() });
   writeCombinationCache({
     destination: label,
@@ -745,6 +774,57 @@ export function clearDiscoveredCombinationsCache(destination?: string): void {
     discoveryCache.delete(normalizeDestinationLabel(destination));
   }
   clearCombinationCostCache(destination);
+}
+
+/**
+ * Device language switched mid-session (use-i18n follows `languagechange`): drop the
+ * combination / candidate-pool / session-pool caches built in the previous language so the
+ * new list is not seeded with old-language Google names. Same-locale hits are unchanged.
+ */
+function clearLocaleBoundCombinationCaches(): void {
+  discoveryCache.clear();
+  clearCombinationCostCache();
+  clearCandidatePoolCache();
+  clearSessionCandidatePool();
+}
+
+/**
+ * True when the device (App) language changed after this discovery started: its Google names
+ * belong to the previous language, so the result must not be written to any shared cache.
+ */
+function discoveryLocaleSwitchedMidFlight(
+  params: { startedAppLocale?: Locale; localeRun?: { skipped: boolean } },
+  label: string,
+  stage: string,
+): boolean {
+  const now = effectiveAppLocale();
+  if (!params.startedAppLocale || params.startedAppLocale === now) return false;
+  if (params.localeRun) params.localeRun.skipped = true;
+  logAiPipeline(
+    "[COMBINATION_CACHE_WRITE_SKIPPED]",
+    `destination=${label}`,
+    `stage=${stage}`,
+    `startedAppLocale=${params.startedAppLocale}`,
+    `currentAppLocale=${now}`,
+    "reason=app_locale_switched_mid_flight",
+  );
+  return true;
+}
+
+/** App locale (effectiveAppLocale) seen by the last cache access. A request locale alone never clears. */
+let combinationCachesDeviceLocale: Locale | null = null;
+
+/**
+ * Cache reads that return early without entering discovery (e.g. the chat route's
+ * cache-hit path) still observe a device language switch. Only a change of the device
+ * locale clears; repeated reads in the same language keep their hits (+0 Places).
+ */
+function syncCombinationCachesToDeviceLocale(): void {
+  const device = effectiveAppLocale();
+  if (combinationCachesDeviceLocale && combinationCachesDeviceLocale !== device) {
+    clearLocaleBoundCombinationCaches();
+  }
+  combinationCachesDeviceLocale = device;
 }
 
 export function resolveDestinationSearchAreas(
@@ -1546,6 +1626,7 @@ const UNSUITABLE_COMBINATION_TYPES = new Set([
   "service_establishment",
   "car_repair",
   "real_estate_agency",
+  "community_center",
 ]);
 
 const EXPLICIT_LANDMARK_TYPES = new Set([
@@ -1766,6 +1847,7 @@ export function enforcePlanningCombinationComposition(
   combinations: StructuredCombinationOption[],
 ): StructuredCombinationOption[] {
   const globallySelected: CombinationPlaceCandidate[] = [];
+  const usedTitles = new Set(combinations.map((c) => c.title));
   return combinations.flatMap((combo, groupIndex) => {
     const semanticFamily = resolveCombinationThemeKey(combo.theme, combo.title);
     const input = combo.placeCandidates;
@@ -1905,9 +1987,15 @@ export function enforcePlanningCombinationComposition(
         reasons.coast_authority_missing,
     });
     if (deliverable.length < 2) return [];
+    // Derived (leftover-chunk) titles are recomputed from the places that survived filtering.
+    const title = combo.combinationId?.includes(":extra:") && semanticFamily !== "coast"
+      ? revalidateDerivedViewTitle(combo.title, deliverable, usedTitles)
+      : combo.title;
+    if (title !== combo.title) usedTitles.add(title);
     return [
       {
         ...combo,
+        title,
         placeCandidates: selected,
         primaryCandidates: deliverable,
         fallbackCandidates: selected.slice(PRIMARY_PLACES_PER_COMBO),
@@ -3100,6 +3188,10 @@ async function discoverDestinationCombinationsInternal(params: {
   searchPlaces: PlaceSearchFn;
   geocodeFn?: GeocodeDestinationFn;
   locale?: Locale;
+  /** App locale when the public entry started; a device switch mid-flight discards cache writes. */
+  startedAppLocale?: Locale;
+  /** Set by discoveryLocaleSwitchedMidFlight when this run skipped its cache writes. */
+  localeRun?: { skipped: boolean };
   days?: number;
   generationRequestId?: string;
   destinationCountry?: string | null;
@@ -3452,7 +3544,7 @@ async function discoverDestinationCombinationsInternal(params: {
     }
   }
 
-  if (rawPlaces.length) {
+  if (rawPlaces.length && !discoveryLocaleSwitchedMidFlight(params, label, "candidate_pool")) {
     ingestResolvedPlacesIntoCandidatePool({
       sessionId: params.sessionId?.trim() || generationRequestId,
       destination: label,
@@ -3732,10 +3824,8 @@ async function discoverDestinationCombinationsInternal(params: {
   // Drop any combo that still lacks enough real places (typed food/shopping may show with 2).
   if (combinations?.length) {
     combinations = enforcePlanningCombinationComposition(combinations);
-    combinations = combinations.filter((c) => {
-      const count = (c.primaryCandidates ?? c.placeCandidates).length;
-      return count >= 2;
-    });
+    combinations = combinations.filter((c) =>
+      (c.primaryCandidates ?? c.placeCandidates).length >= 2);
     // Keep the actual count for diagnostics; the shared final gate rejects it.
   }
 
@@ -3747,7 +3837,8 @@ async function discoverDestinationCombinationsInternal(params: {
       minCombinations: MIN_COMBINATIONS,
       preferredCombinations: PREFERRED_COMBINATIONS,
     });
-    combinations = gated.combinations as StructuredCombinationOption[];
+    // Short `:extra:` drop runs after the last deleting gate (counts delivered groups).
+    combinations = dropShortDerivedCombinations(gated.combinations as StructuredCombinationOption[]);
     logAiPipeline(
       "[COMBINATION_DELIVERY_SUMMARY]",
       `destination=${label}`,
@@ -3761,7 +3852,7 @@ async function discoverDestinationCombinationsInternal(params: {
       `unreadableRejectedCount=${gated.unreadableRejectedCount}`,
       `combinationTargetCount=${PREFERRED_COMBINATIONS}`,
       `combinationBuiltCount=${gated.combinations.length}`,
-      `combinationDeliveredCount=${gated.combinations.length}`,
+      `combinationDeliveredCount=${combinations.length}`,
       `deliveryPass=${gated.tripCombinationDeliveryPass}`,
       `failureReason=${gated.reason ?? ""}`,
       `localizationDisplayPass=${gated.localizationDisplayPass}`,
@@ -3820,7 +3911,9 @@ async function discoverDestinationCombinationsInternal(params: {
   if (getActivePlacesGenerationRequestId() && getActivePlacesGenerationRequestId() !== generationRequestId) {
     return setDiscoveryFailure(label, "stale_generation");
   }
-  setCachedDiscoveredCombinations(label, combinations);
+  if (!discoveryLocaleSwitchedMidFlight(params, label, "discovery_cache")) {
+    setCachedDiscoveredCombinations(label, combinations);
+  }
   for (let i = 0; i < combinations.length; i += 1) {
     const combo = combinations[i]!;
     const count = (combo.primaryCandidates ?? combo.placeCandidates).length;
@@ -3887,6 +3980,10 @@ async function ensureDestinationCombinationsReadyInternal(params: {
   searchPlaces: PlaceSearchFn;
   geocodeFn?: GeocodeDestinationFn;
   locale?: Locale;
+  /** App locale when the public entry started; a device switch mid-flight discards cache writes. */
+  startedAppLocale?: Locale;
+  /** Set by discoveryLocaleSwitchedMidFlight when this run skipped its cache writes. */
+  localeRun?: { skipped: boolean };
   days?: number;
   generationRequestId?: string;
   destinationCountry?: string | null;
@@ -4028,7 +4125,9 @@ async function ensureDestinationCombinationsReadyInternal(params: {
         hasDeliverableCombinationCount(gatedLocal.combinations)
       ) {
         const localized = gatedLocal.combinations as StructuredCombinationOption[];
-        setCachedDiscoveredCombinations(label, localized);
+        if (!discoveryLocaleSwitchedMidFlight(params, label, "curated_cache")) {
+          setCachedDiscoveredCombinations(label, localized);
+        }
         return { ok: true, combinations: localized, source: "curated_or_local" };
       }
     }
@@ -4082,25 +4181,83 @@ export function logDestinationGeocodeHint(destination: string): void {
   );
 }
 
+/**
+ * Fresh search scope for the single re-run after an App language switch: the first run's
+ * scope already spent its request budget on old-language queries.
+ */
+function relocaleSearchScope(
+  params: { generationRequestId?: string; searchPlaces: PlaceSearchFn },
+  trace: CombinationDiscoveryTrace,
+) {
+  return generationDiscoverySearchScope(
+    params.generationRequestId ? `${params.generationRequestId}:relocale` : undefined,
+    (args) => trace.request(() => params.searchPlaces(args)),
+    { deadlineAt: Date.now() + COMBINATION_DISCOVERY_TIMEOUT_MS },
+  );
+}
+
+/**
+ * Request stats for trace.work: counts of both rounds summed (the relocale re-run is real
+ * provider work); failFastReason comes from the round whose outcome is returned only.
+ */
+function combinedScopeStats(
+  first: { stats: ReturnType<typeof generationDiscoverySearchScope>["stats"] },
+  active: { stats: ReturnType<typeof generationDiscoverySearchScope>["stats"] },
+): ReturnType<typeof generationDiscoverySearchScope>["stats"] {
+  if (first === active) return first.stats;
+  const a = first.stats;
+  const b = active.stats;
+  return {
+    attempted: a.attempted + b.attempted,
+    deduped: a.deduped + b.deduped,
+    reused: a.reused + b.reused,
+    succeeded: a.succeeded + b.succeeded,
+    failed: a.failed + b.failed,
+    rateLimited: a.rateLimited + b.rateLimited,
+    timedOut: a.timedOut + b.timedOut,
+    failFastReason: b.failFastReason,
+  };
+}
+
 /** Observe the existing search boundary without adding calls or changing results. */
 export async function ensureDestinationCombinationsReady(params: Parameters<typeof ensureDestinationCombinationsReadyInternal>[0]) {
   const trace = params.diagnosticTrace ?? createCombinationDiscoveryTrace();
+  syncCombinationCachesToDeviceLocale();
   if (!params.diagnosticTrace) trace.started(Boolean(params.destination.trim()), Boolean(getCachedDiscoveredCombinations(normalizeDestinationLabel(params.destination), undefined, undefined, {log:false,locale:params.locale})?.length));
   const scope = generationDiscoverySearchScope(params.generationRequestId, args => trace.request(() => params.searchPlaces(args)), {deadlineAt:Date.now()+COMBINATION_DISCOVERY_TIMEOUT_MS});
+  // Scope of the round whose outcome is returned (the relocale re-run once it starts).
+  let activeScope = scope;
   try {
-    const result = await ensureDestinationCombinationsReadyInternal({...params, diagnosticTrace:trace,
-      searchPlaces: scope.search,
+    const localeRun = { skipped: false };
+    let result = await ensureDestinationCombinationsReadyInternal({...params, diagnosticTrace:trace,
+      searchPlaces: scope.search, startedAppLocale: effectiveAppLocale(), localeRun,
     });
-    if (!result.ok && scope.stats.failFastReason) {
-      result.failureReason = discoveryFailure(scope.stats.failFastReason);
-      result.failureDetail = scope.stats.failFastReason;
-      setDiscoveryFailure(normalizeDestinationLabel(params.destination), result.failureReason, scope.stats.failFastReason);
+    let localeSwitchedAgain = false;
+    if (localeRun.skipped) {
+      // App language changed mid-flight: results were not cached. Re-run once in the new
+      // language so the reply builder finds a list (one extra search only on a real switch).
+      const relocale = effectiveAppLocale();
+      const retryRun = { skipped: false };
+      activeScope = relocaleSearchScope(params, trace);
+      result = await ensureDestinationCombinationsReadyInternal({...params, diagnosticTrace:trace,
+        searchPlaces: activeScope.search, locale: relocale, startedAppLocale: relocale, localeRun: retryRun,
+      });
+      if (retryRun.skipped) {
+        localeSwitchedAgain = true;
+        setDiscoveryFailure(normalizeDestinationLabel(params.destination), "locale_switched");
+        result = {ok:false,combinations:[],source:'failed' as const,failureReason:'locale_switched' as const};
+      }
     }
-    trace.work(scope.stats);
+    if (!result.ok && !localeSwitchedAgain && activeScope.stats.failFastReason) {
+      result.failureReason = discoveryFailure(activeScope.stats.failFastReason);
+      result.failureDetail = activeScope.stats.failFastReason;
+      setDiscoveryFailure(normalizeDestinationLabel(params.destination), result.failureReason, activeScope.stats.failFastReason);
+    }
+    trace.work(combinedScopeStats(scope, activeScope));
     trace.finish(result.ok,result.failureReason,result.combinations.length);
     return result;
   } catch (error) {
-    trace.work(scope.stats);
+    trace.work(combinedScopeStats(scope, activeScope));
     if (error instanceof DiscoverySearchStopped) {
       trace.finish(false,error.reason);
       return {ok:false,combinations:[],source:'failed' as const,failureReason:'place_discovery_failed' as const,failureDetail:error.reason};
@@ -4111,13 +4268,24 @@ export async function ensureDestinationCombinationsReady(params: Parameters<type
 
 export async function discoverDestinationCombinations(params: Parameters<typeof discoverDestinationCombinationsInternal>[0]) {
   const trace = params.diagnosticTrace ?? createCombinationDiscoveryTrace();
+  syncCombinationCachesToDeviceLocale();
   trace.started(Boolean(params.destination.trim()),Boolean(getCachedDiscoveredCombinations(normalizeDestinationLabel(params.destination),undefined,undefined,{log:false,locale:params.locale})?.length));
   const scope=generationDiscoverySearchScope(params.generationRequestId, args=>trace.request(()=>params.searchPlaces(args)),{deadlineAt:Date.now()+COMBINATION_DISCOVERY_TIMEOUT_MS});
+  let activeScope=scope;
   try {
-    const result=await discoverDestinationCombinationsInternal({...params,diagnosticTrace:trace,searchPlaces:scope.search});
-    trace.work(scope.stats); trace.finish(Boolean(result?.length),lastDiscoveryFailure?.reason,result?.length??0);return result;
+    const localeRun={skipped:false};
+    let result=await discoverDestinationCombinationsInternal({...params,diagnosticTrace:trace,searchPlaces:scope.search,startedAppLocale:effectiveAppLocale(),localeRun});
+    if(localeRun.skipped){
+      // App language changed mid-flight (writes skipped): one re-run in the new language.
+      const relocale=effectiveAppLocale();
+      const retryRun={skipped:false};
+      activeScope=relocaleSearchScope(params,trace);
+      result=await discoverDestinationCombinationsInternal({...params,diagnosticTrace:trace,searchPlaces:activeScope.search,locale:relocale,startedAppLocale:relocale,localeRun:retryRun});
+      if(retryRun.skipped) result=setDiscoveryFailure(normalizeDestinationLabel(params.destination),'locale_switched');
+    }
+    trace.work(combinedScopeStats(scope,activeScope)); trace.finish(Boolean(result?.length),lastDiscoveryFailure?.reason,result?.length??0);return result;
   } catch(error) {
-    trace.work(scope.stats);trace.finish(false,error instanceof DiscoverySearchStopped?error.reason:'unknown');
+    trace.work(combinedScopeStats(scope,activeScope));trace.finish(false,error instanceof DiscoverySearchStopped?error.reason:'unknown');
     if(error instanceof DiscoverySearchStopped) return setDiscoveryFailure(normalizeDestinationLabel(params.destination),'place_discovery_failed',error.reason);
     throw error;
   }

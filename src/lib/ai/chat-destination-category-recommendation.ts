@@ -1,4 +1,7 @@
 import type { Locale } from "@/lib/i18n/types";
+import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import { translate } from "@/lib/i18n/translate";
+import { displayDestinationForCopy } from "@/lib/ai/destination-locale-aliases";
 import type { PlaceResult } from "@/lib/place-result";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { RoamiePayloadV2, RoamieRecommendationItem } from "@/lib/ai/types";
@@ -160,6 +163,8 @@ async function searchCategoryPlaces(params: {
   searchContext?: ChatPlaceSearchContext;
   mealIntent?: ParsedMealIntent | null;
   diagnostics?: DestinationCategoryPlaceSearchDiagnostics;
+  /** categoryContinuation only: stored category word for the attraction queries. */
+  categoryQueryWord?: string;
 }): Promise<{ places: PlaceResult[]; usedQueries: string[] }> {
   const {
     intent,
@@ -175,6 +180,7 @@ async function searchCategoryPlaces(params: {
     searchContext,
     mealIntent,
     diagnostics,
+    categoryQueryWord,
   } = params;
 
   const mealAttempts =
@@ -202,7 +208,7 @@ async function searchCategoryPlaces(params: {
           primary: shoppingSeed.primary,
           fallback: shoppingSeed.fallback,
         }
-      : buildChatPlaceSearchAttempts(intent, destination, userText);
+      : buildChatPlaceSearchAttempts(intent, destination, userText, categoryQueryWord);
 
   const placeReq = parsePlaceRecommendationIntent(userText);
   const destinationAreaScope = resolveDestinationAreaScope(destination);
@@ -410,11 +416,13 @@ async function searchCategoryPlaces(params: {
       intent,
       destinationAreaScope.displayLabel,
       userText,
+      categoryQueryWord,
     );
     const cityAttempts = buildChatPlaceSearchAttemptsForScope(
       intent,
       destinationAreaScope.parentCity,
       userText,
+      categoryQueryWord,
     );
     const tagCandidates = (
       roundPlaces: PlaceResult[],
@@ -597,21 +605,57 @@ function placesToRecommendations(
     .map(dedupeRecommendationCopy);
 }
 
+const PLACE_CATEGORY_COPY_KEYS: Record<ChatPlaceCategoryIntent, string> = {
+  cafe: "placeCategoryCafe",
+  restaurant: "placeCategoryRestaurant",
+  shopping: "placeCategoryShopping",
+  attraction: "placeCategoryAttraction",
+  night_market: "placeCategoryNightMarket",
+  bar: "placeCategoryBar",
+  indoor: "placeCategoryIndoor",
+};
+
+/** Category name in the UI language (zh-TW keeps CHAT_PLACE_CATEGORY_LABELS). */
+function localizedChatPlaceCategoryLabel(intent: ChatPlaceCategoryIntent, locale: Locale): string {
+  if (locale === "zh-TW") return CHAT_PLACE_CATEGORY_LABELS[intent];
+  return chatRuntimeCopy(PLACE_CATEGORY_COPY_KEYS[intent], locale);
+}
+
+/**
+ * Dish label for the summary: only a cuisine subtype (attraction / shopping subtype ids such as
+ * 「culture」 are never shown), in the UI language's script; undefined → the generic intro.
+ */
+function localizedCuisineLabel(subtypeId: string | undefined, locale: Locale): string | undefined {
+  if (!subtypeId) return undefined;
+  const tokens = cuisineSearchTokens(subtypeId);
+  if (!tokens.length || (tokens.length === 1 && tokens[0] === subtypeId)) return undefined;
+  if (locale === "zh-TW") return tokens[0];
+  if (locale === "en") return tokens.find((t) => /^[a-z]/i.test(t));
+  if (locale === "ko") return tokens.find((t) => /[가-힣]/.test(t));
+  return tokens.find((t) => /[぀-ヿ]/.test(t)) ?? tokens.slice(1).find((t) => !/^[a-z]/i.test(t));
+}
+
 function buildGroupedSummary(
   destination: string,
   groups: Array<{ intent: ChatPlaceCategoryIntent; recommendations: RoamieRecommendationItem[] }>,
   mealIntent?: ParsedMealIntent | null,
   dishLabel?: string,
+  locale: Locale = "zh-TW",
 ): string {
   const label = normalizeDestinationLabel(destination);
+  const shown = locale === "zh-TW" ? label : displayDestinationForCopy(label, undefined, locale);
   const dish = dishLabel?.trim();
   const sections: string[] = [
-    dish ? `在${label}，這幾間${dish}可以先看看：` : `在${label}，這些地方值得先看看：`,
+    dish
+      ? chatRuntimeCopy("destinationCategorySubtypePlaces", locale, { destination: shown, category: dish })
+      : chatRuntimeCopy("destinationPlaces", locale, { destination: shown }),
   ];
 
   for (const group of groups) {
     if (!group.recommendations.length) continue;
-    const heading = `${CHAT_PLACE_CATEGORY_LABELS[group.intent]}推薦：`;
+    const heading = chatRuntimeCopy("destinationCategoryHeading", locale, {
+      category: localizedChatPlaceCategoryLabel(group.intent, locale),
+    });
     const lines = group.recommendations.map((rec, index) => {
       let reason = rec.reason ?? "";
       if (mealIntent) {
@@ -622,7 +666,7 @@ function buildGroupedSummary(
     sections.push("", heading, ...lines);
   }
 
-  sections.push("", "想加進行程的話，直接點卡片或跟我說你最想先排哪幾個。");
+  sections.push("", translate(locale, "productionUi.p34b0e5dbfd"));
   return sections.join("\n");
 }
 
@@ -640,6 +684,8 @@ export async function buildDestinationCategoryRecommendations(params: {
   userProfile?: UserProfileForReason | null;
   /** Trusted search center: used as-is (no geocode / approx / (0,0) / text-only fallback). */
   trustedCenter?: { lat: number; lng: number };
+  /** City-only answer after a category wish only (categoryContinuation): stored category word. */
+  categoryQueryWord?: string;
 }): Promise<{
   summary: string;
   recommendations: RoamieRecommendationItem[];
@@ -661,6 +707,7 @@ export async function buildDestinationCategoryRecommendations(params: {
     session,
     userProfile,
     trustedCenter,
+    categoryQueryWord,
   } = params;
   const label = normalizeDestinationLabel(destination);
   const mealIntent = resolveExplicitMealIntent(userText);
@@ -692,6 +739,7 @@ export async function buildDestinationCategoryRecommendations(params: {
     destinationType: context.destinationType,
     countryCode: context.destinationCountry,
     requestedIntent: intents[0] ?? "place_recommendation",
+    trustedCenter,
   });
   if (scopeGate.placesCallBlocked) {
     logDestinationScopeBlocked(scopeGate);
@@ -719,8 +767,9 @@ export async function buildDestinationCategoryRecommendations(params: {
       },
       contextPatch: {
         destination: label,
-        destinationType: "country",
-        destinationCountry: label,
+        ...(scopeGate.requiresDestinationRefinement
+          ? { destinationType: "country" as const, destinationCountry: label }
+          : {}),
         tripPurpose: "destination_selection",
       },
       usedQueries: [],
@@ -817,6 +866,7 @@ export async function buildDestinationCategoryRecommendations(params: {
         searchContext,
         mealIntent,
         diagnostics: searchDiagnostics,
+        categoryQueryWord,
       });
       let places = searched.places;
       usedQueries.push(...searched.usedQueries);
@@ -898,29 +948,40 @@ export async function buildDestinationCategoryRecommendations(params: {
 
     const primaryIntent = searchIntents[0] ?? lockedIntent;
     if (allRecommendations.length === 0 && shouldUseNamedMustVisitFallback(primaryIntent)) {
-      const named = buildNamedFallbackRecommendations(label);
+      const named = buildNamedFallbackRecommendations(label, locale);
       if (named.length > 0) {
         logChatPlaceFallback(primaryIntent, "named_template");
         const lines = named
           .slice(0, SINGLE_INTENT_MAX)
           .map((rec, index) => `${index + 1}. ${rec.name}${rec.reason ? ` — ${rec.reason}` : ""}`);
-        namedFallbackText = [lines.join("\n"), "", "想加進行程的話，跟我說你最想先排哪幾個。"].join(
+        const closing =
+          locale === "zh-TW"
+            ? "想加進行程的話，跟我說你最想先排哪幾個。"
+            : {
+                en: "If you'd like to add any to your trip, tell me which ones you want to schedule first.",
+                ja: "旅程に加えたい場合は、まずどれを入れたいか教えてください。",
+                ko: "일정에 넣고 싶다면 가장 먼저 넣고 싶은 곳을 알려 주세요.",
+              }[locale];
+        namedFallbackText = [lines.join("\n"), "", closing].join(
           "\n",
         );
       }
     }
 
     const placeReqForSummary = parsePlaceRecommendationIntent(userText);
-    const dishLabel =
-      placeReqForSummary?.subtypes?.[0] != null
-        ? cuisineSearchTokens(placeReqForSummary.subtypes[0])[0]
-        : undefined;
+    const dishLabel = localizedCuisineLabel(placeReqForSummary?.subtypes?.[0], "zh-TW");
 
     let summary =
       allRecommendations.length > 0
-        ? buildGroupedSummary(label, groups, mealIntent, dishLabel)
-        : placeReqForSummary?.subtypes?.length
-          ? `目前找到的${label}${dishLabel ?? "餐廳"}數量不多，可以換個菜系或稍後再試。`
+        ? buildGroupedSummary(
+            label,
+            groups,
+            mealIntent,
+            localizedCuisineLabel(placeReqForSummary?.subtypes?.[0], locale),
+            locale,
+          )
+        : dishLabel
+          ? `目前找到的${label}${dishLabel}數量不多，可以換個菜系或稍後再試。`
           : primaryIntent === "cafe"
             ? `目前在${label}暫時找不到符合的咖啡廳，可以換個描述或稍後再試。`
             : `目前在${label}暫時找不到符合的地點，可以換個描述或稍後再試。`;

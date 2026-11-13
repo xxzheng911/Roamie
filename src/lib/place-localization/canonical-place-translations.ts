@@ -7,6 +7,7 @@
  */
 
 import { transliterateLatinToZh } from "@/lib/place-localization/latin-zh-transliteration";
+import { isHardGooglePlaceId } from "@/lib/ai/planning-place-id";
 import {
   formatBrandDisplayNameZh,
   isBrandName,
@@ -20,6 +21,22 @@ import {
 
 /** Minimum confidence to use a generated translation in UI. */
 export const MIN_TRANSLATION_CONFIDENCE = 0.8;
+
+/**
+ * Set while building a candidate when an unknown proper noun had to be spelled out
+ * syllable by syllable (e.g. "teamLab Planets" → 特伊阿敏拉布佩拉內茨). Such output is
+ * not a real Chinese name, so the builder result is suppressed and the Google name kept.
+ */
+let phoneticUsed = false;
+
+function translitZh(token: string): ReturnType<typeof transliterateLatinToZh> {
+  const t = transliterateLatinToZh(token);
+  if (t && !t.allKnownTokens) phoneticUsed = true;
+  return t;
+}
+
+/** Builder matched but would invent a phonetic name / replace the name with a category word. */
+const SUPPRESSED = Symbol("canonical_translation_suppressed");
 
 /** Verified proper-noun → 繁中 (mythological / geographic tokens). */
 const VERIFIED_PROPER_NOUNS: Record<string, string> = {
@@ -80,7 +97,7 @@ function properNounZh(token: string): { zh: string; confidence: number } | null 
   // Do not phonetically invent from English lexicon phrases (Elephant Conservation…).
   if (COMMON_EN_LEXICON_RE.test(token) || parts.length > 3) return null;
   // Fall back to phonetic transliteration for short romanized stems.
-  const translit = transliterateLatinToZh(token);
+  const translit = translitZh(token);
   if (translit && translit.confidence >= MIN_TRANSLATION_CONFIDENCE) {
     return { zh: translit.zh, confidence: translit.confidence };
   }
@@ -275,7 +292,7 @@ const LOCAL_TYPE_PREFIX_PATTERNS: StructuralPattern[] = [
     build: (m) => {
       const rest = (m[1] ?? "").trim();
       // Prefer tokenized transliteration so "ca chep hoa rong" → 鯉魚化龍雕像
-      const t = transliterateLatinToZh(rest);
+      const t = translitZh(rest);
       if (t && t.usedKnownTokens && t.confidence >= MIN_TRANSLATION_CONFIDENCE) {
         return { zh: `${t.zh}雕像`, confidence: Math.min(0.9, t.confidence + 0.04) };
       }
@@ -294,7 +311,7 @@ const LOCAL_TYPE_PREFIX_PATTERNS: StructuralPattern[] = [
       if (/^vong\s*canh$/i.test(rest)) return { zh: "觀景亭", confidence: 0.9 };
       const noun = properNounZh(rest);
       if (!noun) {
-        const t = transliterateLatinToZh(rest);
+        const t = translitZh(rest);
         if (!t || t.confidence < MIN_TRANSLATION_CONFIDENCE) return null;
         return { zh: `${t.zh}館`, confidence: Math.min(0.84, t.confidence) };
       }
@@ -306,7 +323,7 @@ const LOCAL_TYPE_PREFIX_PATTERNS: StructuralPattern[] = [
     build: (m) => {
       const noun = properNounZh(m[1] ?? "");
       if (!noun) {
-        const t = transliterateLatinToZh(m[1] ?? "");
+        const t = translitZh(m[1] ?? "");
         if (!t || t.confidence < MIN_TRANSLATION_CONFIDENCE) return null;
         return { zh: `${t.zh}博物館`, confidence: Math.min(0.86, t.confidence) };
       }
@@ -318,7 +335,7 @@ const LOCAL_TYPE_PREFIX_PATTERNS: StructuralPattern[] = [
     build: (m) => {
       const noun = properNounZh(m[1] ?? "");
       if (!noun) {
-        const t = transliterateLatinToZh(m[1] ?? "");
+        const t = translitZh(m[1] ?? "");
         if (!t || t.confidence < MIN_TRANSLATION_CONFIDENCE) return null;
         return { zh: `${t.zh}橋`, confidence: Math.min(0.86, t.confidence) };
       }
@@ -330,7 +347,7 @@ const LOCAL_TYPE_PREFIX_PATTERNS: StructuralPattern[] = [
     build: (m) => {
       const noun = properNounZh(m[1] ?? "");
       if (!noun) {
-        const t = transliterateLatinToZh(m[1] ?? "");
+        const t = translitZh(m[1] ?? "");
         if (!t || t.confidence < MIN_TRANSLATION_CONFIDENCE) return null;
         return { zh: `${t.zh}礁岩`, confidence: Math.min(0.84, t.confidence) };
       }
@@ -342,7 +359,7 @@ const LOCAL_TYPE_PREFIX_PATTERNS: StructuralPattern[] = [
     build: (m) => {
       const noun = properNounZh(m[1] ?? "");
       if (!noun) {
-        const t = transliterateLatinToZh(m[1] ?? "");
+        const t = translitZh(m[1] ?? "");
         if (!t || t.confidence < MIN_TRANSLATION_CONFIDENCE) return null;
         return { zh: `${t.zh}海灘`, confidence: Math.min(0.84, t.confidence) };
       }
@@ -352,7 +369,7 @@ const LOCAL_TYPE_PREFIX_PATTERNS: StructuralPattern[] = [
 ];
 
 export type CanonicalTranslationResult = Omit<VerifiedPlaceTranslation, "localizationSource"> & {
-  localizationSource: "verified_zh" | "canonical_zh" | "brand_exception";
+  localizationSource: "verified_zh" | "canonical_zh" | "brand_exception" | "google_locale";
 };
 
 export type CanonicalLookupInput = {
@@ -365,14 +382,17 @@ export type CanonicalLookupInput = {
   englishName?: string | null;
 };
 
-function tryStructural(original: string): CanonicalTranslationResult | null {
+function tryStructural(original: string): CanonicalTranslationResult | typeof SUPPRESSED | null {
   const asciiKey = normalizePlaceNameKey(original);
 
   for (const { re, zh, confidence } of GENERIC_PHRASE_ZH) {
     const haystack = re.test(original) ? original : re.test(asciiKey) ? asciiKey : null;
     if (!haystack || confidence < MIN_TRANSLATION_CONFIDENCE) continue;
     const mostlyPhrase = haystack.replace(re, "").trim().length < 3;
-    if (mostlyPhrase || confidence >= 0.9) {
+    // A proper name around the category ("Wenhua Road Night Market") is not the
+    // category itself: keep the name instead of replacing it with 夜市.
+    if (!mostlyPhrase && confidence >= 0.9) return SUPPRESSED;
+    if (mostlyPhrase) {
       return {
         originalName: original,
         localizedDisplayName: zh,
@@ -386,8 +406,10 @@ function tryStructural(original: string): CanonicalTranslationResult | null {
   for (const pattern of STRUCTURAL_PATTERNS) {
     const match = original.match(pattern.re);
     if (!match) continue;
+    phoneticUsed = false;
     const built = pattern.build(match);
     if (!built || built.confidence < MIN_TRANSLATION_CONFIDENCE) continue;
+    if (phoneticUsed) return SUPPRESSED;
     return {
       originalName: original,
       localizedDisplayName: built.zh,
@@ -401,8 +423,10 @@ function tryStructural(original: string): CanonicalTranslationResult | null {
   for (const pattern of LOCAL_TYPE_PREFIX_PATTERNS) {
     const match = asciiKey.match(pattern.re);
     if (!match) continue;
+    phoneticUsed = false;
     const built = pattern.build(match);
     if (!built || built.confidence < MIN_TRANSLATION_CONFIDENCE) continue;
+    if (phoneticUsed) return SUPPRESSED;
     return {
       originalName: original,
       localizedDisplayName: built.zh,
@@ -418,7 +442,7 @@ function tryStructural(original: string): CanonicalTranslationResult | null {
 function tryBareLandmarkTransliteration(
   original: string,
   input: CanonicalLookupInput,
-): CanonicalTranslationResult | null {
+): CanonicalTranslationResult | typeof SUPPRESSED | null {
   if (!isTranslatableLandmark({
     name: original,
     types: input.types,
@@ -436,7 +460,8 @@ function tryBareLandmarkTransliteration(
   if (tokens.length > 4) return null;
   if (COMMON_EN_LEXICON_RE.test(original) || COMMON_EN_LEXICON_RE.test(ascii)) return null;
 
-  const translit = transliterateLatinToZh(ascii);
+  phoneticUsed = false;
+  const translit = translitZh(ascii);
   if (!translit || translit.confidence < MIN_TRANSLATION_CONFIDENCE) return null;
 
   const types = [input.primaryType ?? "", ...(input.types ?? [])].join(" ").toLowerCase();
@@ -457,6 +482,7 @@ function tryBareLandmarkTransliteration(
   if (!hasLocalDiacritics && tokens.length > 1 && !translit.usedKnownTokens) {
     return null;
   }
+  if (phoneticUsed) return SUPPRESSED;
 
   return {
     originalName: original,
@@ -468,6 +494,55 @@ function tryBareLandmarkTransliteration(
     canonicalPlaceId: input.canonicalPlaceId ?? undefined,
     countryCode: input.countryCode ?? undefined,
   };
+}
+
+/**
+ * No official 繁中 name exists (a builder would only invent a phonetic / category name):
+ * keep the name Google returned for this zh-TW request. Classified like the Google
+ * locale name (deliverable, same ordering tier as before) — not an incomplete fallback.
+ * Names without a Google place id (e.g. AI-authored) keep the existing fallback path.
+ */
+function keepGoogleName(
+  original: string,
+  input: CanonicalLookupInput,
+): CanonicalTranslationResult | null {
+  const placeId = input.placeId ?? input.canonicalPlaceId;
+  if (!isHardGooglePlaceId(placeId)) return null;
+  return {
+    originalName: original,
+    localizedDisplayName: original,
+    // Request language of the Google name (zh-TW Places call), not a claim about its script.
+    languageCode: "zh-TW",
+    localizationSource: "google_locale",
+    translationConfidence: 1,
+    placeId: input.placeId ?? undefined,
+    canonicalPlaceId: input.canonicalPlaceId ?? undefined,
+    countryCode: input.countryCode ?? undefined,
+  };
+}
+
+/**
+ * zh-TW name resolved by keepGoogleName: Google's Latin name kept because no official
+ * 繁中 name exists. Deliverable as-is — gates must not count it as foreign / fallback.
+ * (Other zh-TW google_locale names always carry Traditional Chinese.)
+ */
+export function isKeptGoogleLatinName(
+  resolved: { localizedDisplayName?: string | null; localizationSource?: string | null },
+  locale: string,
+): boolean {
+  const display = (resolved.localizedDisplayName ?? "").trim();
+  return (
+    locale === "zh-TW" &&
+    resolved.localizationSource === "google_locale" &&
+    Boolean(display) &&
+    /[A-Za-z]/.test(display) &&
+    !/[一-鿿㐀-䶿]/.test(display)
+  );
+}
+
+/** Latin letters with diacritics folded (kept Vietnamese / European Google names). */
+export function foldLatinDiacritics(text: string): string {
+  return text.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/đ/g, "d").replace(/Đ/g, "D");
 }
 
 /**
@@ -515,6 +590,7 @@ export function lookupCanonicalPlaceTranslation(
 
   for (const candidate of candidates) {
     const structural = tryStructural(candidate);
+    if (structural === SUPPRESSED) return keepGoogleName(original, input);
     if (structural) {
       return {
         ...structural,
@@ -528,6 +604,7 @@ export function lookupCanonicalPlaceTranslation(
   // Prefer alias when it is a better-known proper noun (e.g. Nan Myint Tower).
   if (alias) {
     const aliasStructural = tryStructural(alias);
+    if (aliasStructural === SUPPRESSED) return keepGoogleName(original, input);
     if (aliasStructural) {
       return {
         ...aliasStructural,
@@ -540,6 +617,7 @@ export function lookupCanonicalPlaceTranslation(
 
   for (const candidate of candidates) {
     const bare = tryBareLandmarkTransliteration(candidate, input);
+    if (bare === SUPPRESSED) return keepGoogleName(original, input);
     if (bare) return bare;
   }
 

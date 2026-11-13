@@ -97,7 +97,31 @@ async function execute(
     error;
   const request = new Request("https://fixture.invalid/itinerary", { method: "POST" });
   const exports = {};
+  // 任務單 #6：credits_reserve／rollback 改由 service role client（serverCreditsClient）呼叫並帶
+  // p_user_id；entitlement 仍走使用者 client（context.supabase）。via 記錄實際使用的 client。
+  const creditsClient = {
+    async rpc(name, args) {
+      calls.push({ name, args, via: "service_role" });
+      if (name === "credits_reserve")
+        return { data: { ok: !insufficient, idempotent: replay, ledger_id: "fixture" }, error: null };
+      assert.equal(name, "credits_rollback");
+      return { data: { ok: true }, error: null };
+    },
+  };
   const stubs = {
+    "@/lib/ai/endpoint-guard.server": {
+      serverCreditsClient: () => creditsClient,
+      // Same contract as the real serverCreditsRpc: missing client fails closed; errors are returned.
+      async serverCreditsRpc(fn, args, client) {
+        if (!client) return { data: null, error: { message: "credits_client_missing" } };
+        try {
+          const { data, error } = await client.rpc(fn, args);
+          return { data, error: error ? { message: error.message } : null };
+        } catch (e) {
+          return { data: null, error: { message: e instanceof Error ? e.message : "rpc_unavailable" } };
+        }
+      },
+    },
     "@/lib/itinerary-diagnostics.server": { setGenerationPhase() {}, generationSettlement() {}, generationSettlementResponse() {}, captureGenerationException() {}, emitGenerationDiagnostic() {} },
     "@tanstack/react-start": {
       createMiddleware: () => ({
@@ -140,16 +164,9 @@ async function execute(
     userId: "fixture",
     supabase: {
       async rpc(name, args) {
-        calls.push({ name, args });
-        if (name === "resolve_user_plus_entitlement")
-          return { data: { has_plus: plus }, error: entitlementFailure ? {} : null };
-        if (name === "credits_reserve")
-          return {
-            data: { ok: !insufficient, idempotent: replay, ledger_id: "fixture" },
-            error: null,
-          };
-        assert.equal(name, "credits_rollback");
-        return { data: { ok: true }, error: null };
+        calls.push({ name, args, via: "user" });
+        assert.equal(name, "resolve_user_plus_entitlement", "user JWT client only resolves entitlement");
+        return { data: { has_plus: plus }, error: entitlementFailure ? {} : null };
       },
     },
   };
@@ -166,6 +183,10 @@ async function execute(
     error = caught;
   }
   const reserves = calls.filter((c) => c.name === "credits_reserve");
+  for (const c of calls.filter((x) => /^credits_/.test(x.name))) {
+    assert.equal(c.via, "service_role", c.name + " via service role");
+    assert.equal(c.args.p_user_id, "fixture", c.name + " bound to the verified user");
+  }
   for (const { args } of reserves) {
     assert.equal(args.p_feature_type, "ITINERARY_GENERATION");
     assert.equal(args.p_amount, constants.CREDITS_COSTS.ITINERARY_GENERATION);

@@ -91,8 +91,45 @@ assert.doesNotMatch(dialog, /h-auto|min-h-|h-\d|text-\[/);
 assert.doesNotMatch(dialog, /truncate|line-clamp|text-ellipsis/);
 assert.equal(dialog.includes("title =") || dialog.includes("confirmLabel ="), false);
 
+// Shared-trip notice (owner deletes a trip that still has other accepted members).
+const sharedNotice = {
+  "zh-TW": "其他成員也將無法再查看這趟行程與花費紀錄。",
+  en: "Other members will also lose access to this trip and its expense records.",
+  ja: "ほかのメンバーも、この旅程と費用の記録を見られなくなります。",
+  ko: "다른 멤버도 더 이상 이 여행 일정과 지출 기록을 볼 수 없게 됩니다.",
+};
+for (const locale of locales) {
+  // hasOtherMembers false / omitted / undefined → exactly the original copy.
+  assert.deepEqual(deleteTripDialogLabels(locale, { hasOtherMembers: false }), expected[locale]);
+  assert.deepEqual(deleteTripDialogLabels(locale, {}), expected[locale]);
+  assert.deepEqual(
+    deleteTripDialogLabels(locale, { hasOtherMembers: undefined }),
+    expected[locale],
+  );
+  const shared = deleteTripDialogLabels(locale, { hasOtherMembers: true });
+  const sep = locale === "en" || locale === "ko" ? " " : "";
+  assert.equal(shared.description, `${expected[locale].description}${sep}${sharedNotice[locale]}`);
+  assert.equal(shared.title, expected[locale].title);
+  assert.equal(shared.confirmLabel, expected[locale].confirmLabel);
+  assert.equal(shared.cancelLabel, expected[locale].cancelLabel);
+  if (locale !== "zh-TW") {
+    for (const leaked of ["其他成員", "花費紀錄"])
+      assert.equal(shared.description.includes(leaked), false, `${locale} ${leaked}`);
+  }
+}
+
+// trip.tsx is the draft-only route (delete is a no-op for drafts): original copy.
+assert.match(trip, /deleteTripDialogLabels\(locale\)/);
+// Saved list and trip detail pass the member flag.
+assert.match(
+  saved,
+  /deleteTripDialogLabels\(locale, \{ hasOtherMembers: deleteTarget\?\.hasOtherMembers \}\)/,
+);
+assert.match(detail, /deleteTripDialogLabels\(locale, \{ hasOtherMembers \}\)/);
+// "Other members" means accepted non-owner members in both screens.
+assert.match(saved, /!m\.is_owner && m\.status === "accepted"/);
+assert.match(detail, /!m\.is_owner && m\.status === "accepted"/);
 for (const source of [saved, trip, detail]) {
-  assert.match(source, /deleteTripDialogLabels\(locale\)/);
   assert.equal(source.includes("TRIP_DELETE_DIALOG"), false);
 }
 assert.match(saved, /await deleteTrip\(deleteTarget\.id\)/);
@@ -164,8 +201,14 @@ for (const viewport of [320, 390, 430]) {
       const labels = expected[locale];
       const titleLines = wrapped(labels.title, 1.125 * rootPx * scale, contentWidth);
       const bodyLines = wrapped(labels.description, 0.875 * rootPx * scale, contentWidth);
+      const sharedLines = wrapped(
+        deleteTripDialogLabels(locale, { hasOtherMembers: true }).description,
+        0.875 * rootPx * scale,
+        contentWidth,
+      );
       assert.ok(titleLines.length >= 1);
       assert.ok(bodyLines.length >= 1);
+      assert.ok(sharedLines.length >= bodyLines.length);
       for (const label of [labels.confirmLabel, labels.cancelLabel]) {
         assert.ok(
           textWidth(label, 0.875 * rootPx * scale) <= contentWidth,

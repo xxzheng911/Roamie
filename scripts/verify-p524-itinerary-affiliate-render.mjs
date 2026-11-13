@@ -36,19 +36,23 @@ const render = (offers, mode) =>
     }),
   );
 
-const ticketSearch = render(
-  [offer("klook", "在 Klook 搜尋票券"), offer("kkday", "在 KKday 搜尋票券")],
-  "ticket_search",
-);
-assert.match(ticketSearch, /Klook 搜尋票券/);
-assert.match(ticketSearch, /KKday 搜尋票券/);
+// L2 spec (approved): ticket-section klook / kkday buttons show the brand name only.
+const ticketOffers = [offer("klook", "在 Klook 搜尋票券"), offer("kkday", "在 KKday 搜尋票券")];
+const ticketOffersBefore = JSON.stringify(ticketOffers);
+const ticketSearch = render(ticketOffers, "ticket_search");
+assert.match(ticketSearch, />Klook</);
+assert.match(ticketSearch, />KKday</);
+assert.doesNotMatch(ticketSearch, /搜尋票券/);
+// Link / tracking data is untouched by rendering.
+assert.equal(JSON.stringify(ticketOffers), ticketOffersBefore);
 
-const experienceSearch = render(
-  [offer("klook", "在 Klook 搜尋體驗"), offer("kkday", "在 KKday 搜尋體驗")],
-  "experience_search",
-);
-assert.match(experienceSearch, /Klook 搜尋體驗/);
-assert.match(experienceSearch, /KKday 搜尋體驗/);
+const experienceOffers = [offer("klook", "在 Klook 搜尋體驗"), offer("kkday", "在 KKday 搜尋體驗")];
+const experienceSearch = render(experienceOffers, "experience_search");
+assert.match(experienceSearch, />Klook</);
+assert.match(experienceSearch, />KKday</);
+assert.doesNotMatch(experienceSearch, /搜尋體驗/);
+assert.equal(experienceOffers[0].url, "https://example.test/klook");
+assert.equal(experienceOffers[1].url, "https://example.test/kkday");
 
 assert.equal(render([], "hidden"), "");
 assert.match(render([offer("klook", "Klook")], "exact_product"), />Klook</);

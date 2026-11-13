@@ -67,7 +67,7 @@ const CATEGORY_ORDER: ChatPlaceCategoryIntent[] = [
 
 const CATEGORY_PATTERNS: Record<ChatPlaceCategoryIntent, RegExp> = {
   cafe: /(咖啡廳|咖啡店|咖啡|café|cafe)/i,
-  restaurant: /(餐廳|美食|吃飯|用餐|吃的地方|想吃|吃什麼|找吃的|想找餐廳|推薦餐廳|找餐廳|找美食|有推薦的餐廳|推薦.{0,6}吃)/,
+  restaurant: /(餐廳|美食|吃飯|用餐|吃的地方|想吃|吃什麼|找吃的|想找餐廳|推薦餐廳|找餐廳|找美食|有推薦的餐廳|推薦.{0,6}吃|無菜單|omakase|오마카세)/i,
   shopping:
     /(商圈|shopping|百貨|市集|購物|商場|mall|department\s*store|outlet|アウトレット|逛街|購物行程|購物中心|商店街)/i,
   attraction: /(景點|必去|必去景點|附近景點|去哪玩|推薦景點|好玩的|附近.*逛|美術館|博物館|museum|tourist)/i,
@@ -208,6 +208,7 @@ export function buildChatPlaceSearchAttempts(
   intent: ChatPlaceCategoryIntent,
   destination: string,
   userText = "",
+  categoryQueryWord?: string,
 ): { primary: SearchAttempt[]; fallback: SearchAttempt[] } {
   const areaScope = resolveDestinationAreaScope(destination);
   if (areaScope) {
@@ -215,24 +216,47 @@ export function buildChatPlaceSearchAttempts(
       intent,
       areaScope.displayLabel,
       userText,
+      categoryQueryWord,
     );
     const cityAttempts = buildChatPlaceSearchAttemptsForScope(
       intent,
       areaScope.parentCity,
       userText,
+      categoryQueryWord,
     );
     return {
       primary: areaAttempts.primary,
       fallback: [...areaAttempts.fallback, ...cityAttempts.primary, ...cityAttempts.fallback],
     };
   }
-  return buildChatPlaceSearchAttemptsForScope(intent, destination, userText);
+  return buildChatPlaceSearchAttemptsForScope(intent, destination, userText, categoryQueryWord);
+}
+
+/**
+ * City-only answer after a category wish only (categoryContinuation): the stored category word as
+ * a Places search word (海邊 → 海灘, 泡湯 → 溫泉); other words are searched as typed.
+ */
+const CATEGORY_CONTINUATION_QUERY_WORDS: Array<[RegExp, string, string]> = [
+  [/^(?:海邊|海边|海灘|海滩|海|beach(?:es)?|seaside|sea|coast|바다|해변)$/iu, "海灘", "beach"],
+  [/^(?:泡湯|泡汤|溫泉|温泉|泡溫泉|泡温泉|hot\s*springs?|onsen|온천)$/iu, "溫泉", "hot springs"],
+  [/^(?:美術館|美术馆|art\s+(?:museums?|galler(?:y|ies))|미술관)$/iu, "美術館", "art museum"],
+  [/^(?:博物館|博物馆|museums?|박물관)$/iu, "博物館", "museum"],
+];
+
+function resolveCategoryContinuationQueryWords(word: string): { local: string; en: string } {
+  const w = word.trim();
+  for (const [re, local, en] of CATEGORY_CONTINUATION_QUERY_WORDS) {
+    if (re.test(w)) return { local, en };
+  }
+  return { local: w, en: w };
 }
 
 export function buildChatPlaceSearchAttemptsForScope(
   intent: ChatPlaceCategoryIntent,
   destination: string,
   userText = "",
+  /** categoryContinuation only: the stored category word for the attraction queries. */
+  categoryQueryWord?: string,
 ): { primary: SearchAttempt[]; fallback: SearchAttempt[] } {
   const parsed = userText.trim() ? parsePlaceRecommendationIntent(userText) : null;
   const searchCity = resolveRegionPrimaryCity(destination) ?? destination;
@@ -326,6 +350,31 @@ export function buildChatPlaceSearchAttemptsForScope(
       return { primary: seeded.primary, fallback: seeded.fallback };
     }
     case "attraction":
+      if (categoryQueryWord?.trim()) {
+        // Same count / types as the default attraction attempts (2 primary + 1 fallback).
+        const words = resolveCategoryContinuationQueryWords(categoryQueryWord);
+        return {
+          primary: [
+            {
+              query: `${destination} ${words.local}`,
+              mode: "text",
+              includedTypes: ["tourist_attraction"],
+            },
+            {
+              query: words.en === words.local ? `${destination} ${words.local} 景點` : `${destination} ${words.en}`,
+              mode: "text",
+              includedTypes: ["tourist_attraction"],
+            },
+          ],
+          fallback: [
+            {
+              query: `${destination} ${words.en} sightseeing`,
+              mode: "text",
+              includedTypes: ["tourist_attraction"],
+            },
+          ],
+        };
+      }
       return {
         primary: [
           {

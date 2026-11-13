@@ -35,8 +35,18 @@ function boundedParsedDayCount(value: number): number | undefined {
  * 解析「5 天」「五天」「3日」「大概3天」「5天4夜」「4晚」等天數。
  * 不含裸數字（裸數字須依 pendingQuestion 語境解析）。
  */
+/**
+ * 「多待一天」「多一天」「もう1日」「あと1日」「1일 더」「하루 더」: extra days on top of the trip —
+ * never the trip length nor a combination number. 「差不多3天」「最多3天」「3天多」「多少天」不在此列。
+ */
+export const EXTRA_DAYS_PHRASE_RE =
+  /(?:多待|多留|再待|多玩|多住|もう|あと|再|(?<=^|[\s,，.。!！?？、;；:：~～]|想|要|可以|能|再|還|还|們|们|就|那)多)\s*(?:\d+|[一二三四五六七八九十两兩])\s*(?:天|日|晚)|\d+\s*일\s*더|하루\s*더/g;
+
 export function parseDayCountFromText(text: string): number | undefined {
-  const t = normalizeDurationText(text);
+  const t = normalizeDurationText(text)
+    .replace(EXTRA_DAYS_PHRASE_RE, "")
+    // 「不要3天，要4天」「不是3天是4天」: drop the negated count, keep the correction.
+    .replace(/(?:不要|不是|別|别)(?:\d+|[一二三四五六七八九十两兩])(?:天|日|晚)/g, "");
   if (!t) return undefined;
 
   // 5天4夜 / 五天四夜 — prefer day count
@@ -51,13 +61,13 @@ export function parseDayCountFromText(text: string): number | undefined {
 
   // Soft hedges: 大概3天 / 差不多3天 / 三天左右 / 3天吧
   // 「12月4日」is a calendar day, never a trip length.
-  const digit = t.match(/(?:大概|差不多|約|大约)?(?<![\d月])(\d+)\s*(?:天|日(?![町村郡]|市(?![區区場集內内中街]))|晚)(?:左右|吧)?/);
+  const digit = t.match(/(?:大概|差不多|約|大约)?(?<![\d月])(?<!第\s*)(\d+)\s*(?:天|日(?![町村郡目]|市(?![區区場集內内中街]))|晚)(?:左右|吧)?/);
   if (digit) {
     return boundedParsedDayCount(Number.parseInt(digit[1]!, 10));
   }
 
   const cn = t.match(
-    /(?:大概|差不多|約|大约)?(?<!月)([一二三四五六七八九十两兩])\s*(?:天|日(?![町村郡]|市(?![區区場集內内中街]))|晚)(?:左右|吧)?/,
+    /(?:大概|差不多|約|大约)?(?<!月)(?<!第\s*十?)([一二三四五六七八九十两兩])\s*(?:天|日(?![町村郡目]|市(?![區区場集內内中街]))|晚)(?:左右|吧)?/,
   );
   if (cn?.[1]) {
     const n = CN_DAY_MAP[cn[1]];
@@ -69,7 +79,7 @@ export function parseDayCountFromText(text: string): number | undefined {
   if (verbal) return boundedParsedDayCount((words[verbal[1]] ?? Number(verbal[1])) * (verbal[2].startsWith('week') ? 7 : 1));
   const weeks = text.match(/(\d+|[一二三四五六七八九十兩两])\s*(?:週間|週|周|주)/);
   if (weeks) return boundedParsedDayCount((CN_DAY_MAP[weeks[1]] ?? Number(weeks[1])) * 7);
-  const korean = text.match(/(\d+)\s*일(?:간)?/);
+  const korean = t.match(/(\d+)\s*일(?!\s*째)(?:간)?/);
   if (korean) return boundedParsedDayCount(Number(korean[1]));
   const english = text.match(/\b(\d+)\s*(?:-\s*)?days?\b/i);
   if (english?.[1]) {

@@ -146,7 +146,10 @@ function unavailable(code: Denial["code"]): Denial {
 }
 
 /** Add diagnostic bucket only; status, retry interval and admission logic stay unchanged. */
-function googleBillingDenied(reason: "user_rate_limited" | "ip_rate_limited" | "global_budget_limited", retryAt: number): Response {
+function googleBillingDenied(
+  reason: "user_rate_limited" | "ip_rate_limited" | "global_budget_limited" | "guest_global_budget_limited",
+  retryAt: number,
+): Response {
   const response = fixedStatusResponse("rate_limited", retrySeconds(retryAt));
   return Response.json({ error: "rate_limited", reason }, { status: response.status, headers: response.headers });
 }
@@ -163,6 +166,8 @@ export async function authorizeGoogleBilling(input: {
   ip?: string | null;
   /** Guest public reads have no user bucket, but still count toward the global Google budget. */
   includeGlobalBudget?: boolean;
+  /** Unauthenticated guest: also charge the aggregate guest share of the global budget. */
+  guestShare?: boolean;
   observation?: GuardObservation;
 }): Promise<Response | null> {
   const observation = input.observation ?? newGuardObservation("google", input.family);
@@ -208,12 +213,13 @@ export async function authorizeGoogleBilling(input: {
         env,
         "global:google",
         input.operationId,
-        googleGlobalBuckets(input.family, readGlobalDailyUnits(env)),
+        googleGlobalBuckets(input.family, readGlobalDailyUnits(env), undefined, input.guestShare === true && !input.chargeUser),
       );
       if (!global.ok) {
         await rollback(env, charged, input.operationId);
-        observeGuardRejection(observation, global.reason);
-        return googleBillingDenied("global_budget_limited", global.retryAt);
+        const guestShare = global.reason === "guest_global_weight";
+        observeGuardRejection(observation, guestShare ? "global_weight" : global.reason);
+        return googleBillingDenied(guestShare ? "guest_global_budget_limited" : "global_budget_limited", global.retryAt);
       }
       if (input.freshAttempt && global.replay) throw new Error("guard_unavailable");
     }
@@ -251,7 +257,7 @@ export async function authorizeGuestGoogleBilling(input: {
   observation?: GuardObservation;
 }): Promise<Response | null> {
   return authorizeGoogleBilling({
-    ...input, chargeUser: false, chargeIp: true, includeGlobalBudget: true,
+    ...input, chargeUser: false, chargeIp: true, includeGlobalBudget: true, guestShare: true,
     userId: null, ip: resolveTrustedIp(input.request),
   });
 }

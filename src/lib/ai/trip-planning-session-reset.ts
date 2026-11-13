@@ -9,12 +9,16 @@ import {
 import { resetPlannerSession } from "@/lib/ai/planner-session-guard";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
+  isCategoryNonDestinationLabel,
   isDestinationPlanningText,
   isKnownCountryLabel,
   isKnownTouristCityLabel,
+  isNonPlaceDestinationText,
   normalizeDestinationLabel,
+  parseNegatedDestinationSwitchTurn,
   resolveDestinationFromText,
 } from "@/lib/ai/trip-planning-context";
+import { travelDestinationCandidates } from "@/lib/ai/travel-language-signals";
 import {
   isTravelRegionLabel,
   resolveDestinationEntity,
@@ -28,7 +32,8 @@ import {
   isExplicitPrimaryDestinationSwitch,
   parseExplicitPrimaryDestinationSwitch,
 } from "@/lib/ai/combination-selection-reply";
-import { parseNegatedDestinationSwitch } from "@/lib/ai/continue-recommendation-intent";
+// Call-time only (circular with global-planning-context, which imports the reset helpers).
+import { combinationChoiceSwitchForSession } from "@/lib/ai/global-planning-context";
 import {
   captureLockedDestinationSnapshot,
   isValidCoordinate,
@@ -229,17 +234,28 @@ function datesDiffer(
  * Lexical only; never a trusted destination.
  */
 export function resolveIncomingDestinationFromText(text: string): string | undefined {
-  const explicitSwitch = parseExplicitPrimaryDestinationSwitch(text);
+  // 「不去海邊了，改去博物館」: a category word after 改去 is a preference, never a destination.
+  const parsedSwitch = parseExplicitPrimaryDestinationSwitch(text);
+  const explicitSwitch = parsedSwitch && !isCategoryNonDestinationLabel(parsedSwitch) ? parsedSwitch : undefined;
   // 「不去大阪了，換金澤」: the negated place is never the incoming destination. Only the wording
   // after the negated clause is parsed, exactly as the same turn without it (「換金澤，再推薦幾個」);
   // a switched-to place stays unconfirmed until the Destination Authority.
-  const negatedSwitch = parseNegatedDestinationSwitch(text);
-  return (
+  const negatedSwitch = parseNegatedDestinationSwitchTurn(text);
+  const incoming =
     explicitSwitch ??
     (isExplicitPrimaryDestinationSwitch(text)
       ? undefined
-      : resolveDestinationFromText(negatedSwitch ? negatedSwitch.remainderText : text))
-  );
+      : resolveDestinationFromText(negatedSwitch ? negatedSwitch.remainderText : text));
+  // Final guard: switch residue / time word / category (「休息」) never starts a new trip.
+  return incoming && isNonPlaceDestinationText(incoming) ? undefined : incoming;
+}
+
+/** The turn names only a non-place as where to go ("I want to go to the beach"「我要去休息」). */
+function namesOnlyNonPlaceTarget(text: string): boolean {
+  const zhTarget = text.trim().match(/去([^\s，,、。！!？?]{1,12})[。！!？?\s]*$/u)?.[1];
+  const found = travelDestinationCandidates(text);
+  const names = found.length ? found : zhTarget ? [zhTarget] : [];
+  return names.length > 0 && names.every((n) => isNonPlaceDestinationText(n));
 }
 
 /**
@@ -275,9 +291,15 @@ export function isNewTripPlanning(
     };
   }
 
+  // 「我下個月要去台東」「京都に変更」while choosing combinations: the same switch the global
+  // planning merge applies (combinationChoiceSwitchForSession) is a destination change here too.
+  const combinationSwitch =
+    pendingType === "combination_choice" ? combinationChoiceSwitchForSession(session, text) : undefined;
+
   // combination_choice 中未明確「改去／目的地改成」時，嵌入城市不得覆蓋主目的地
   if (
     pendingType === "combination_choice" &&
+    !combinationSwitch &&
     !isExplicitPrimaryDestinationSwitch(text) &&
     prevDest
   ) {
@@ -287,7 +309,7 @@ export function isNewTripPlanning(
     };
   }
 
-  const incomingDestination = resolveIncomingDestinationFromText(text);
+  const incomingDestination = combinationSwitch?.destination ?? resolveIncomingDestinationFromText(text);
   const incomingTravelMonth = parseTravelMonthFromText(text);
   const incomingRange = parseTravelDateRangeFromText(text);
   const prevMonth = session.travelContext?.travelMonth?.trim();
@@ -358,7 +380,8 @@ export function isNewTripPlanning(
         return {
           isNew: true,
           reason,
-          incomingDestination: next,
+          // Combination switch: the same label the global merge writes (user's Han spelling 台東).
+          incomingDestination: combinationSwitch?.destination ?? next,
           incomingTravelMonth,
         };
       }
@@ -425,7 +448,8 @@ export function isNewTripPlanning(
   if (
     session.phase === "done" &&
     isDestinationPlanningText(text, session) &&
-    hasExistingTripState
+    hasExistingTripState &&
+    !namesOnlyNonPlaceTarget(text)
   ) {
     return {
       isNew: true,

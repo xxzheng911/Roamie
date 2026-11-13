@@ -1,3 +1,4 @@
+import "./verify-netguard-full.mjs";
 import assert from 'node:assert/strict';
 import { homeWeatherMetadata, homeWeatherCondition } from '../src/lib/home-weather-metadata.ts';
 import { buildDailyPrepAdvice } from '../src/lib/recommendation/daily-prep-advice.ts';
@@ -16,10 +17,23 @@ const originals=JSON.stringify({weather,place});
 for(const locale of Object.keys(expected)){
  const projected=localizeWeatherSummary(weather,locale);
  assert.deepEqual(Object.values(homeWeatherMetadata(projected,locale)),expected[locale]);
- assert.equal(homeWeatherMetadata({...weather,city:'Seoul'},locale).city,'Seoul');
+ // KIJ2 spec: non-zh locales show the city-table name for the locale; unknown labels stay raw; zh-TW unchanged.
+ assert.equal(homeWeatherMetadata({...weather,city:'Seoul'},locale).city,{'zh-TW':'Seoul',en:'Seoul',ja:'ソウル',ko:'서울'}[locale]);
  assert.equal(homeWeatherMetadata({...weather,city:'Lindefu'},locale).city,expected[locale][0]);
- for (const city of ['高雄市','三民區','大阪市','新宿區','Tokyo','高雄']) {
-  assert.equal(homeWeatherMetadata({...weather,city},locale).city,city);
+ const cityTable={
+  '高雄市':{en:'Kaohsiung',ja:'高雄',ko:'가오슝'},
+  '大阪市':{en:'Osaka',ja:'大阪',ko:'오사카'},
+  'Tokyo':{en:'Tokyo',ja:'東京',ko:'도쿄'},
+  '高雄':{en:'Kaohsiung',ja:'高雄',ko:'가오슝'},
+  '台北市':{en:'Taipei',ja:'台北',ko:'타이베이'},
+  '東京都':{en:'Tokyo',ja:'東京',ko:'도쿄'},
+ };
+ for (const [city,byLocale] of Object.entries(cityTable)) {
+  assert.equal(homeWeatherMetadata({...weather,city},locale).city,locale==='zh-TW'?city:byLocale[locale],`${locale} ${city}`);
+ }
+ // Not in the city table (districts / place-like labels): raw string in every locale.
+ for (const city of ['三民區','新宿區','目前位置咖啡館']) {
+  assert.equal(homeWeatherMetadata({...weather,city},locale).city,city,`${locale} raw ${city}`);
  }
  assert.equal(
   buildDailyPrepAdvice({...weather,city:'Lindefu',isDaytime:false},locale).headline.split(' · ')[0],

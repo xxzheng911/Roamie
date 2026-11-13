@@ -59,7 +59,7 @@ export function resolveDirectionsRegion(countryOrContext?: string | null): strin
   if (/日本|japan|\bjp\b|東京|tokyo|大阪|osaka|京都|kyoto|北海道|沖繩|okinawa|名古屋|橫濱|yokohama|福岡|fukuoka|札幌|sapporo/.test(s)) {
     return "jp";
   }
-  if (/韓國|korea|\bkr\b|首爾|seoul|釜山|busan|濟州|jeju/.test(s)) {
+  if (/韓國|korea|\bkr\b|首爾|seoul|釜山|busan|濟州|jeju|南韓|한국|대한민국|서울|부산|제주|韩国|首尔|韓国|ソウル|プサン/.test(s)) {
     return "kr";
   }
   if (/台灣|臺灣|taiwan|\btw\b|台北|taipei|台中|taichung|高雄|kaohsiung/.test(s)) {

@@ -12,6 +12,8 @@ import { localeToGoogleLanguageCode } from "@/lib/i18n/places-language";
 import { coerceLocale } from "@/lib/i18n/resolve-locale";
 import type { Locale } from "@/lib/i18n/types";
 import { PLACES_REGION } from "@/lib/places-search-config";
+import { isTaiwanCoordinates } from "@/lib/geo-region";
+import { countryCodeForCoordinates } from "@/lib/place-geo-guard";
 import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
 import type { PlaceResult } from "@/lib/place-result";
 import { resolvePlaceDisplayAddress } from "@/lib/place-display-address";
@@ -65,6 +67,22 @@ function parseGoogleError(text: string): string {
   return text.slice(0, 200);
 }
 
+/**
+ * Autocomplete regionCode（只影響排序／格式，不增加請求）：
+ * 沒座標或座標在台灣 → 維持 PLACES_REGION；座標明顯在台灣以外 → 由座標推斷國家碼，
+ * 推不出來就不送，避免把其他國家的同名地點排到台灣。
+ */
+function autocompleteRegionCode(lat?: number, lng?: number): string | undefined {
+  if (lat == null || lng == null || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return PLACES_REGION;
+  }
+  if (lat === 0 && lng === 0) return PLACES_REGION;
+  if (isTaiwanCoordinates(lat, lng)) return PLACES_REGION;
+  const code = countryCodeForCoordinates(lat, lng);
+  if (code === PLACES_REGION) return PLACES_REGION;
+  return code ?? undefined;
+}
+
 export const searchTripStops = createServerFn({ method: "POST" })
   .middleware([allowGuestPublicRead, requireGoogleProviderRate])
   .inputValidator((input) => StopSearchInput.parse(input))
@@ -75,8 +93,9 @@ export const searchTripStops = createServerFn({ method: "POST" })
       const body: Record<string, unknown> = {
         input: data.query.trim(),
         languageCode: localeToGoogleLanguageCode(userLocale),
-        regionCode: PLACES_REGION,
       };
+      const regionCode = autocompleteRegionCode(data.lat, data.lng);
+      if (regionCode) body.regionCode = regionCode;
       if (data.sessionToken) {
         body.sessionToken = data.sessionToken;
       }

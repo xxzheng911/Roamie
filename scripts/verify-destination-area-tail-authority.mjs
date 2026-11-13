@@ -1,3 +1,4 @@
+import "./verify-netguard-full.mjs";
 import assert from 'node:assert/strict';
 import {resolveDestinationAreaScope,extractGenericDestinationAreaCandidate} from '../src/lib/ai/destination-travel-profile.ts';
 import {resolveDestinationFromText} from '../src/lib/ai/trip-planning-context.ts';

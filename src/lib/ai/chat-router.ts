@@ -82,6 +82,10 @@ function buildClarifyQuestion(
     return buildDestinationPlanningClarify(ctx, session, key);
   }
 
+  if (isDestinationPlanning) {
+    return buildDestinationPlanningClarify(ctx, session, key, locale);
+  }
+
   if (locale !== "zh-TW") {
     return chatRuntimeCopy(`clarify_${key}`, locale);
   }
@@ -89,7 +93,7 @@ function buildClarifyQuestion(
   if (key === "destination" && isNearbyPlaceIntent(intent)) {
     if (intent === "restaurant") return "你在哪個城市呢？我幫你找附近適合聚餐的餐廳。";
     if (intent === "cafe") return "你在哪個城市呢？我幫你找附近的咖啡廳。";
-    if (intent === "camping") return buildCampingIntroReply(ctx, session);
+    if (intent === "camping") return buildCampingIntroReply(ctx, session, locale);
     return "你在哪個城市呢？我幫你找附近的景點。";
   }
 
@@ -197,7 +201,7 @@ export function resolveChatRoute(
     return {
       mode: "advice",
       chatPhase: "discover",
-      question: buildCampingIntroReply(ctx, session),
+      question: buildCampingIntroReply(ctx, session, locale),
       contextPatch: {
         activity: "camping",
         tripPurpose: "recommend_places",

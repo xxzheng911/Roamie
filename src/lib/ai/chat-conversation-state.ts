@@ -5,6 +5,7 @@ import type { PendingQuestion, PendingQuestionType } from "@/lib/ai/destination-
 import type { TripInterest } from "@/lib/ai/trip-preference";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { resolveInferredTripDays } from "@/lib/ai/ai-trip-style";
+import { planningContextCopy } from "@/lib/i18n/planning-context-copy";
 
 /** What the system expects the user to answer next. */
 export type ExpectedAnswerType =
@@ -183,7 +184,15 @@ export function shouldSkipAskingPreference(ctx: CanonicalTravelContext): boolean
 }
 
 const REGION_CHOICE_PROMPT_RE =
-  /(?:你(?:比較)?想去哪個城市(?:或地區)?|你想選哪個地區|以下城市[／/]地區你比較有興趣哪一個|可以先從這幾個城市[／/]地區考慮)/;
+  new RegExp(
+    [
+      "你(?:比較)?想去哪個城市(?:或地區)?|你想選哪個地區|以下城市[／/]地區你比較有興趣哪一個|可以先從這幾個城市[／/]地區考慮",
+      // en / ja / ko country replies ask the same question through planningContextCopy.cityQuestion.
+      ...(["en", "ja", "ko"] as const).map((l) =>
+        planningContextCopy[l].cityQuestion.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+      ),
+    ].join("|"),
+  );
 const REGION_CHOICE_LIST_PREFIX_RE =
   /^(?:[•・●▪◦*-]|\d{1,2}\s*[.．、)])\s*/u;
 const REGION_CHOICE_NON_OPTION_RE =

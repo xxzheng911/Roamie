@@ -1,3 +1,4 @@
+import "./verify-netguard-full.mjs";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -169,7 +170,9 @@ for (const value of ["1", "true", true, 1]) {
       userId: "free-bootstrap",
       email: null,
       hasPlusAccess: false,
-      client: { rpc: async (name) => { calls.push(name); return { data: { ok: true, ledger_id: "ledger" }, error: null }; } },
+      // Server credit RPCs use the service-role client (auth.creditsClient), never the user JWT client.
+      client: {},
+      creditsClient: { rpc: async (name) => { calls.push(name); return { data: { ok: true, ledger_id: "ledger" }, error: null }; } },
     },
     "PLACE_RECOMMENDATION",
     "chat",
@@ -185,7 +188,8 @@ for (const value of ["1", "true", true, 1]) {
           userId: "free-enforced",
           email: null,
           hasPlusAccess: false,
-          client: { rpc: async (name) => { calls.push(name); return { data: { ok: true }, error: null }; } },
+          client: {},
+          creditsClient: { rpc: async (name) => { calls.push(name); return { data: { ok: true }, error: null }; } },
         },
         "PLACE_RECOMMENDATION",
         "chat",

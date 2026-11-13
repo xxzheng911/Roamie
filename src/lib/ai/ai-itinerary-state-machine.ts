@@ -12,9 +12,14 @@ import type { GeocodeDestinationFn } from "@/lib/ai/destination-geocode";
 import type { PlaceSearchFn } from "@/lib/ai/chat-place-recommendation";
 import type { WeatherSummary } from "@/lib/weather-types";
 import {
+  COMBINATION_MAPPING_FAILED_MESSAGE,
+  SINGLE_COMBINATION_MAPPING_FAILED_MESSAGE,
   prepareDirectItinerarySession,
   type ItineraryPlaceFailure,
 } from "@/lib/ai/itinerary-place-fetch";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import { MAX_ITINERARY_DAYS } from "@/lib/ai/itinerary-days";
 import {
   buildFallbackItineraryFromPlaces,
   coalesceItineraryItems,
@@ -25,6 +30,8 @@ import {
   isGenerateItineraryFailure,
   missingGenerateItineraryResultFields,
   ITINERARY_GENERATION_FAILED_MESSAGE,
+  ITINERARY_PARTIAL_FAILURE_MESSAGE,
+  INVALID_TRIP_DURATION_MESSAGE,
   INVALID_TRIP_DURATION_ERROR_CODE,
   invalidItineraryDurationFailure,
   itineraryFailureUserMessage,
@@ -105,6 +112,57 @@ export type AiItineraryState =
 export const AI_ITINERARY_FAILED_OFFER_MESSAGE = "行程建立失敗，是否改成列出必去景點？";
 
 export const AI_ITINERARY_SUCCESS_REDIRECT_MESSAGE = "行程已建立，正在帶你前往";
+
+/** zh-TW failure messages (internal values, unchanged) → chatRuntime copy key for display. */
+// Built lazily so imported message constants are never read during module evaluation.
+const itineraryFailureCopyKeys = (): ReadonlyArray<readonly [string, string]> => [
+  ["我還需要知道目的地和天數，才能幫你排完整行程。", "itineraryNeedDestinationDays"],
+  [
+    "我還需要你確認想用哪些組合，才能幫你生成行程。回覆組合編號，或回「都不錯」全選。",
+    "combinationSelectionNudge",
+  ],
+  ["部分已選地點目前無法確認地圖身分，請重新整理候選後再選一次。", "itineraryPlaceIdentityUnavailable"],
+  [INSUFFICIENT_ITINERARY_PLACES_MESSAGE, "itineraryInsufficientPlaces"],
+  ["目前正在取得景點資訊，請稍後重新生成。", "itineraryPlacesLoading"],
+  [COMBINATION_MAPPING_FAILED_MESSAGE, "itineraryCombinationShortage"],
+  [SINGLE_COMBINATION_MAPPING_FAILED_MESSAGE, "itinerarySingleCombinationShortage"],
+  [ITINERARY_GENERATION_FAILED_MESSAGE, "itineraryFailedGeneric"],
+  [ITINERARY_PARTIAL_FAILURE_MESSAGE, "itineraryFailedOfferMustVisit"],
+  [AI_ITINERARY_FAILED_OFFER_MESSAGE, "itineraryFailedOfferMustVisit"],
+  [ITINERARY_VALIDATOR_BLOCKED_USER_MESSAGE, "itineraryValidatorBlocked"],
+  [INSUFFICIENT_CREDITS_ITINERARY_MESSAGE, "itineraryQuotaInsufficient"],
+  [INVALID_TRIP_DURATION_MESSAGE, "itineraryDurationTooLong"],
+];
+
+const ITINERARY_FAILURE_SUFFIX_KEYS: ReadonlyArray<readonly [string, string]> = [
+  ["\n\n點選「重新生成」可沿用目前目的地與選擇再試一次。", "itineraryRetrySelectionHint"],
+  ["\n\n點選「重新生成」可沿用目前目的地與日期再試一次。", "retryHint"],
+];
+
+/**
+ * Display-only projection of an itinerary failure message into the App locale.
+ * zh-TW returns the message unchanged; internal message values are never rewritten.
+ */
+export function localizeItineraryFailureMessage(
+  message: string,
+  locale: Locale = effectiveAppLocale(),
+): string {
+  if (locale === "zh-TW" || !message) return message;
+  let body = message;
+  let suffix = "";
+  for (const [zh, key] of ITINERARY_FAILURE_SUFFIX_KEYS) {
+    if (body.endsWith(zh)) {
+      body = body.slice(0, -zh.length);
+      suffix = `\n\n${chatRuntimeCopy(key, locale)}`;
+      break;
+    }
+  }
+  const hit = itineraryFailureCopyKeys().find(([zh]) => zh === body);
+  if (hit) return `${chatRuntimeCopy(hit[1], locale, { days: MAX_ITINERARY_DAYS })}${suffix}`;
+  const chineseOnly =
+    /[一-鿿]/.test(body) && !(locale === "ja" && /[぀-ヿ]/.test(body));
+  return `${chineseOnly ? chatRuntimeCopy("itineraryFailedGeneric", locale) : body}${suffix}`;
+}
 
 export function logAiState(state: AiItineraryState, detail?: string): void {
   logAiPipeline("[AI_STATE]", `state=${state}`, detail ? `detail=${detail}` : "");

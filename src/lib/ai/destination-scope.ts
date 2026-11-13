@@ -199,6 +199,8 @@ export function evaluateDestinationScopeGate(params: {
   destinationType?: DestinationEntityType | string | null;
   countryCode?: string | null;
   requestedIntent?: string | null;
+  /** Provider 已驗證的中心點（不新增 geocode）；名稱推論 unknown／僅因「州」結尾判成 province 時放行為 city。 */
+  trustedCenter?: { lat: number; lng: number } | null;
 }): DestinationScopeGate {
   const destination = params.destination?.trim()
     ? normalizeDestinationLabel(params.destination)
@@ -225,15 +227,23 @@ export function evaluateDestinationScopeGate(params: {
         destinationType === "unknown" ? entity?.type : (destinationType as DestinationEntityType),
       );
   const requiresDestinationRefinement = countryLevel;
+  // 「道／省／縣」結尾不放行（京畿道、慶尚北道）；registry 無 province，province 只會來自名稱推論。
+  const trustedCity =
+    Boolean(destination && params.trustedCenter) &&
+    !countryLevel &&
+    (entity?.type === "unknown" ||
+      (entity?.type === "province" && /州$/.test(destination) && !/(省|道|縣|县)$/.test(destination)));
   const placesCallAllowed =
-    Boolean(destination) && !requiresDestinationRefinement && canDiscoverDestinationPlaces(destination);
+    Boolean(destination) &&
+    !requiresDestinationRefinement &&
+    (trustedCity || canDiscoverDestinationPlaces(destination));
   const placesCallBlocked = Boolean(destination) && !placesCallAllowed;
 
   return {
     destination: destination || "none",
-    destinationType,
+    destinationType: trustedCity ? "city" : destinationType,
     countryCode: params.countryCode?.trim() || entity?.country || undefined,
-    scopePrecision,
+    scopePrecision: trustedCity ? "city" : scopePrecision,
     requestedIntent: params.requestedIntent ?? undefined,
     placesCallBlocked,
     reason: placesCallBlocked ? "country_scope_requires_refinement" : undefined,

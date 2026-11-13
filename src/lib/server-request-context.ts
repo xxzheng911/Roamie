@@ -17,6 +17,21 @@ export function createRoamieServerRequestContext(
   return { cloudflareEnv, executionCtx };
 }
 
+/**
+ * Keeps a promise alive past the response / client disconnect (Workers
+ * ctx.waitUntil). No-op when no execution context is available (tests, dev).
+ */
+export function waitUntilFromContext(context: unknown, promise: Promise<unknown>): void {
+  const executionCtx = (context as Partial<RoamieServerRequestContext> | null | undefined)
+    ?.executionCtx;
+  if (typeof executionCtx?.waitUntil !== "function") return;
+  try {
+    executionCtx.waitUntil(promise.catch(() => undefined));
+  } catch {
+    // waitUntil unavailable after the request ended: the promise still runs.
+  }
+}
+
 declare module "@tanstack/react-router" {
   interface Register {
     server: {

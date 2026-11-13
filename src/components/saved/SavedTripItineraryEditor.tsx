@@ -70,6 +70,7 @@ import {
   isJapanTransitMapsLeg,
   openJapanTransitLegInGoogleMaps,
 } from "@/lib/saved-trip/japan-transit-maps";
+import { koreaNaverModeForLeg, openKoreaLegInNaverMap } from "@/lib/saved-trip/korea-route-maps";
 import {
   applyGlobalTransportLabel,
   isDayTransitTransport,
@@ -812,11 +813,26 @@ export function SavedTripItineraryEditor({
           tripTitle,
         },
         locale,
-        { previousItem },
+        {
+          previousItem,
+          destination: {
+            city: initial.destinationLocation?.city || initial.destination || null,
+            country: initial.destinationLocation?.country || null,
+          },
+        },
       );
       void navigate(navigateOptions);
     },
-    [addMenuDayIndex, dayGroups, navigate, safeDayIndex, stored.id, tripTitle],
+    [
+      addMenuDayIndex,
+      dayGroups,
+      navigate,
+      safeDayIndex,
+      stored.id,
+      tripTitle,
+      initial.destination,
+      initial.destinationLocation,
+    ],
   );
 
   const workspaceRenderContext = useMemo<TripWorkspaceRenderContext>(
@@ -1608,7 +1624,7 @@ export function SavedTripItineraryEditor({
         }
         openTripCoverEditor(file);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : "無法開啟裁切編輯器";
+        const msg = e instanceof Error ? e.message : uiT("nativeQa.coverCropOpenFailed");
         console.info("[COVER_UPLOAD_ERROR]", msg);
         toast.error(msg);
       }
@@ -1696,7 +1712,7 @@ export function SavedTripItineraryEditor({
         safeCoverState(() => closeTripCoverEditor());
         toast.success(uiT("productionUi.pebdf4b6990"));
       } catch (e) {
-        const msg = e instanceof Error ? e.message : "封面上傳失敗";
+        const msg = e instanceof Error ? e.message : uiT("nativeQa.coverUploadFailedShort");
         console.info("[COVER_UPLOAD_ERROR]", msg);
         toast.error(uiT("productionUi.pcf42e39fd0", { v0: (msg) }));
       } finally {
@@ -1764,9 +1780,7 @@ export function SavedTripItineraryEditor({
         resolved.end,
       );
       if (overflow > 0) {
-        const ok = confirm(
-          `縮短行程後，將有 ${overflow} 個地點移到「未安排」。地點不會被刪除，是否繼續？`,
-        );
+        const ok = confirm(uiT("nativeQa.shortenTripConfirm", { count: overflow }));
         if (!ok) return;
       }
 
@@ -2073,6 +2087,15 @@ export function SavedTripItineraryEditor({
                     item.lat != null &&
                     item.lng != null &&
                     isJapanTransitMapsLeg(transit, preferenceTransport);
+                  const koreaNaverMode =
+                    !showJapanTransitMaps &&
+                    prev != null &&
+                    prev.lat != null &&
+                    prev.lng != null &&
+                    item.lat != null &&
+                    item.lng != null
+                      ? koreaNaverModeForLeg(directionsRegion, transit, preferenceTransport)
+                      : null;
 
                   return (
                     <div key={`${activeDay.dateKey}-${legKey}-${i}`}>
@@ -2095,8 +2118,18 @@ export function SavedTripItineraryEditor({
                                     { lat: prev!.lat!, lng: prev!.lng! },
                                     { lat: item.lat!, lng: item.lng! },
                                   )
-                              : null
+                              : koreaNaverMode
+                                ? () =>
+                                    openKoreaLegInNaverMap(
+                                      { lat: prev!.lat!, lng: prev!.lng! },
+                                      prev!.placeName || prev!.title,
+                                      { lat: item.lat!, lng: item.lng! },
+                                      item.placeName || item.title,
+                                      koreaNaverMode,
+                                    )
+                                : null
                           }
+                          openMapsLabel={koreaNaverMode ? uiT("nativeQa.routeNaver") : undefined}
                           onTransportChange={(label) => {
                             applyTransportModeChange(label, "leg", {
                               dateKey: activeDay.dateKey,

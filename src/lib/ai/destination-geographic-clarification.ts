@@ -2,6 +2,7 @@ import type { ChatPlaceCategoryIntent } from "@/lib/ai/chat-place-category-types
 import { isTravelPlanningText } from "@/lib/ai/chat-intent-router";
 import { analyzeContinueRecommendationStructure } from "@/lib/ai/continue-recommendation-intent";
 import { resolveDestinationAlias } from "@/lib/ai/destination-alias-resolver";
+import { parseChatPlaceIntents } from "@/lib/ai/chat-place-intent";
 import {
   classifyDestinationSwitchTurn,
   isDestinationSelectionText,
@@ -48,6 +49,11 @@ type PendingGeographicClarificationFields = {
   previousConfirmedDestination?: string;
   /** destination_switch only: confirmation rounds used (integer 0–2, never decreases). */
   confirmationAttempts?: number;
+  /**
+   * destination_area "which city?" for a category wish only: the wish's category words
+   * (categorySwitchSearchText:「海邊」「溫泉」"museum"「박물관」) for the city-only answer continuation.
+   */
+  categorySearchWord?: string;
 };
 
 /**
@@ -231,7 +237,10 @@ export function buildPendingGeographicClarification(params: {
   rawGeographicLabel: string;
   categoryIntent: ChatPlaceCategoryIntent;
   originalUserText: string;
+  /** "Which city?" for a category wish only (see PendingGeographicClarificationFields). */
+  categorySearchWord?: string;
 }): PendingGeographicClarification {
+  const categorySearchWord = params.categorySearchWord?.trim();
   return {
     kind: "destination_area",
     rawGeographicLabel: params.rawGeographicLabel,
@@ -239,7 +248,32 @@ export function buildPendingGeographicClarification(params: {
     categoryIntent: params.categoryIntent,
     originatingRoute: "destination_category",
     originalUserText: params.originalUserText,
+    ...(categorySearchWord ? { categorySearchWord } : {}),
   };
+}
+
+const CJK_EDGE_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}ー]/u;
+
+/**
+ * City-only answer continuation only:「東京」+「海邊」→「東京海邊」,「東京」+「박물관」→「東京 박물관」,
+ * 「東京」+ "beach" →「東京 beach」. Undefined when the pending stored no category words.
+ */
+export function buildCityCategoryContinuationText(
+  pending: PendingGeographicClarification,
+  answeredCity: string,
+): string | undefined {
+  const word = pending.categorySearchWord?.trim();
+  const city = answeredCity.trim();
+  if (!word || !city) return undefined;
+  // 「我想去咖啡廳」「我想去夜市」「我想去購物」: a non-attraction wish that already parses to the stored
+  // intent keeps the wish text (same queries as the wish on a trip with that destination).
+  const wish = pending.originalUserText?.trim();
+  if (wish && pending.categoryIntent !== "attraction") {
+    const wishIntents = parseChatPlaceIntents(wish);
+    if (wishIntents.length === 1 && wishIntents[0] === pending.categoryIntent) return undefined;
+  }
+  const joined = CJK_EDGE_RE.test(city.slice(-1)) && CJK_EDGE_RE.test(word.charAt(0));
+  return joined ? `${city}${word}` : `${city} ${word}`;
 }
 
 // ─────────────── destination_switch (more_places) ───────────────

@@ -1,3 +1,4 @@
+import "./verify-netguard-full.mjs";
 import assert from "node:assert/strict";
 import { build } from "esbuild";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
@@ -201,12 +202,24 @@ const result = await build({
   external: ["node:async_hooks", "cloudflare:workers"],
 });
 
+// Netguard cannot see workerd's own sockets, so the bundle itself must not reach for raw TCP.
+// Any use of `connect()` from sockets requires importing the `cloudflare:sockets` module
+// (static or dynamic), so the module specifier is the precise marker; a bare `connect(` match
+// would hit unrelated code.
+assert.doesNotMatch(
+  result.outputFiles[0].text,
+  /cloudflare:sockets/,
+  "worker bundle must not import cloudflare:sockets (raw TCP connect bypasses outboundService)",
+);
+
 let outbound = 0;
 const worker = new Miniflare(
   convertV4MiniflareOptions({
     modules: true,
     compatibilityDate: "2025-09-24",
     compatibilityFlags: ["nodejs_compat"],
+    // Use Miniflare's built-in fallback cf object; never fetch workers.cloudflare.com/cf.json.
+    cf: false,
     script: result.outputFiles[0].text,
     durableObjects: { ABUSE_GUARD: { className: "AbuseGuard", useSQLite: true } },
     ratelimits: {

@@ -1,5 +1,6 @@
 import { resolveSuggestedTripDates } from "./resolve-suggested-trip-dates";
 import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import { applyEnglishPlaceArticles } from "@/lib/i18n/en-place-articles";
 import { displayDestinationForCopy } from "@/lib/ai/destination-locale-aliases";
 import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
 import type { Locale } from "@/lib/i18n/types";
@@ -390,17 +391,68 @@ export function pendingQuestionForAskTripStyle(
   });
 }
 
+const TRIP_STYLE_SHORT_LABEL_I18N: Record<Exclude<Locale, "zh-TW">, Record<TripStyleKey, string>> = {
+  en: {
+    classic_landmarks: "Classic landmarks",
+    local_life: "Local life",
+    slow_nature: "Slow-paced strolls",
+    mixed: "Roamie mix",
+  },
+  ja: {
+    classic_landmarks: "定番ランドマーク",
+    local_life: "ローカル体験",
+    slow_nature: "のんびり散策",
+    mixed: "Roamieおまかせミックス",
+  },
+  ko: {
+    classic_landmarks: "대표 랜드마크",
+    local_life: "현지 생활 체험",
+    slow_nature: "느긋한 산책",
+    mixed: "Roamie 믹스 추천",
+  },
+};
+
+/** en / ja / ko "noted N days for X" line; zh keeps the original copy at the call site. */
+function tripStyleNotedLine(
+  label: string,
+  days: number,
+  locale: Exclude<Locale, "zh-TW">,
+  userText?: string,
+): string {
+  const shown =
+    label === "這趟"
+      ? chatRuntimeCopy("tripFallback", locale)
+      : displayDestinationForCopy(label, userText, locale);
+  return applyEnglishPlaceArticles({
+    en: `Okay, I've noted ${days} days in ${shown}.`,
+    ja: `了解です。${shown}${days}日間の旅として進めますね。`,
+    ko: `좋아요, ${shown} ${days}일 일정으로 기억해 둘게요.`,
+  }[locale], locale);
+}
+
 export function buildAskTripStyleReply(
   ctx: CanonicalTravelContext,
   session?: ChatPlanningSession,
   userText?: string,
+  locale?: Locale,
 ): string {
   // Legacy 1~4 style options removed — redirect callers toward combination copy.
   const destination = resolveConversationDestination(ctx, session) ?? "這趟";
   const days = resolveConfirmedDays(ctx, session, userText);
   const label = normalizeDestinationLabel(destination);
+  const resolvedLocale = locale ?? effectiveAppLocale();
   if (!days) {
-    return buildAskTripDurationReply(ctx, session);
+    return buildAskTripDurationReply(ctx, session, resolvedLocale);
+  }
+  if (resolvedLocale !== "zh-TW") {
+    return [
+      tripStyleNotedLine(label, days, resolvedLocale, userText),
+      {
+        en: "Next, I'll suggest a few trip combinations for this destination; just reply with the one you like.",
+        ja: "次に目的地に合わせた旅の組み合わせをいくつか提案するので、気になるものを返信してください。",
+        ko: "이어서 목적지에 맞는 여행 조합을 몇 가지 추천해 드릴게요. 마음에 드는 조합으로 답해 주세요.",
+      }[resolvedLocale],
+    ].join("\n");
   }
   return [
     `好，我先記下 ${label} ${days} 天的行程方向。`,
@@ -412,6 +464,7 @@ export function buildTripStyleSelectionAdviceResult(
   style: TripStyleKey,
   ctx: CanonicalTravelContext,
   session?: ChatPlanningSession,
+  locale?: Locale,
 ): {
   reply: string;
   triggerPlaceRecommendations: true;
@@ -421,8 +474,22 @@ export function buildTripStyleSelectionAdviceResult(
   const label = normalizeDestinationLabel(destination);
   const days = resolveConfirmedDays(ctx, session) ?? ctx.days;
   logAiTripStyleSelected(style);
+  const resolvedLocale = locale ?? effectiveAppLocale();
+  let reply = `好的，我會依「${tripStyleLabel(style)}」幫你安排 ${label}${days ? ` ${days} 天` : ""}行程。`;
+  if (resolvedLocale !== "zh-TW") {
+    const shown =
+      label === "這趟"
+        ? chatRuntimeCopy("tripFallback", resolvedLocale)
+        : displayDestinationForCopy(label, undefined, resolvedLocale);
+    const styleShown = TRIP_STYLE_SHORT_LABEL_I18N[resolvedLocale][style];
+    reply = {
+      en: `Got it. I'll plan ${shown}${days ? ` for ${days} days` : ""} around "${styleShown}".`,
+      ja: `わかりました。「${styleShown}」を軸に${shown}${days ? `${days}日間` : ""}の旅程を組みますね。`,
+      ko: `알겠어요. "${styleShown}" 스타일로 ${shown}${days ? ` ${days}일` : ""} 일정을 짜 드릴게요.`,
+    }[resolvedLocale];
+  }
   return {
-    reply: `好的，我會依「${tripStyleLabel(style)}」幫你安排 ${label}${days ? ` ${days} 天` : ""}行程。`,
+    reply,
     triggerPlaceRecommendations: true,
     contextPatch: {
       destination: label,
@@ -443,12 +510,14 @@ export function buildAskTripStyleAdviceResult(
   ctx: CanonicalTravelContext,
   session?: ChatPlanningSession,
   userText?: string,
+  locale?: Locale,
 ): {
   reply: string;
   pendingQuestion: PendingQuestion;
   contextPatch: Partial<CanonicalTravelContext>;
   planningShownCandidates?: PlanningShownCandidate[];
 } {
+  const resolvedLocale = locale ?? effectiveAppLocale();
   // Legacy style selection retired — upgrade to New Trip Conversation combinations.
   const destination = resolveConversationDestination(ctx, session)!;
   const days = resolveConfirmedDays(ctx, session, userText) ?? ctx.days ?? 3;
@@ -461,9 +530,13 @@ export function buildAskTripStyleAdviceResult(
   const suggestion = buildDestinationCombinationSuggestionPayload(label, days, {
     startDate: hasExactDate ? ctx.startDate : undefined,
     endDate: hasExactDate ? ctx.endDate : undefined,
-    weatherLine: `好，我先記下 ${label} ${days} 天的行程方向。`,
+    locale: resolvedLocale,
+    weatherLine:
+      resolvedLocale === "zh-TW"
+        ? `好，我先記下 ${label} ${days} 天的行程方向。`
+        : tripStyleNotedLine(label, days, resolvedLocale, userText),
   });
-  const reply = suggestion?.displayText ?? buildAskTripStyleReply(ctx, session, userText);
+  const reply = suggestion?.displayText ?? buildAskTripStyleReply(ctx, session, userText, resolvedLocale);
 
   const comboOptions = pendingOptionTitlesForCombinations(label);
   return {
@@ -534,6 +607,37 @@ export function parseAskTripStyleSelection(text: string): TripStyleKey | null {
 
 export function tripStyleLabel(style: TripStyleKey): string {
   return TRIP_STYLE_OPTIONS.find((option) => option.key === style)?.shortLabel ?? style;
+}
+
+/** Display-only style label; zh keeps tripStyleLabel. */
+export function tripStyleLabelForLocale(style: TripStyleKey, locale: Locale): string {
+  if (locale === "zh-TW") return tripStyleLabel(style);
+  return TRIP_STYLE_SHORT_LABEL_I18N[locale][style] ?? style;
+}
+
+/** en / ja / ko day-plan header; zh keeps the original copy at the call site. */
+export function dayPlanSummaryHeaderForLocale(
+  label: string,
+  days: number,
+  style: TripStyleKey,
+  locale: Exclude<Locale, "zh-TW">,
+): string {
+  const shown = displayDestinationForCopy(label, undefined, locale);
+  const styleShown = tripStyleLabelForLocale(style, locale);
+  return {
+    en: `${shown} ${days}-day plan (${styleShown}):`,
+    ja: `${shown}${days}日間のおすすめ（${styleShown}）：`,
+    ko: `${shown} ${days}일 추천 (${styleShown}):`,
+  }[locale];
+}
+
+/** en / ja / ko closing line for day-plan summaries. */
+export function dayPlanSummaryAddHintForLocale(locale: Exclude<Locale, "zh-TW">): string {
+  return {
+    en: "If you'd like to add these to your trip, tell me to add them all or pick the ones you want most.",
+    ja: "旅程に加えたい場合は、すべて追加するか、行きたいスポットをいくつか選んで教えてください。",
+    ko: "일정에 넣고 싶다면 전부 추가하거나 가장 가고 싶은 곳을 몇 군데 골라 알려 주세요.",
+  }[locale];
 }
 
 /** 推薦卡片標籤用（與行程風格選項對應） */
@@ -670,8 +774,23 @@ export function buildDayPlanSummaryFromBuckets(
   days: number,
   style: TripStyleKey,
   buckets: DayPlanBucket[],
+  locale: Locale = effectiveAppLocale(),
 ): string {
   const label = normalizeDestinationLabel(destination);
+  if (locale !== "zh-TW") {
+    const out: string[] = [dayPlanSummaryHeaderForLocale(label, days, style, locale), ""];
+    const colon = locale === "ja" ? "：" : ":";
+    for (const bucket of buckets) {
+      if (!bucket.names.length) continue;
+      out.push(`Day ${bucket.day}${colon}`);
+      for (const name of bucket.names) {
+        out.push(`- ${name}`);
+      }
+      if (bucket.day < days) out.push("");
+    }
+    out.push("", dayPlanSummaryAddHintForLocale(locale));
+    return out.join("\n");
+  }
   const styleLabel = tripStyleLabel(style);
   const lines: string[] = [
     `${label} ${days} 天推薦（${styleLabel}）：`,

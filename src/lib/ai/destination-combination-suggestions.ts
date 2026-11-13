@@ -1,5 +1,6 @@
 import { hasDeliverableCombinationCount, hasDeliverablePlaceIdentity } from "./combination-deliverability";
 import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import { EXTRA_DAYS_PHRASE_RE } from "@/lib/parse-chinese-duration";
 import { displayDestinationForCopy } from "./destination-locale-aliases";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import { normalizeRecommendationItem } from "@/lib/ai/types";
@@ -636,9 +637,29 @@ function formatTravelDateRangeLine(
   const end = formatDisplayDate(endDate);
   const labels = {"zh-TW":["旅行日期","暫定旅行日期"],en:["Travel dates","Tentative travel dates"],ja:["旅行日程","仮の旅行日程"],ko:["여행 날짜","잠정 여행 날짜"]};
   const prefix = labels[locale][tentative ? 1 : 0];
-  if (start && end) return `${prefix}：${start}～${end}`;
-  if (start) return `${prefix}：${start}`;
+  const punct = combinationPunctuation(locale);
+  if (start && end) return `${prefix}${punct.label}${start}${punct.range}${end}`;
+  if (start) return `${prefix}${punct.label}${start}`;
   return null;
+}
+
+/** Locale punctuation for combination rows and the date line (zh-TW output unchanged). */
+function combinationPunctuation(locale: import("@/lib/i18n/types").Locale) {
+  if (locale === "zh-TW") return { label: "：", list: "、", range: "～" };
+  if (locale === "ja") return { label: "：", list: "、", range: "〜" };
+  return { label: ": ", list: ", ", range: "–" };
+}
+
+/** "Title: A, B, C" — Latin lists switch to "; " when any name already contains a comma. */
+function formatCombinationRow(
+  title: string,
+  names: string[],
+  locale: import("@/lib/i18n/types").Locale,
+): string {
+  const punct = combinationPunctuation(locale);
+  const list =
+    punct.list === ", " && names.some((name) => /[,，]/.test(name)) ? "; " : punct.list;
+  return `${title}${punct.label}${names.join(list)}`;
 }
 
 export function buildDestinationCombinationSuggestionPayload(
@@ -656,6 +677,8 @@ export function buildDestinationCombinationSuggestionPayload(
      * Theme-category labels are always dropped.
      */
     forceCombinations?: DestinationCombination[];
+    /** User's own wording; display-only fallback for the destination name. */
+    userText?: string;
   },
 ): DestinationCombinationSuggestionPayload | null {
   const label = normalizeDestinationLabel(destination);
@@ -814,19 +837,19 @@ export function buildDestinationCombinationSuggestionPayload(
   });
 
   if (!hasDeliverableCombinationCount(displayedOfferedCombinations)) return null;
-  const shownDestination = displayDestinationForCopy(label,undefined,locale);
+  const shownDestination = displayDestinationForCopy(label,opts?.userText,locale);
   const header = [
     opts?.weatherLine?.trim() || chatRuntimeCopy("directionAckDays",locale,{destination:shownDestination,days}),
     "",
-    locale === "zh-TW" ? `以下是${label}的建議組合搭配，你可以選一組或多組混搭：` : chatRuntimeCopy("combinationNext",locale),
+    locale === "zh-TW" ? `以下是${label}的建議組合搭配，你可以選一組或多組混搭：` : chatRuntimeCopy("combinationListIntro",locale,{destination:shownDestination}),
     "",
     ...displayedOfferedCombinations.map(
       (combo, index) =>
-        `${index + 1}. ${combo.title}：${combo.places.map((place) => place.localizedDisplayName || place.name).join("、")}`,
+        `${index + 1}. ${formatCombinationRow(combo.title, combo.places.map((place) => place.localizedDisplayName || place.name), locale)}`,
     ),
     "",
     ...(dateLine ? [dateLine, ""] : []),
-    ...(locale === "zh-TW" ? ["回覆你比較有興趣的組合，我來幫你生成行程。"] : []),
+    locale === "zh-TW" ? "回覆你比較有興趣的組合，我來幫你生成行程。" : chatRuntimeCopy("combinationListFooter",locale),
   ];
 
   logAiPipeline(
@@ -952,6 +975,8 @@ function parseCombinationRangeValues(text: string): number[] {
 export function parseCombinationSelectionIndices(text: string, combinationCount: number): number[] {
   const t = text.trim();
   if (!t || combinationCount <= 0) return [];
+  // 「一組都不要」: the number names none of them.
+  if (isRejectAllCombinationsReply(t)) return [];
 
   // Explicit "all / let Roamie decide" phrases — not silent fallback.
   if (isUserAllOrAutoCombinationReply(t)) {
@@ -959,13 +984,17 @@ export function parseCombinationSelectionIndices(text: string, combinationCount:
   }
 
   const oneBasedValues: number[] = [];
-  if (COMBINATION_RANGE_SEPARATOR_RE.test(t)) {
-    oneBasedValues.push(...parseCombinationRangeValues(t));
+  // 「改成1月」「1月に変更」「1월로 바꿔」: a month number is never a combination id.
+  // 「もう1日いたい」「多一天」: an extra-day count is never a combination id.
+  const noExtraDays = t.replace(EXTRA_DAYS_PHRASE_RE, " ");
+  const numbers = noExtraDays.replace(/\d{1,2}\s*(?:月|월)/g, " ");
+  if (COMBINATION_RANGE_SEPARATOR_RE.test(numbers)) {
+    oneBasedValues.push(...parseCombinationRangeValues(numbers));
   }
-  for (const match of t.matchAll(/(\d{1,2})/g)) {
+  for (const match of numbers.matchAll(/(\d{1,2})/g)) {
     oneBasedValues.push(Number(match[1]));
   }
-  for (const index of parseOrdinalCombinationIndices(t, combinationCount)) {
+  for (const index of parseOrdinalCombinationIndices(noExtraDays, combinationCount)) {
     oneBasedValues.push(index + 1);
   }
   return [...new Set(oneBasedValues)]
@@ -987,7 +1016,51 @@ export function isSoftAcceptAllCombinationsReply(text: string): boolean {
   return SOFT_ACCEPT_ALL_COMBINATIONS_RE.test(t);
 }
 
+/**
+ * en / ja / ko whole-message "all of them" replies (en: all / all of them / everything;
+ * ja: 全部 / すべて / 全部で; ko: 전부 / 모두 / 다). Only the entire short reply matches —
+ * "all good but change day 2" never does.
+ */
+const LOCALIZED_ALL_COMBINATIONS_RE =
+  /^(?:all|all of them|everything|すべて|全て|全部|全部で|전부|모두|다|전부 다)(?:\s*(?:please|お願いします|요))?$/i;
+
+/**
+ * en / ja / ko whole-message "mix them" replies, same meaning as zh「混搭」(all combinations mixed).
+ * Only the entire short reply matches (light tails such as please / で / 줘 allowed).
+ */
+const LOCALIZED_MIX_COMBINATIONS_RE =
+  /^(?:(?:just\s+)?(?:let['’]?s\s+)?(?:mix|mix them|mix it up|mix them up|mix and match|mix them all|mix all|mix all of them|you decide|either is fine|any is fine)(?:\s*,?\s*please)?|(?:ミックス|混ぜて|おまかせ|お任せ)(?:で|します|して)?(?:\s*(?:お願いします|ください|いいです|大丈夫です))?|(?:섞어|섞어줘|섞어 줘|섞어 주세요|섞어서|섞어서 해줘|섞어서 해 줘|섞어서 해 주세요|믹스|믹스로|믹스해줘|믹스해 줘|알아서|알아서 해|알아서 해줘|알아서 해 줘|알아서 해 주세요)(?:요)?)$/i;
+
+function isLocalizedAllCombinationsReply(text: string): boolean {
+  const t = text
+    .trim()
+    .replace(/[.!。！]+$/u, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (LOCALIZED_ALL_COMBINATIONS_RE.test(t)) return true;
+  return LOCALIZED_MIX_COMBINATIONS_RE.test(t.replace(/[?？~～]+$/u, "").trim());
+}
+
+/**
+ * 「全部都不要」"none of them"「どれもいらない」「다 싫어요」: rejects every shown combination.
+ * Never a select-all (「全部」+「都」would otherwise read as one).
+ */
+const REJECT_ALL_COMBINATIONS_RES: RegExp[] = [
+  /^(?:全部|這些|这些|這幾組|这几组|每組|每组|每個|每个)?都不(?:要|喜歡|喜欢|想要|適合|适合)(?:了|啦|耶|欸|喔)?$/,
+  /^(?:全部|一個|一个|一組|一组)都?不要(?:了|啦)?$/,
+  /^(?:(?:um|hmm|no|sorry)[,\s]+)?(?:none(?:\s+of\s+(?:them|these|those))?|neither(?:\s+of\s+(?:them|these|those))?|i\s+(?:don['’]?t|do\s+not)\s+(?:like|want)\s+(?:any|either|them|these|those)(?:\s+of\s+(?:them|these|those))?)(?:\s*,?\s*(?:thanks|thank\s+you|sorry))?$/i,
+  /^(?:どれも|全部|ぜんぶ|いずれも)(?:いらない|いりません|嫌|イヤ|やだ|好きじゃない|好きではない|微妙)(?:です)?$/,
+  /^(?:다|전부|모두|둘\s*다)\s*(?:싫어|별로|필요\s*없어|안\s*할래)(?:요|예요|에요)?$/,
+];
+
+export function isRejectAllCombinationsReply(text: string): boolean {
+  const t = text.trim().replace(/[.!?。！？~～]+$/u, "").replace(/\s+/g, " ").trim();
+  return Boolean(t) && REJECT_ALL_COMBINATIONS_RES.some((re) => re.test(t));
+}
+
 export function isUserAllOrAutoCombinationReply(text: string): boolean {
+  if (isRejectAllCombinationsReply(text)) return false;
+  if (isLocalizedAllCombinationsReply(text)) return true;
   const t = text.trim().replace(/\s+/g, "");
   if (!t) return false;
   if (USER_ALL_OR_AUTO_COMBINATION_RE.test(t)) return true;

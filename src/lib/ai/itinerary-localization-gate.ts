@@ -15,6 +15,10 @@ import {
   resolvePlaceDisplayName,
   type PlaceNameLocalizationSource,
 } from "@/lib/place-display-name";
+import {
+  foldLatinDiacritics,
+  isKeptGoogleLatinName,
+} from "@/lib/place-localization/canonical-place-translations";
 
 const HAS_CJK_RE = /[\u4e00-\u9fff\u3400-\u4dbf]/;
 
@@ -77,6 +81,22 @@ function orderOf(item: RoamieItineraryItem, fallback: number): number {
   return fallback;
 }
 
+/**
+ * Foreign-script check for a stop name. A zh-TW Google Latin name kept because no
+ * official 繁中 name exists is deliverable: only non-Latin foreign scripts count there
+ * (its diacritics are part of the Google name, not a wrong-language AI name).
+ */
+function isForeignDisplay(
+  display: string,
+  locale: Locale,
+  resolved: { localizedDisplayName?: string | null; localizationSource?: string | null },
+): boolean {
+  if (isKeptGoogleLatinName(resolved, locale)) {
+    return hasForeignLocalScript(foldLatinDiacritics(display), locale);
+  }
+  return hasForeignLocalScript(display, locale) || hasLocalLatinDiacritics(display);
+}
+
 function localizeItem(
   item: RoamieItineraryItem,
   locale: Locale,
@@ -104,8 +124,7 @@ function localizeItem(
 
   const display = resolved.localizedDisplayName.trim();
   const complete = isCompleteLocalizationForLocale(resolved, locale);
-  const foreign =
-    hasForeignLocalScript(display, locale) || hasLocalLatinDiacritics(display);
+  const foreign = isForeignDisplay(display, locale, resolved);
   const mixed =
     HAS_CJK_RE.test(display) &&
     /[A-Za-z]{3,}/.test(display) &&
@@ -193,7 +212,7 @@ export function applyItineraryLocalizationGate(
     traces.push(trace);
 
     const display = trace.localizedDisplayName;
-    if (display && !hasForeignLocalScript(display, locale) && !hasLocalLatinDiacritics(display)) {
+    if (display && !isForeignDisplay(display, locale, { localizedDisplayName: display, localizationSource: trace.localizationSource })) {
       localizedStops += 1;
     }
     if (

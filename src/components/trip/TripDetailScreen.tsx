@@ -33,6 +33,8 @@ import { isLocatedCoordinate } from "@/lib/trip/trip-map-markers";
 import { useWorkspaceSwipe, WORKSPACE_PANE_STYLE } from "@/hooks/use-workspace-swipe";
 import { useDuoLayout } from "@/hooks/use-duo-layout";
 import { getTripWorkspaceCopy } from "@/lib/i18n/trip-workspace-copy";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import { translate } from "@/lib/i18n/translate";
 import {
   readTripWorkspaceScrollTops,
   saveTripWorkspaceScrollTops,
@@ -152,10 +154,16 @@ export function TripDetailScreen({ tripId, navSource, initialDay, initialView, o
   const [members, setMembers] = useState<TripMemberRow[] | null>(null);
   // 切換 tripId：旅伴也在 render 階段同步清空，避免新行程短暫顯示前一個行程的旅伴
   const membersRequestedForRef = useRef<string | null>(null);
+  // 成員查詢失敗（members 會被設成 []，不能當成「只有自己」）；刪除視窗據此視為有其他成員
+  const [membersFailed, setMembersFailed] = useState(false);
+  // 刪除視窗開啟後成員 5 秒仍未查回：視為有其他成員並開放刪除（每次開啟視窗重設）
+  const [deleteMembersTimedOut, setDeleteMembersTimedOut] = useState(false);
   const [membersTripId, setMembersTripId] = useState(tripId);
   if (membersTripId !== tripId) {
     setMembersTripId(tripId);
     setMembers(null);
+    setMembersFailed(false);
+    setDeleteMembersTimedOut(false);
     // 清空後需允許旅伴 effect 重新查詢（否則經非總覽分頁切回原行程時不再載入）
     membersRequestedForRef.current = null;
   }
@@ -272,7 +280,10 @@ export function TripDetailScreen({ tripId, navSource, initialDay, initialView, o
       })
       .catch((e) => {
         console.warn("[TRIP_WORKSPACE] listTripMembers failed", e);
-        if (membersRequestedForRef.current === tripId) setMembers([]);
+        if (membersRequestedForRef.current === tripId) {
+          setMembers([]);
+          setMembersFailed(true);
+        }
       });
   }, [view, hasStored, tripId]);
 
@@ -311,7 +322,7 @@ export function TripDetailScreen({ tripId, navSource, initialDay, initialView, o
     setRemoved(false);
     setIsOwner(null);
     // 冷啟動（無記憶體快取）：本機行程列表快照記錄此行程為「共享給我」（非擁有）→ 曾是成員。
-    // 讀不到行程且已非成員時視同被移除；自己擁有的行程讀不到（已刪除）仍顯示「找不到這個行程」。
+    // 讀不到行程且已非成員時視同被移除；自己擁有的行程讀不到（已刪除）仍顯示 not-found 錯誤（productionUi.pb93438d9d6）。
     const wasSharedMember =
       !hadCachedTrip && readSavedTripsSnapshot().some((t) => t.id === tripId && !t.isOwner);
     // 被移除的成員：曾讀到此行程（記憶體快取／列表快照）但這次讀取被權限擋下 → 清快取、提示並回行程列表
@@ -329,7 +340,8 @@ export function TripDetailScreen({ tripId, navSource, initialDay, initialView, o
           return;
         }
         if (!row) {
-          setError("找不到這個行程");
+          // Same device-locale source as getTripWorkspaceCopy() above; keeps this effect's deps unchanged.
+          setError(translate(effectiveAppLocale(), "productionUi.pb93438d9d6"));
           setStored(null);
           tripDetailMemoryCache.delete(tripId);
           return;
@@ -347,7 +359,7 @@ export function TripDetailScreen({ tripId, navSource, initialDay, initialView, o
           leaveRemovedTrip();
           return;
         }
-        setError(e instanceof Error ? e.message : "讀取失敗");
+        setError(e instanceof Error ? e.message : translate(effectiveAppLocale(), "saved.loadFailed"));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -404,6 +416,38 @@ export function TripDetailScreen({ tripId, navSource, initialDay, initialView, o
     }
   };
 
+  // 刪除確認視窗需知道是否有其他成員：旅伴已載入（總覽）就沿用；尚未查詢過才補查一次，結果與總覽共用（ref 守門不重複查）
+  const openDeleteDialog = () => {
+    setDeleteMembersTimedOut(false);
+    setDeleteOpen(true);
+    if (membersRequestedForRef.current === tripId) return;
+    membersRequestedForRef.current = tripId;
+    listTripMembers(tripId)
+      .then((rows) => {
+        if (membersRequestedForRef.current === tripId) setMembers(rows);
+      })
+      .catch((e) => {
+        console.warn("[TRIP_WORKSPACE] listTripMembers failed", e);
+        if (membersRequestedForRef.current === tripId) {
+          setMembers([]);
+          setMembersFailed(true);
+        }
+      });
+  };
+  // 視窗開著且成員未查回：5 秒後視為有其他成員；關閉視窗、成員查回或卸載時清除計時器
+  const membersPending = members === null;
+  useEffect(() => {
+    if (!deleteOpen || !membersPending) return;
+    const timer = window.setTimeout(() => setDeleteMembersTimedOut(true), 5000);
+    return () => window.clearTimeout(timer);
+  }, [deleteOpen, membersPending, tripId]);
+  // 逾時後即固定為「有其他成員」直到視窗關閉：晚到的結果不會讓已顯示的提醒消失
+  const hasOtherMembers =
+    membersFailed ||
+    deleteMembersTimedOut ||
+    (members ?? []).some((m) => !m.is_owner && m.status === "accepted");
+  const deleteConfirmDisabled = deleteOpen && membersPending && !deleteMembersTimedOut;
+
   if (loading || removed) {
     return (
       <div className="flex flex-1 items-center justify-center py-24">
@@ -442,7 +486,7 @@ export function TripDetailScreen({ tripId, navSource, initialDay, initialView, o
       {isOwner ? (
         <button
           type="button"
-          onClick={() => setDeleteOpen(true)}
+          onClick={openDeleteDialog}
           className="flex h-9 w-9 items-center justify-center rounded-full bg-background/80 text-muted-foreground backdrop-blur"
           aria-label={uiT("productionUi.p045efb886f")}
         >
@@ -558,7 +602,8 @@ export function TripDetailScreen({ tripId, navSource, initialDay, initialView, o
         onOpenChange={setDeleteOpen}
         onConfirm={handleDelete}
         confirming={deleting}
-        {...deleteTripDialogLabels(locale)}
+        confirmDisabled={deleteConfirmDisabled}
+        {...deleteTripDialogLabels(locale, { hasOtherMembers })}
       />
     </div>
   );

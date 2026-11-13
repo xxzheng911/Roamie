@@ -20,6 +20,7 @@ import {
 } from "@/lib/ai/continue-recommendation-intent";
 import {
   isNonGeographicActivityTail,
+  isNonPlaceDestinationText,
   splitTrailingActivityTail,
 } from "@/lib/ai/trip-planning-context";
 
@@ -40,8 +41,9 @@ function preferredAreaFromMatch(c: string): string | undefined {
   }
   const split = splitTrailingActivityTail(c);
   if (split.kind === "activity_only" || split.kind === "invalid_head") return undefined;
-  if (split.kind === "split") return split.head;
-  return c;
+  const label = split.kind === "split" ? split.head : c;
+  // 「我要去休息」: a non-place (activity / time word / switch residue) is never a preferredArea.
+  return isNonPlaceDestinationText(label) ? undefined : label;
 }
 
 /** 使用者想繼續探索、調整推薦方向 */

@@ -132,7 +132,10 @@ function parseCityOrArea(text: string): { city?: string; area?: string } {
     /\b(?:in|to|visit|explore)\s+([A-Za-z][A-Za-z\s]{1,24})/i,
   );
   if (enCity?.[1]) {
-    const city = acceptCity(enCity[1].trim());
+    // 「places to eat in Tokyo」「I want to eat sushi」: a food verb is no city; keep only its 「in X」 part.
+    let raw = enCity[1].trim();
+    if (/^(?:eat|drink|try|have)\b/i.test(raw)) raw = raw.match(/\bin\s+([A-Za-z][A-Za-z\s]{1,24})/i)?.[1]?.trim() ?? "";
+    const city = raw ? acceptCity(raw) : undefined;
     if (city) return { city };
   }
 

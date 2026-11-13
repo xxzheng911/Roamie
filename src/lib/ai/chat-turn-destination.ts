@@ -36,6 +36,7 @@ import {
 } from "@/lib/ai/destination-geocode";
 import {
   countryCodeForCountryName,
+  getResolvedDestinationScope,
   lockDestinationCoordinatesFromGeocode,
   resolveDestinationCountryLabel,
 } from "@/lib/ai/resolved-destination-scope";
@@ -88,6 +89,58 @@ const unavailableAreaKeys = new Set<string>();
 const providerVerifiedLabels = new Set<string>();
 /** Search centers taken from this module's validated provider answers (compact label). */
 const providerTrustedCenters = new Map<string, { lat: number; lng: number }>();
+/**
+ * The validated provider answers behind providerTrustedCenters (same key, same lifetime). Lets a
+ * later provider_locked verdict restore the label's scope lock after a trip reset cleared it
+ * (雪梨 → 熱海 → 雪梨 → 熱海), without a provider request.
+ */
+const providerTrustedLocations = new Map<string, NonNullable<GeocodeFnEnvelope["location"]>>();
+
+/**
+ * Country code the current trip / candidate gives for this very label (Springfield on an
+ * Australian trip): the candidate's countryHint, or the trip's own country when the trip
+ * destination is this label. Undefined when there is no such hint (a switch target never reads
+ * the previous destination's country).
+ */
+function tripCountryHintCodeFor(label: string, ctx: CanonicalTravelContext | undefined): string | undefined {
+  const key = compactLabel(label);
+  if (!key || !ctx) return undefined;
+  const candidate = ctx.destinationCandidate;
+  if (candidate?.countryHint?.trim() && compactLabel(candidate.raw) === key) {
+    return countryCodeForCountryName(candidate.countryHint)?.toUpperCase();
+  }
+  if (ctx.destination?.trim() && compactLabel(ctx.destination) === key) {
+    return (
+      ctx.destinationCountryCode?.trim().toUpperCase() ||
+      countryCodeForCountryName(ctx.destinationCountry)?.toUpperCase()
+    );
+  }
+  return undefined;
+}
+
+/** The cached provider answer for this label is in another country than the trip's hint for it. */
+function cachedProviderCountryConflicts(label: string, hintCode: string | undefined): boolean {
+  if (!hintCode) return false;
+  const location = providerTrustedLocations.get(compactLabel(label));
+  const cachedCode = location ? countryCodeForCountryName(location.country)?.toUpperCase() : undefined;
+  return Boolean(cachedCode && cachedCode !== hintCode);
+}
+
+/** provider_locked: re-lock the label's scope from this module's own validated answer if a reset cleared it. */
+function restoreProviderScopeLock(label: string): void {
+  const key = compactLabel(label);
+  const center = providerTrustedCenters.get(key);
+  const location = providerTrustedLocations.get(key);
+  if (!center || !location || location.lat !== center.lat || location.lng !== center.lng) return;
+  if (getResolvedDestinationScope(label)) return;
+  lockDestinationCoordinatesFromGeocode({
+    destination: label,
+    lat: center.lat,
+    lng: center.lng,
+    country: location.country,
+    location,
+  });
+}
 /**
  * Parent administrative names (city / region above the label, never the label itself) from the
  * same validated provider answers (compact label). Comparison only (same-destination checks).
@@ -596,12 +649,14 @@ async function runAreaProviderValidation<TCategory>(
     transientAreaFailures.delete(localeKey);
     for (const label of [applied.destination, candidate.displayLabel]) {
       providerTrustedCenters.set(compactLabel(label), evidence.center);
+      providerTrustedLocations.set(compactLabel(label), evidence.location);
     }
     lockDestinationCoordinatesFromGeocode({
       destination: applied.destination,
       lat: location.lat,
       lng: location.lng,
       country: location.country,
+      location: evidence.location,
     });
   } else if (
     outcome.kind === "envelope" &&
@@ -722,8 +777,11 @@ function trustedProviderEvidence(
 }
 
 function sameAdministrativeLabel(left: string | undefined, right: string | undefined): boolean {
-  const norm = (value: string) =>
-    normalizeAreaEvidence(stripAdministrativeSuffix(applyAreaLocaleAlias(value)));
+  // 別府・甲府・成都・京都: a two-character name ending in 府 / 都 / 縣 is the name itself (same rule
+  // as normalizeCityLabel), so 別府 equals the provider's 別府市 (never the one-character 別).
+  const strip = (value: string) =>
+    /^\p{Script=Han}[府都縣县]$/u.test(value.trim()) ? value.trim() : stripAdministrativeSuffix(value);
+  const norm = (value: string) => normalizeAreaEvidence(strip(applyAreaLocaleAlias(value)));
   const a = left?.trim() ? norm(left) : "";
   const b = right?.trim() ? norm(right) : "";
   return Boolean(a && b && a === b);
@@ -822,13 +880,20 @@ const transientCityFailures = new Map<string, number>();
 async function validateCityCandidateCenter(
   label: string,
   area: DestinationAreaScope | undefined,
-  params: { locale: Locale; geocodeFn: GeocodeDestinationFn },
+  params: { locale: Locale; geocodeFn: GeocodeDestinationFn; countryHintCode?: string },
   report?: { outcome?: DestinationProviderCheckOutcome },
 ): Promise<{ lat: number; lng: number } | null> {
   const key = compactLabel(label);
   if (!key) return null;
-  const locked = providerTrustedCenters.get(key);
-  if (locked) return locked;
+  // A cached answer in another country than the trip's own hint for this label is not reused
+  // (no restore); the existing single provider check runs instead.
+  const locked = cachedProviderCountryConflicts(label, params.countryHintCode)
+    ? undefined
+    : providerTrustedCenters.get(key);
+  if (locked) {
+    restoreProviderScopeLock(label);
+    return locked;
+  }
   const localeKey = `${params.locale}\u0000${key}`;
   if (unavailableCityKeys.has(localeKey)) {
     if (report) report.outcome = "provider_cached_miss";
@@ -857,6 +922,7 @@ async function validateCityCandidateCenter(
       );
       if (evidence && providerAdministrativeMatch(evidence.location, label, area)) {
         providerTrustedCenters.set(key, evidence.center);
+        providerTrustedLocations.set(key, evidence.location);
         providerVerifiedLabels.add(key);
         // Only levels above the label (city / region); district / sublocality may be below it.
         const parents = parentNamesExcluding(label, [
@@ -871,6 +937,7 @@ async function validateCityCandidateCenter(
           lat: evidence.center.lat,
           lng: evidence.center.lng,
           country: evidence.location.country,
+          location: evidence.location,
         });
         return evidence.center;
       }
@@ -977,8 +1044,13 @@ async function resolveTrustedScopeVerdict(params: {
         area,
       };
     }
-    const locked = providerTrustedCenters.get(compactLabel(destination));
+    const destinationHintCode = tripCountryHintCodeFor(destination, params.ctx);
+    const locked =
+      !thisTurn && cachedProviderCountryConflicts(destination, destinationHintCode)
+        ? undefined
+        : providerTrustedCenters.get(compactLabel(destination));
     if (locked) {
+      if (!thisTurn) restoreProviderScopeLock(destination);
       return withProviderOutcome(
         {
           status: "trusted",
@@ -996,7 +1068,12 @@ async function resolveTrustedScopeVerdict(params: {
         areaOutcome,
       );
     }
-    const center = await validateCityCandidateCenter(destination, area, providerParams, cityReport);
+    const center = await validateCityCandidateCenter(
+      destination,
+      area,
+      { ...providerParams, countryHintCode: destinationHintCode },
+      cityReport,
+    );
     return withProviderOutcome(
       center
         ? { status: "trusted", destination, center, centerSource: "provider_this_turn", area }
@@ -1027,11 +1104,14 @@ async function resolveTrustedScopeVerdict(params: {
       ? coerceTravelDestination(resolution.rawLabel)
       : undefined);
   if (!cityCandidate) return { status: "unavailable", reason: "no_destination_candidate" };
-  const wasVerified = providerTrustedCenters.has(compactLabel(cityCandidate));
+  const candidateHintCode = tripCountryHintCodeFor(cityCandidate, params.ctx);
+  const wasVerified =
+    providerTrustedCenters.has(compactLabel(cityCandidate)) &&
+    !cachedProviderCountryConflicts(cityCandidate, candidateHintCode);
   const center = await validateCityCandidateCenter(
     cityCandidate,
     undefined,
-    providerParams,
+    { ...providerParams, countryHintCode: candidateHintCode },
     cityReport,
   );
   return withProviderOutcome(

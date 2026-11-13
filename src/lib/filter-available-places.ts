@@ -239,7 +239,31 @@ export function getTodayHoursFromDescriptions(data: PlaceHoursData, at: Date): s
   return hoursPart || line;
 }
 
-export function isOpenAtScheduled(data: PlaceHoursData, at: Date, atTime?: string): boolean | null {
+/**
+ * 某星期幾（0=週日）的到站上限（當地 0 點起算分鐘，須「早於」此值）= 關門 − buffer。
+ * 跨午夜、24 小時、無 periods、當天多時段或無關門時間 → null。
+ */
+export function latestArrivalMinutesForWeekday(
+  data: PlaceHoursData,
+  dow: number,
+  lastEntryBufferMinutes = 0,
+): number | null {
+  const dayPeriods = (data.regularOpeningHours?.periods ?? []).filter((p) => p.open?.day === dow);
+  if (dayPeriods.length !== 1) return null;
+  const period = dayPeriods[0]!;
+  if (!period.close || (period.close.day ?? dow) !== dow) return null;
+  const openMin = (period.open?.hour ?? 0) * 60 + (period.open?.minute ?? 0);
+  const latest = (period.close.hour ?? 0) * 60 + (period.close.minute ?? 0) - lastEntryBufferMinutes;
+  return latest > openMin ? latest : null;
+}
+
+/** lastEntryBufferMinutes：同日關門的時段，開始時間須早於「關門 − buffer」（文化類最後入館）。 */
+export function isOpenAtScheduled(
+  data: PlaceHoursData,
+  at: Date,
+  atTime?: string,
+  lastEntryBufferMinutes = 0,
+): boolean | null {
   const periods = data.regularOpeningHours?.periods;
   if (!periods?.length) return null;
 
@@ -260,7 +284,7 @@ export function isOpenAtScheduled(data: PlaceHoursData, at: Date, atTime?: strin
       closeMin = (period.close.hour ?? 0) * 60 + (period.close.minute ?? 0);
     }
     if (closeDow === dow && closeMin > openMin) {
-      if (min >= openMin && min < closeMin) return true;
+      if (min >= openMin && min < closeMin - lastEntryBufferMinutes) return true;
     } else if (closeDow !== dow) {
       if (min >= openMin) return true;
     }

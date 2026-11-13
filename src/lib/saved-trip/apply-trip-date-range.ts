@@ -6,6 +6,7 @@ import {
   groupStopsByDate,
   flattenStopGroups,
   legKeyForItem,
+  withStopDate,
 } from "@/lib/trip/trip-stop-mutations";
 
 /** 縮短行程天數時，超出地點移入此日期 key */
@@ -98,18 +99,18 @@ export function applyTripDateRange(
     if (idx < newDateKeys.length) {
       const targetDate = newDateKeys[idx]!;
       for (const item of dayItems) {
-        next.push({ ...item, date: targetDate });
+        next.push(withStopDate(item, targetDate));
       }
     } else {
       for (const item of dayItems) {
-        next.push({ ...item, date: TRIP_UNASSIGNED_DATE });
+        next.push(withStopDate(item, TRIP_UNASSIGNED_DATE));
         overflowCount += 1;
       }
     }
   });
 
   for (const item of groups.get(TRIP_UNASSIGNED_DATE) ?? []) {
-    next.push({ ...item, date: TRIP_UNASSIGNED_DATE });
+    next.push(withStopDate(item, TRIP_UNASSIGNED_DATE));
   }
 
   const handledKeys = new Set([...oldDateKeys, TRIP_UNASSIGNED_DATE]);
@@ -117,9 +118,9 @@ export function applyTripDateRange(
     if (handledKeys.has(key)) continue;
     for (const item of dayItems) {
       if (key === "未指定日期" && newDateKeys[0]) {
-        next.push({ ...item, date: newDateKeys[0]! });
+        next.push(withStopDate(item, newDateKeys[0]!));
       } else {
-        next.push({ ...item, date: TRIP_UNASSIGNED_DATE });
+        next.push(withStopDate(item, TRIP_UNASSIGNED_DATE));
         overflowCount += 1;
       }
     }
@@ -267,7 +268,7 @@ export function applyRemoveScheduledDay(
     const newIdx = idx < removedDayIndex ? idx : idx - 1;
     const targetDate = newDateKeys[newIdx]!;
     for (const item of groups.get(oldKey) ?? []) {
-      nextItems.push({ ...item, date: targetDate });
+      nextItems.push(withStopDate(item, targetDate));
     }
   });
 
@@ -279,7 +280,7 @@ export function applyRemoveScheduledDay(
   for (const [key, dayItems] of groups) {
     if (handledKeys.has(key)) continue;
     for (const item of dayItems) {
-      nextItems.push({ ...item, date: TRIP_UNASSIGNED_DATE });
+      nextItems.push(withStopDate(item, TRIP_UNASSIGNED_DATE));
     }
   }
 
@@ -355,7 +356,7 @@ export function updateSingleDayDate(
   groups.delete(oldDateKey);
   groups.set(
     newIso,
-    dayItems.map((item) => ({ ...item, date: newIso })),
+    dayItems.map((item) => withStopDate(item, newIso)),
   );
 
   const newScheduledKeys = oldDateKeys.map((k, i) => (i === dayIndex ? newIso : k));

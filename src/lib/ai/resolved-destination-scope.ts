@@ -1,5 +1,6 @@
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
+import type { TripLocation } from "@/lib/location/types";
 import { lookupStructuredCountryForCity } from "@/lib/ai/country-city-options";
 import {
   resolveDestinationEntity,
@@ -677,9 +678,11 @@ export function clearResolvedDestinationScope(destination?: string): void {
     scopeByDestination.clear();
     finalizedProfileByRequest.clear();
     validationFailureByRequest.clear();
+    trustedProviderLocationByDestination.clear();
     return;
   }
   const label = normalizeDestinationLabel(destination);
+  trustedProviderLocationByDestination.delete(label);
   for (const key of [...scopeByDestination.keys()]) {
     if (key === label || key.startsWith(`${label}|`)) {
       scopeByDestination.delete(key);
@@ -884,12 +887,34 @@ export function resolveDestinationCoordinates(params: {
   return { coordinates: null, source: null, scope: null };
 }
 
+/**
+ * Provider answers (Place ID / country / coordinates) the Destination Authority itself verified,
+ * by normalized label. Read-only reuse of the answer that produced the scope lock: never a
+ * provider request, cleared together with the label's scope lock.
+ */
+const trustedProviderLocationByDestination = new Map<string, TripLocation>();
+
+/** The Authority-verified provider location for this label (same answer as its scope lock), or null. */
+export function getTrustedProviderLocation(destination: string): TripLocation | null {
+  const label = normalizeDestinationLabel(destination);
+  const location = label ? trustedProviderLocationByDestination.get(label) : undefined;
+  if (!location) return null;
+  const scope = scopeByDestination.get(scopeKey(label));
+  // Only while the label's scope lock is the same answer (same center).
+  if (!scope || Math.abs(scope.latitude - location.lat) > 0.05 || Math.abs(scope.longitude - location.lng) > 0.05) {
+    return null;
+  }
+  return location;
+}
+
 export function lockDestinationCoordinatesFromGeocode(params: {
   destination: string;
   lat: number;
   lng: number;
   countryCode?: string;
   country?: string;
+  /** The verified provider location the coordinates come from (Authority evidence only). */
+  location?: TripLocation;
 }): ResolvedDestinationScope | null {
   const enriched = enrichDestinationCountry({
     destination: params.destination,
@@ -898,6 +923,10 @@ export function lockDestinationCoordinatesFromGeocode(params: {
     latitude: params.lat,
     longitude: params.lng,
   });
+  if (params.location?.placeId?.trim()) {
+    const label = normalizeDestinationLabel(params.destination);
+    if (label) trustedProviderLocationByDestination.set(label, params.location);
+  }
   return setResolvedDestinationScope({
     displayName: normalizeDestinationLabel(params.destination),
     normalizedName: normalizeDestinationLabel(params.destination),

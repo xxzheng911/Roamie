@@ -1,3 +1,4 @@
+import "./verify-netguard-full.mjs";
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {normalizePlacesSearchResult} from '../src/lib/places-search-normalize.ts';

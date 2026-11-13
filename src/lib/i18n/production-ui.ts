@@ -184,7 +184,8 @@ export const productionUiMessages: Record<Locale, Record<string, string>> = {
     p3fbbfba615: "前往取消訂閱",
     p1c72526e0a: "確定要刪除帳號嗎？",
     pe4327fa225:
-      "此操作無法復原。刪除後，你的已儲存行程、收藏、聊天紀錄、旅行偏好與帳號資料將被永久刪除。",
+      "此操作無法復原。刪除後，你的收藏、聊天紀錄、旅行偏好與帳號資料將被永久刪除；只屬於你自己的行程也會一起刪除。",
+    deleteAccountSharedTrips: "你和其他成員共享的行程不會被刪除，會轉給最早加入的成員繼續使用。",
     p3fb1f69950:
       "刪除 Roamie 帳號不會自動取消你的 App Store 訂閱。若不希望後續續訂，請先前往 Apple 管理訂閱。",
     p2b31713e1e: "管理訂閱",
@@ -521,7 +522,9 @@ export const productionUiMessages: Record<Locale, Record<string, string>> = {
     p3fbbfba615: "Manage cancellation",
     p1c72526e0a: "Delete your account?",
     pe4327fa225:
-      "This can't be undone. Your saved trips, saved places, chat history, travel preferences and account data will be permanently deleted.",
+      "This can't be undone. Your saved places, chat history, travel preferences and account data will be permanently deleted, along with trips that are only yours.",
+    deleteAccountSharedTrips:
+      "Trips you share with other members won't be deleted. They'll be handed over to the member who joined earliest so everyone can keep using them.",
     p3fb1f69950:
       "Deleting your Roamie account doesn't cancel your App Store subscription. To stop renewals, manage your subscription with Apple first.",
     p2b31713e1e: "Manage subscriptions",
@@ -871,7 +874,9 @@ export const productionUiMessages: Record<Locale, Record<string, string>> = {
     p3fbbfba615: "解約手続きへ",
     p1c72526e0a: "アカウントを削除しますか？",
     pe4327fa225:
-      "この操作は取り消せません。保存した旅程・場所、チャット履歴、旅の好み、アカウント情報が完全に削除されます。",
+      "この操作は取り消せません。保存した場所、チャット履歴、旅の好み、アカウント情報が完全に削除され、あなただけの旅程も一緒に削除されます。",
+    deleteAccountSharedTrips:
+      "ほかのメンバーと共有している旅程は削除されず、最も早く参加したメンバーに引き継がれて引き続き利用できます。",
     p3fb1f69950:
       "Roamieアカウントを削除してもApp Storeのサブスクリプションは解約されません。自動更新を止める場合は、先にAppleでサブスクリプションを管理してください。",
     p2b31713e1e: "サブスクリプションを管理",
@@ -1216,7 +1221,9 @@ export const productionUiMessages: Record<Locale, Record<string, string>> = {
     p3fbbfba615: "구독 취소하러 가기",
     p1c72526e0a: "계정을 삭제할까요?",
     pe4327fa225:
-      "이 작업은 되돌릴 수 없어요. 저장한 여행과 장소, 채팅 기록, 여행 취향 및 계정 정보가 영구 삭제돼요.",
+      "이 작업은 되돌릴 수 없어요. 저장한 장소, 채팅 기록, 여행 취향 및 계정 정보가 영구 삭제되고, 나 혼자만 참여한 여행도 함께 삭제돼요.",
+    deleteAccountSharedTrips:
+      "다른 멤버와 공유한 여행은 삭제되지 않고, 가장 먼저 참여한 멤버에게 넘겨져 계속 사용할 수 있어요.",
     p3fb1f69950:
       "Roamie 계정을 삭제해도 App Store 구독은 자동 취소되지 않아요. 갱신을 원하지 않으면 먼저 Apple에서 구독을 관리해 주세요.",
     p2b31713e1e: "구독 관리",

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "./verify-netguard-full.mjs";
 /**
  * #TS-PHOTO3 回歸：收藏地點舊 photo name 過期（/api/place-photo 502）→ 以 placeId 呼叫一次 Place Details 換新名稱並寫回。
  * 執行：node scripts/verify-saved-place-photo-refresh.mjs

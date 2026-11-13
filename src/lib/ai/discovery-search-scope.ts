@@ -84,7 +84,12 @@ export function generationDiscoverySearchScope(generationId:string|undefined, se
   const existing=generationScopes.get(generationId);
   if(existing) return existing.scope;
   // Fail closed rather than evict active work and re-dispatch an existing generation.
-  if(generationScopes.size>=64) return createDiscoverySearchScope(search,{...options,budget:0});
+  // The single App-language re-run (`<id>:relocale`) belongs to an already admitted generation,
+  // so it is not counted against the slot cap (its own 12-request budget still applies).
+  const isRelocale=generationId.endsWith(":relocale");
+  let admitted=0;
+  for(const id of generationScopes.keys()) if(!id.endsWith(":relocale")) admitted++;
+  if(!isRelocale && admitted>=64) return createDiscoverySearchScope(search,{...options,budget:0});
   const scope=createDiscoverySearchScope(search,options);
   generationScopes.set(generationId,{scope,expiresAt:options.deadlineAt+60_000});
   return scope;

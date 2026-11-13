@@ -45,6 +45,7 @@ import {
 import { dedupeParentLandmarkPlaces } from "@/lib/ai/ai-parent-landmark-dedup";
 import { dedupeByCanonicalLandmark } from "@/lib/ai/canonical-landmark";
 import { filterRealPlanningPlaces } from "@/lib/ai/planning-real-place";
+import { evaluateTourismQuality } from "@/lib/ai/tourism-quality-gate";
 import {
   applyPlannerRouteAndCapacityAssembly,
   buildDayPreferredPools,
@@ -326,7 +327,9 @@ export function redistributePlacesEvenly(params: {
   const slotsPerDay = minItemsPerDayForTrip(safeDays);
   const maxTotal = safeDays * slotsPerDay;
   const pool = dedupeCandidatePlaces(
-    filterExcludedRetailPlaces(params.places).filter((p) => p.name?.trim()),
+    // Q6 gate (no backfill); user-picked stops stay exempt.
+    filterExcludedRetailPlaces(params.places).filter((p) => p.name?.trim() &&
+      (params.relaxDiversityFor?.(p) || evaluateTourismQuality(p).ok)),
   ).slice(0, maxTotal);
   if (!pool.length) {
     return ensureAllDayPlansExist([], safeDays);

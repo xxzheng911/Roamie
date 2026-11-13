@@ -1,3 +1,4 @@
+import "./verify-netguard-full.mjs";
 import assert from "node:assert/strict";
 import { readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -372,7 +373,9 @@ try {
             userId: "private-fixture-user",
             hasPlusAccess: plus,
             email: null,
-            client: {
+            // Server credit RPCs use the service-role client (auth.creditsClient), never the user JWT client.
+            client: {},
+            creditsClient: {
               rpc: async (name) => {
                 assert.equal(name, "credits_reserve");
                 reserves++;
@@ -466,12 +469,14 @@ try {
     ]);
     assert.deepEqual(config.durable_objects.bindings, [
       { name: "ABUSE_GUARD", class_name: "AbuseGuard" },
+      { name: "VISUAL_CROSSING_CLIMATE", class_name: "VisualCrossingClimate" },
     ]);
     assert.deepEqual(config.ratelimits, [
       { name: "GOOGLE_API_RATE_LIMITER", namespace_id: "1001", simple: { limit: 120, period: 60 } },
     ]);
     assert.deepEqual(config.migrations, [
       { tag: "v1-abuse-guard", new_sqlite_classes: ["AbuseGuard"] },
+      { tag: "v2-visual-crossing-climate", new_sqlite_classes: ["VisualCrossingClimate"] },
     ]);
   });
 
@@ -543,7 +548,8 @@ try {
         "export const preparePlacesFirstContext = async ctx => ({ctx,candidates:[]});",
       "fallback-summary": 'export const buildRuleBasedRecommendSummary = () => "fixture";',
       "ai-pipeline-log": "export const logAiPipeline = () => {};",
-      "openweather.server": "export const openWeatherGetForecast = async () => [];",
+      "openweather.server":
+        "export const openWeatherGetForecast = async () => []; export const openWeatherGetTripForecast = async () => [];",
     };
     try {
       const bundled = await build({

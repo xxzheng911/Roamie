@@ -197,7 +197,14 @@ async function enforceModelCall(mode: RoamieRequestContext["mode"]): Promise<voi
   await assertAiUse(aiSurfaceForMode(mode));
 }
 
-export async function callRoamieAI(ctx: RoamieRequestContext): Promise<RoamieResponse> {
+export async function callRoamieAI(
+  ctx: RoamieRequestContext,
+  options?: {
+    signal?: AbortSignal;
+    /** Fires once the provider answer is parsed, before merge / enrichment. */
+    onProviderComplete?: () => void;
+  },
+): Promise<RoamieResponse> {
   await enforceModelCall(ctx.mode);
   const prep = await withPlacesFirstPrep(ctx);
   ctx = prep.ctx;
@@ -220,6 +227,8 @@ export async function callRoamieAI(ctx: RoamieRequestContext): Promise<RoamieRes
   try {
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
+      // Optional: a client disconnect stops the provider (non-stream route).
+      signal: options?.signal,
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
@@ -252,6 +261,8 @@ export async function callRoamieAI(ctx: RoamieRequestContext): Promise<RoamieRes
     if (!content) throw new Error("AI 回應格式錯誤，請再試一次。");
 
     let parsed = normalizeAiGeneratedResponse(JSON.parse(content) as Record<string, unknown>);
+    // Provider cost is spent: a disconnect from here on commits (stream parity).
+    options?.onProviderComplete?.();
 
     if (prep.candidates.length) {
       parsed = mergeAiWithVerifiedCandidates(parsed, prep.candidates, mergeOptionsForContext(ctx));
@@ -281,11 +292,24 @@ export function streamRoamieAI(
   options?: {
     signal?: AbortSignal;
     requestId?: string;
+    /**
+     * Runs before final/done are sent. Returning false (e.g. the credit commit
+     * failed) withholds the result and sends an error event instead.
+     */
     onComplete?: (result: {
       assembled: string;
       success: boolean;
       failureReason: string;
-    }) => Promise<void> | void;
+      /**
+       * Rule A': the client disconnected after at least one content delta was
+       * sent. Not a deliverable result (nothing to persist), but it is charged.
+       */
+      clientAbortedAfterContent?: boolean;
+    }) => Promise<boolean | void> | boolean | void;
+    /** Provider finished streaming a non-empty answer (before enrichment). */
+    onProviderComplete?: () => void;
+    /** The first non-empty content delta was enqueued to the client. */
+    onFirstContentDelta?: () => void;
   },
 ): {
   stream: ReadableStream<Uint8Array>;
@@ -304,30 +328,48 @@ export function streamRoamieAI(
       const requestId = options?.requestId ?? crypto.randomUUID();
       const startedAt = Date.now();
       let completionCalled = false;
+      let completion: Promise<boolean> | undefined;
+      let providerFinished = false;
       let finishProvider: ((success: boolean) => void) | undefined;
       let providerParseFailed = false;
-      const complete = async (
-        result: { assembled: string; success: boolean; failureReason: string },
-      ) => {
-        if (completionCalled) return;
+      /** Resolves true when the result may be delivered (settlement succeeded). */
+      /** Rule A': set once a non-empty content delta reached the client. */
+      let contentDelivered = false;
+      const complete = (
+        result: {
+          assembled: string;
+          success: boolean;
+          failureReason: string;
+          clientAbortedAfterContent?: boolean;
+        },
+      ): Promise<boolean> => {
+        if (completion) return completion;
         completionCalled = true;
-        finishProvider?.(result.success && !providerParseFailed);
-        try {
-          await options?.onComplete?.(result);
-        } catch (error) {
-          console.error(
-            "[CHAT_STREAM_COMPLETION] failed",
-            error instanceof Error ? error.message : "unknown_error",
-          );
-        }
+        completion = (async () => {
+          finishProvider?.(result.success && !providerParseFailed);
+          try {
+            return (await options?.onComplete?.(result)) !== false;
+          } catch (error) {
+            console.error(
+              "[CHAT_STREAM_COMPLETION] failed",
+              error instanceof Error ? error.message : "unknown_error",
+            );
+            return false;
+          }
+        })();
+        return completion;
       };
       const upstreamAbort = new AbortController();
       cancelActiveStream = async (reason: unknown) => {
         upstreamAbort.abort(reason);
+        // The provider already produced the full answer (it was streamed as
+        // deltas): the main flow still settles it as a success.
+        if (providerFinished) return;
         await complete({
           assembled: "",
           success: false,
           failureReason: "client_abort",
+          clientAbortedAfterContent: contentDelivered,
         });
       };
       let firstByteReceived = false;
@@ -335,6 +377,8 @@ export function streamRoamieAI(
       let timeoutReason = "";
       const abortFromClient = () => upstreamAbort.abort(options?.signal?.reason);
       options?.signal?.addEventListener("abort", abortFromClient, { once: true });
+      // An abort that fired before the listener was attached is never replayed.
+      if (options?.signal?.aborted) abortFromClient();
       const overallTimer = setTimeout(() => {
         timeoutReason = "overall_timeout";
         upstreamAbort.abort(new Error(timeoutReason));
@@ -438,6 +482,10 @@ export function streamRoamieAI(
               if (delta) {
                 assembled += delta;
                 enqueue(`event: delta\ndata: ${JSON.stringify({ delta })}\n\n`);
+                if (!contentDelivered && typeof delta === "string" && delta.trim()) {
+                  contentDelivered = true;
+                  options?.onFirstContentDelta?.();
+                }
               }
             } catch {
               providerParseFailed = true;
@@ -446,7 +494,13 @@ export function streamRoamieAI(
           }
         }
 
+        if (assembled.trim()) {
+          providerFinished = true;
+          options?.onProviderComplete?.();
+        }
+
         let finalPayload = assembled;
+        let finalEvent: string | null = null;
         if (assembled.trim()) {
           try {
             let parsed = normalizeAiGeneratedResponse(
@@ -469,32 +523,45 @@ export function streamRoamieAI(
             }
             const enriched = await enrichRoamieResponse(parsed, ctx);
             finalPayload = JSON.stringify(enriched);
-            enqueue(`event: final\ndata: ${JSON.stringify(enriched)}\n\n`);
+            finalEvent = finalPayload;
           } catch (e) {
             providerParseFailed = true;
             console.warn("[Roamie AI] enrich after stream failed", e);
           }
         }
 
-        if (!assembled.trim()) {
-          enqueue(`event: error\ndata: ${JSON.stringify({ error: "AI 服務未回傳內容。", code: "provider_empty_stream" })}\n\n`);
-        } else {
-          enqueue(`event: done\ndata: {}\n\n`);
-        }
-        await complete({
+        // Settle (credit commit) first; final/done are only sent once it succeeded.
+        const deliverable = await complete({
           assembled: finalPayload,
           success: Boolean(assembled.trim()),
           failureReason: assembled.trim() ? "" : "empty_response",
         });
+        let responseFailure = "";
+        if (!assembled.trim()) {
+          responseFailure = "provider_empty_stream";
+          enqueue(`event: error\ndata: ${JSON.stringify({ error: "AI 服務未回傳內容。", code: "provider_empty_stream" })}\n\n`);
+        } else if (!deliverable) {
+          responseFailure = "credits_settle_failed";
+          enqueue(`event: error\ndata: ${JSON.stringify({ error: "AI 服務暫時無法使用", code: "credits_settle_failed" })}\n\n`);
+        } else {
+          if (finalEvent !== null) enqueue(`event: final\ndata: ${finalEvent}\n\n`);
+          enqueue(`event: done\ndata: {}\n\n`);
+        }
         controller.close();
-        resolveAssembly(finalPayload);
+        resolveAssembly(deliverable ? finalPayload : "");
         console.info("[CHAT_API_OPENAI]", { requestId, started: true, firstByteReceived, completed: true, aborted: false, durationMs: Date.now() - startedAt, providerStatus });
-        console.info("[CHAT_API_RESPONSE]", { requestId, status: 200, contentType: "text/event-stream", bytesWritten, streamClosedNormally: true, failureReason: assembled.trim() ? "" : "provider_empty_stream" });
+        console.info("[CHAT_API_RESPONSE]", { requestId, status: 200, contentType: "text/event-stream", bytesWritten, streamClosedNormally: true, failureReason: responseFailure });
       } catch (e) {
         const aborted = upstreamAbort.signal.aborted;
         const code = timeoutReason || (options?.signal?.aborted ? "client_abort" : "provider_error");
         const msg = aborted ? "AI 回應逾時，請再試一次。" : e instanceof Error ? e.message : "AI 服務暫時無法使用";
-        await complete({ assembled: "", success: false, failureReason: code });
+        await complete({
+          assembled: "",
+          success: false,
+          failureReason: code,
+          // Only a client disconnect is charged; provider/server errors refund.
+          clientAbortedAfterContent: code === "client_abort" && contentDelivered,
+        });
         try {
           enqueue(`event: error\ndata: ${JSON.stringify({ error: msg, code })}\n\n`);
           controller.close();

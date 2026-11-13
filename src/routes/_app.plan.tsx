@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useFormKeyboardOpen } from "@/hooks/use-form-keyboard-open";
 import { usePendingAuthActionResume } from "@/hooks/use-pending-auth-action";
 import { useI18n } from "@/hooks/use-i18n";
+import { getLocalizedPlaceCategoryLabel } from "@/lib/place-category";
 import { blockIfChatGenerationLocked } from "@/lib/ai/chat-generation-lock";
 import { requireAuthForAction } from "@/lib/auth-action";
 import {
@@ -615,7 +616,8 @@ function PlanPage() {
                   <li key={p.name} className="flex items-start gap-1.5">
                     <MapPin className="mt-0.5 h-3 w-3 shrink-0" />
                     <span>
-                      {p.name} · {p.type}
+                      {p.name} ·{" "}
+                      {locale === "zh-TW" ? p.type : getLocalizedPlaceCategoryLabel(p, locale)}
                     </span>
                   </li>
                 ))}

@@ -1,4 +1,6 @@
-import { isChatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import { chatRuntimeCopy, isChatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import type { Locale } from "@/lib/i18n/types";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
 import { matchesContinueRecommendationGrammar } from "@/lib/ai/continue-recommendation-intent";
 import { isExclusionReply } from "@/lib/ai/recommendation-exclusion";
 import {
@@ -349,7 +351,20 @@ export function collectBlockedCoreNames(
   return [...names];
 }
 
-export function buildAlternativeRecommendationSummary(picks: { name: string }[]): string {
+export function buildAlternativeRecommendationSummary(
+  picks: { name: string }[],
+  locale: Locale = effectiveAppLocale(),
+): string {
+  if (locale !== "zh-TW") {
+    if (!picks.length) return chatRuntimeCopy("liveUnavailableRephrase", locale);
+    return [
+      chatRuntimeCopy("alternativeSummaryLead", locale),
+      "",
+      picks.map((p, i) => `${i + 1}. ${p.name}`).join("\n"),
+      "",
+      chatRuntimeCopy("alternativeSummaryFooter", locale),
+    ].join("\n");
+  }
   if (!picks.length) {
     return "我暫時沒連上即時地點資料，你可以稍後再試或換個說法。";
   }

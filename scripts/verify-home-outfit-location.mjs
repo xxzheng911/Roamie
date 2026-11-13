@@ -37,14 +37,25 @@ for (const [locale, [location, night]] of Object.entries(expected)) {
     buildDailyPrepAdvice(weather, locale, "Lindefu").headline,
     `${location} · ${night}`,
   );
+  // KIJ2 spec: non-zh locales use the city-table name; unknown labels stay raw; zh-TW unchanged.
+  const cityTable = {
+    "高雄市": { en: "Kaohsiung", ja: "高雄", ko: "가오슝" },
+    "大阪市": { en: "Osaka", ja: "大阪", ko: "오사카" },
+    "高雄": { en: "Kaohsiung", ja: "高雄", ko: "가오슝" },
+    Tokyo: { en: "Tokyo", ja: "東京", ko: "도쿄" },
+    "大阪": { en: "Osaka", ja: "大阪", ko: "오사카" },
+  };
+  const shown = (city) => (locale === "zh-TW" ? city : (cityTable[city]?.[locale] ?? city));
   for (const city of ["高雄市", "三民區", "大阪市", "新宿區"]) {
-    assert.equal(buildDailyPrepAdvice({ ...weather, city }, locale).headline, `${city} · ${night}`);
+    assert.equal(buildDailyPrepAdvice({ ...weather, city }, locale).headline, `${shown(city)} · ${night}`, `${locale} ${city}`);
   }
   for (const city of ["高雄", "Tokyo", "大阪", "目前位置咖啡館"]) {
-    assert.equal(buildDailyPrepAdvice({ ...weather, city }, locale).headline, `${city} · ${night}`);
-    assert.equal(buildDailyPrepAdvice(weather, locale, city).headline, `${city} · ${night}`);
-    assert.ok(buildDailyPrepAdvice(null, locale, city).headline.startsWith(`${city} · `));
+    assert.equal(buildDailyPrepAdvice({ ...weather, city }, locale).headline, `${shown(city)} · ${night}`, `${locale} ${city}`);
+    assert.equal(buildDailyPrepAdvice(weather, locale, city).headline, `${shown(city)} · ${night}`, `${locale} arg ${city}`);
+    assert.ok(buildDailyPrepAdvice(null, locale, city).headline.startsWith(`${shown(city)} · `), `${locale} null ${city}`);
   }
+  assert.equal(shown("三民區"), "三民區");
+  assert.equal(shown("目前位置咖啡館"), "目前位置咖啡館");
   assert.equal(buildDailyPrepAdvice({ ...weather, city: "" }, locale).headline, night);
   assert.ok(!buildDailyPrepAdvice(null, locale).headline.includes("undefined"));
   assert.equal(JSON.stringify(weather), persisted, "Read projection must not rewrite cached facts");

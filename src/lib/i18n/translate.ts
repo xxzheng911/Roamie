@@ -1,5 +1,6 @@
 import type { Locale } from "@/lib/i18n/types";
 import { i18nMessages } from "@/lib/i18n/messages";
+import { applyEnglishPlaceArticles } from "@/lib/i18n/en-place-articles";
 
 const dictionaries = i18nMessages;
 
@@ -36,7 +37,9 @@ export function translate(locale: Locale, key: MessageKey, vars?: Record<string,
   }
   if (!text) return key;
   if (!vars) return text;
-  return text.replace(/\{(\w+)\}/g, (_, k: string) => String(vars[k] ?? ""));
+  const filled = text.replace(/\{(\w+)\}/g, (_, k: string) => String(vars[k] ?? ""));
+  // en only: "in Netherlands" → "in the Netherlands" for interpolated place names.
+  return locale === "en" ? applyEnglishPlaceArticles(filled, locale) : filled;
 }
 
 export function translateList(locale: Locale, key: MessageKey): string[] {

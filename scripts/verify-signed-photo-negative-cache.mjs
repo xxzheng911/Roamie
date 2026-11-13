@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "./verify-netguard-full.mjs";
 /**
  * signed-place-photo 負向快取回歸（P1-T / P1-T2）。
  * 執行：node scripts/verify-signed-photo-negative-cache.mjs [--baseline]

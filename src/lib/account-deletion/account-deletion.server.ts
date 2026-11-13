@@ -1,4 +1,4 @@
-import { createClient, type User } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient, type User } from "@supabase/supabase-js";
 import type { CloudflareRuntimeEnv } from "@/lib/server-request-context";
 import { revokeAppleAuthorization } from "./apple-revoke.server";
 import { deleteRevenueCatCustomerV2 } from "./revenuecat-customer-delete.server";
@@ -182,6 +182,11 @@ function hasCompletedExternalStep(state: DeletionRequestState): boolean {
   );
 }
 
+/** Fixed code for unrecognised (transient) failures inside the deletion flow. */
+const ACCOUNT_DELETION_UNEXPECTED_FAILED = "account_deletion_unexpected_failed";
+/** Codes this flow (and the apple / revenuecat helpers) throw on purpose. */
+const KNOWN_DELETION_ERROR_CODE = /^(?:account_|apple_|revenuecat_)[a-z0-9_]+$/;
+
 export function canResumeFailedExternalRequest(state: DeletionRequestState): boolean {
   if (!state.last_error_code || isPreflightOnlyState(state)) return false;
   if (state.last_error_code === "account_deletion_already_in_progress") return false;
@@ -193,6 +198,7 @@ export function canResumeFailedExternalRequest(state: DeletionRequestState): boo
     state.last_error_code.startsWith("revenuecat_") ||
     state.last_error_code.startsWith("apple_") ||
     state.last_error_code === "account_deletion_state_failed" ||
+    state.last_error_code === ACCOUNT_DELETION_UNEXPECTED_FAILED ||
     state.last_error_code === "account_auth_delete_failed"
   );
 }
@@ -247,6 +253,295 @@ async function listStorageFiles(
     }
   }
   return files;
+}
+
+const TRIP_COVER_URL_FIELDS = ["custom_cover_image_url", "cover_image_url", "cover_image"] as const;
+type TripCoverUrlField = (typeof TRIP_COVER_URL_FIELDS)[number];
+type SurvivingTripCoverRow = { id: string; user_id: string } & Partial<
+  Record<TripCoverUrlField, string | null>
+>;
+const PROFILE_MEDIA_PUBLIC_MARKER = `/storage/v1/object/public/${PROFILE_MEDIA_BUCKET}/`;
+/** PostgREST page size (≤ Supabase db-max-rows); pagination stops on an empty page. */
+const DELETION_PAGE_SIZE = 1000;
+/** Ids per `.in("id", …)` cover-clear UPDATE. */
+const COVER_CLEAR_BATCH_SIZE = 150;
+const STORAGE_LIST_PAGE_SIZE = 100;
+
+/**
+ * Folder names directly under `<userId>/trips` (= trip ids this user stored
+ * covers for), paginated. A storage error aborts (resumable); a thrown error
+ * propagates (classified as account_deletion_unexpected_failed).
+ */
+async function listUploadedTripFolders(admin: SupabaseClient, userId: string): Promise<Set<string>> {
+  const ids = new Set<string>();
+  for (let offset = 0; ; ) {
+    const { data, error } = await admin.storage
+      .from(PROFILE_MEDIA_BUCKET)
+      .list(`${userId}/trips`, { limit: STORAGE_LIST_PAGE_SIZE, offset });
+    if (error) throw new Error("account_storage_list_failed");
+    const page = data ?? [];
+    for (const item of page) if (!item.id && item.name) ids.add(item.name);
+    if (page.length < STORAGE_LIST_PAGE_SIZE) break;
+    offset += page.length;
+  }
+  return ids;
+}
+
+/** Same parsing rule as trip-media-storage.ts storagePathFromPublicUrl. */
+function profileMediaPathFromPublicUrl(url: string | null | undefined): string | null {
+  const value = url?.trim();
+  if (!value) return null;
+  const idx = value.indexOf(PROFILE_MEDIA_PUBLIC_MARKER);
+  if (idx < 0) return null;
+  const raw = value.slice(idx + PROFILE_MEDIA_PUBLIC_MARKER.length).split(/[?#]/)[0]?.trim();
+  if (!raw) return null;
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
+}
+
+function logCoverRelocationIssue(requestId: string, operation: string, message?: string): void {
+  console.info("ACCOUNT_DELETION_COVER_RELOCATION", {
+    requestId,
+    operation,
+    sanitizedMessage: sanitizedDatabaseErrorMessage(message),
+  });
+}
+
+/**
+ * Copies a cover unless the destination already exists (resume-safe).
+ * "source_missing": the source file is already gone (storage purged by an earlier
+ * attempt, or exists(from) reports false) — the caller clears the column instead
+ * of aborting. "failed": the source exists (or could not be checked) but the copy
+ * failed — the caller aborts so the deletion stays resumable.
+ */
+async function copyTripCoverIfNeeded(
+  admin: SupabaseClient,
+  requestId: string,
+  fromPath: string,
+  toPath: string,
+  storageAlreadyPurged: boolean,
+): Promise<"copied" | "source_missing" | "failed"> {
+  const bucket = admin.storage.from(PROFILE_MEDIA_BUCKET);
+  // storage-js exists(): 400/404 → { data: false, error }; 5xx / network errors
+  // throw. A throw is "failed" (resumable abort), never a raw error code.
+  try {
+    const { data: alreadyCopied } = await bucket.exists(toPath);
+    if (alreadyCopied) return "copied";
+    if (storageAlreadyPurged) return "source_missing";
+    const { data: sourceExists } = await bucket.exists(fromPath);
+    if (sourceExists === false) return "source_missing";
+    const { error } = await bucket.copy(fromPath, toPath);
+    if (!error) return "copied";
+    logCoverRelocationIssue(requestId, "copy_failed", error.message);
+    return "failed";
+  } catch (error) {
+    logCoverRelocationIssue(
+      requestId,
+      "copy_threw",
+      error instanceof Error ? error.message : undefined,
+    );
+    return "failed";
+  }
+}
+
+/**
+ * Trips that survive deleteUser (user_id is someone else) and whose cover file
+ * is that trip's own cover under the deleted user's prefix
+ * (`<deletedId>/trips/<tripId>/…`) get the file copied to
+ * `<ownerId>/trips/<tripId>/<file>` (trip-media-storage.ts path rule) and the
+ * cover URL columns repointed. Cover columns pointing anywhere else under the
+ * deleted user's prefix (e.g. their avatar) are cleared to null (default cover
+ * by mood), never copied. A failed copy / update aborts the deletion with an
+ * account_collaboration_ code (resumable) so no file has to be kept under the
+ * deleted user's prefix. Rows already repointed or cleared no longer match, so
+ * resumes skip them; copies are resume-safe. When the source file no longer
+ * exists (storage already purged by an earlier attempt, or exists(from) is
+ * false — e.g. the trip became shared after storage_complete), the column is
+ * cleared to null instead of aborting, so resumes cannot get stuck.
+ *
+ * Scope: only trips the deleted user is a member of (trip_members read before
+ * the transfer RPC on every attempt). A trip outside that set (e.g. on a resume
+ * after the transfer already removed the membership) is handled only when the
+ * cover is that trip's own file under `<deletedId>/trips/<tripId>/`: when the
+ * deleted user's storage has that `<tripId>` folder (one paginated list, not a
+ * call per row) it is probed and relocated when the file really exists;
+ * otherwise (no folder, or storage purged) it is cleared to null in batched
+ * `.in("id", …)` updates without any storage call. Other rows are left
+ * untouched, so an unrelated owner cannot block, steer or exhaust the deletion
+ * with crafted cover URLs.
+ */
+async function relocateSurvivingTripCovers(
+  admin: SupabaseClient,
+  userId: string,
+  requestId: string,
+  storageAlreadyPurged: boolean,
+  memberTripIds: ReadonlySet<string>,
+): Promise<void> {
+  const userPrefix = `${userId}/`;
+  // No PostgREST reserved characters (, . : ( )) in the pattern: uuid + slashes only.
+  const likePattern = `*${PROFILE_MEDIA_PUBLIC_MARKER}${userPrefix}*`;
+  // Read every matching row first, then act. Keyset pages (id > last id of the
+  // previous page, ordered by id) until an empty page: max-rows cannot push
+  // member trips out of the result, and rows deleted mid-read (e.g. by another
+  // owner) cannot shift later rows past an offset and make them skipped.
+  const rows: SurvivingTripCoverRow[] = [];
+  for (let lastId: string | null = null; ; ) {
+    let query = admin
+      .from("saved_trips")
+      .select("id,user_id,custom_cover_image_url,cover_image_url,cover_image")
+      .neq("user_id", userId)
+      .or(TRIP_COVER_URL_FIELDS.map((field) => `${field}.like.${likePattern}`).join(","));
+    if (lastId !== null) query = query.gt("id", lastId);
+    const { data, error } = await query
+      .order("id", { ascending: true })
+      .limit(DELETION_PAGE_SIZE);
+    if (error) {
+      logCollaborationCleanupError(requestId, "lookup_surviving_trip_covers", "saved_trips", error);
+      throw new Error("account_collaboration_cover_lookup_failed");
+    }
+    const page = (data ?? []) as SurvivingTripCoverRow[];
+    if (!page.length) break;
+    rows.push(...page);
+    lastId = page[page.length - 1].id;
+  }
+
+  // Trip ids the deleted user really stored covers for (`<deletedId>/trips/<tripId>/`):
+  // evidence that a non-member trip was transferred / uploaded to by this user.
+  // Listed lazily (bounded by the user's own storage, not by other users' rows);
+  // never listed once storage is purged.
+  let uploadedTripIds: Set<string> | null = null;
+  const hasUploadedCover = async (tripId: string): Promise<boolean> => {
+    if (storageAlreadyPurged) return false;
+    uploadedTripIds ??= await listUploadedTripFolders(admin, userId);
+    return uploadedTripIds.has(tripId);
+  };
+
+  const relocatedUrls = new Map<string, string>();
+  // Non-member own-trip covers without an uploaded folder: cleared in batches.
+  const batchClear = new Map<TripCoverUrlField, string[]>();
+  let relocatedTrips = 0;
+  let clearedCovers = 0;
+  let skippedUnrelated = 0;
+  for (const trip of rows) {
+    const patch: Partial<Record<TripCoverUrlField, string | null>> = {};
+    const tripCoverPrefix = `${userId}/trips/${trip.id}/`;
+    const isMemberTrip = memberTripIds.has(trip.id);
+    for (const field of TRIP_COVER_URL_FIELDS) {
+      const oldPath = profileMediaPathFromPublicUrl(trip[field]);
+      if (!oldPath?.startsWith(userPrefix)) continue;
+      const isOwnTripCover = oldPath.startsWith(tripCoverPrefix) && !oldPath.includes("..");
+      if (!isMemberTrip) {
+        // Not (or no longer) a member, e.g. a resume after the transfer removed
+        // the membership: act only on this trip's own cover under
+        // `<deletedId>/trips/<tripId>/`. Anything else was not put there by
+        // this deletion flow and is left untouched (never aborts).
+        if (!isOwnTripCover) {
+          skippedUnrelated += 1;
+          continue;
+        }
+        if (!(await hasUploadedCover(trip.id))) {
+          // No such folder in the deleted user's storage (or storage purged):
+          // the URL is broken, clear it in a batch without probing storage.
+          const ids = batchClear.get(field) ?? [];
+          ids.push(trip.id);
+          batchClear.set(field, ids);
+          clearedCovers += 1;
+          continue;
+        }
+        let sourceExists: boolean | null | undefined = false;
+        if (!storageAlreadyPurged) {
+          try {
+            sourceExists = (await admin.storage.from(PROFILE_MEDIA_BUCKET).exists(oldPath)).data;
+          } catch (error) {
+            // 5xx / network error: outcome unknown → leave the row untouched
+            // (counted as skipped below), never abort the deletion.
+            logCoverRelocationIssue(
+              requestId,
+              "exists_threw",
+              error instanceof Error ? error.message : undefined,
+            );
+            sourceExists = null;
+          }
+        }
+        if (sourceExists === false) {
+          // This trip's own cover file is gone (storage purged / exists false):
+          // the URL is already broken, clear it so the default cover is used.
+          patch[field] = null;
+          clearedCovers += 1;
+          continue;
+        }
+        if (sourceExists !== true) {
+          skippedUnrelated += 1;
+          continue;
+        }
+      }
+      if (!isOwnTripCover) {
+        // Not this trip's cover (avatar, another trip, …): never copy it out.
+        patch[field] = null;
+        clearedCovers += 1;
+        continue;
+      }
+      let newUrl = relocatedUrls.get(oldPath);
+      if (!newUrl) {
+        const fileName = oldPath.split("/").pop() || "cover.jpg";
+        const newPath = `${trip.user_id}/trips/${trip.id}/${fileName}`;
+        const outcome = await copyTripCoverIfNeeded(
+          admin,
+          requestId,
+          oldPath,
+          newPath,
+          storageAlreadyPurged,
+        );
+        if (outcome === "failed") throw new Error("account_collaboration_cover_copy_failed");
+        if (outcome === "source_missing") {
+          // Source already deleted (e.g. trip became shared after storage purge):
+          // clear the column so the default cover is used, and keep going.
+          patch[field] = null;
+          clearedCovers += 1;
+          continue;
+        }
+        newUrl = admin.storage.from(PROFILE_MEDIA_BUCKET).getPublicUrl(newPath).data.publicUrl;
+        relocatedUrls.set(oldPath, newUrl);
+      }
+      patch[field] = newUrl;
+    }
+    if (!Object.keys(patch).length) continue;
+    const { error: updateError } = await admin
+      .from("saved_trips")
+      .update(patch)
+      .eq("id", trip.id)
+      .neq("user_id", userId);
+    if (updateError) {
+      logCoverRelocationIssue(requestId, "repoint_failed", updateError.message);
+      throw new Error("account_collaboration_cover_repoint_failed");
+    }
+    relocatedTrips += 1;
+  }
+  // Narrower than the lookup (`<deletedId>/trips/` only): a column changed to
+  // e.g. the deleted user's avatar between lookup and update stays untouched.
+  const tripCoverLikePattern = `*${PROFILE_MEDIA_PUBLIC_MARKER}${userId}/trips/*`;
+  for (const [field, ids] of batchClear) {
+    for (let i = 0; i < ids.length; i += COVER_CLEAR_BATCH_SIZE) {
+      const { error: clearError } = await admin
+        .from("saved_trips")
+        .update({ [field]: null })
+        .in("id", ids.slice(i, i + COVER_CLEAR_BATCH_SIZE))
+        .neq("user_id", userId)
+        .or(`${field}.like.${tripCoverLikePattern}`);
+      if (clearError) {
+        logCoverRelocationIssue(requestId, "batch_clear_failed", clearError.message);
+        throw new Error("account_collaboration_cover_repoint_failed");
+      }
+    }
+  }
+  logDeletionStage(requestId, "trip_covers_relocated", {
+    relocatedTrips,
+    clearedCovers,
+    skippedUnrelated,
+  });
 }
 
 export async function deleteAuthenticatedAccount(params: {
@@ -452,6 +747,73 @@ export async function deleteAuthenticatedAccount(params: {
       status = "apple_revoke_complete";
       logDeletionStage(canonicalRequestId, "apple_revoke_complete");
     }
+    // Trips this user is a member of, read before the transfer RPC removes the
+    // memberships of transferred trips. Scopes cover relocation so an unrelated
+    // owner cannot interfere by pointing a cover URL into this user's prefix.
+    // Re-read on every attempt (see relocateSurvivingTripCovers for resumes).
+    // Keyset-paginated (id > last id of the previous page, ordered by id, until
+    // an empty page) so max-rows never turns member trips into non-member
+    // trips, and rows deleted mid-read cannot shift later rows past an offset.
+    const memberTripIds = new Set<string>();
+    for (let lastMembershipId: string | null = null; ; ) {
+      let membershipQuery = admin
+        .from("trip_members")
+        .select("id,trip_id")
+        .eq("user_id", user.id);
+      if (lastMembershipId !== null) {
+        membershipQuery = membershipQuery.gt("id", lastMembershipId);
+      }
+      const { data: membershipRows, error: membershipError } = await membershipQuery
+        .order("id", { ascending: true })
+        .limit(DELETION_PAGE_SIZE);
+      if (membershipError) {
+        logCollaborationCleanupError(
+          canonicalRequestId,
+          "lookup_memberships",
+          "trip_members",
+          membershipError,
+        );
+        throw new Error("account_collaboration_membership_lookup_failed");
+      }
+      const page = (membershipRows ?? []) as { id: string; trip_id: string | null }[];
+      if (!page.length) break;
+      for (const row of page) if (row.trip_id) memberTripIds.add(row.trip_id);
+      lastMembershipId = page[page.length - 1].id;
+    }
+
+    // Shared trips this user owns are handed to the earliest accepted member so
+    // the deleteUser cascade only removes solo trips. Runs on every attempt
+    // (including resumed ones) before storage cleanup and deleteUser; it is
+    // idempotent and a failure aborts deletion (resumable).
+    const { data: transferredTrips, error: transferError } = await admin.rpc(
+      "transfer_owned_shared_trips_for_deletion",
+      { p_user_id: user.id },
+    );
+    if (transferError) {
+      logCollaborationCleanupError(
+        canonicalRequestId,
+        "transfer_owned_shared_trips",
+        "saved_trips",
+        transferError,
+      );
+      throw new Error("account_collaboration_transfer_failed");
+    }
+    logDeletionStage(canonicalRequestId, "shared_trips_transferred", {
+      count: typeof transferredTrips === "number" ? transferredTrips : 0,
+    });
+
+    // Covers of surviving trips (transferred, or uploaded by this user into
+    // someone else's trip) still live under this user's storage prefix. Copy
+    // them to the trip owner's prefix and repoint the row (other paths are
+    // cleared); a failure aborts here, before any storage is deleted.
+    await relocateSurvivingTripCovers(
+      admin,
+      user.id,
+      canonicalRequestId,
+      status !== "authenticated" && status !== "apple_revoke_complete",
+      memberTripIds,
+    );
+
     if (status === "authenticated" || status === "apple_revoke_complete") {
       console.info("ACCOUNT_DELETION_STATE", {
         requestId: canonicalRequestId,
@@ -565,7 +927,13 @@ export async function deleteAuthenticatedAccount(params: {
     });
     return { completed: true };
   } catch (error) {
-    const code = error instanceof Error ? error.message : "account_deletion_failed";
+    // Only known codes are stored; raw messages (storage 5xx, network errors, …)
+    // become a fixed resumable code so a transient failure cannot leave the
+    // request stuck on account_deletion_already_in_progress.
+    const code =
+      error instanceof Error && KNOWN_DELETION_ERROR_CODE.test(error.message)
+        ? error.message
+        : ACCOUNT_DELETION_UNEXPECTED_FAILED;
     logDeletionStage(canonicalRequestId, "failed", { errorCode: code });
     await admin
       .from("account_deletion_requests")

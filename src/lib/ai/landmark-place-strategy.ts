@@ -10,6 +10,10 @@ import { isCountryLevelDestination } from "@/lib/ai/destination-scope";
 import { normalizePlaceName, type PlaceLike } from "@/lib/place-planning-memory";
 import type { WeatherScene } from "@/lib/weather-scene";
 import { isForbiddenTransitAttraction } from "@/lib/ai/transit-station-filter";
+import type { Locale } from "@/lib/i18n/types";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import { displayDestinationForCopy } from "@/lib/ai/destination-locale-aliases";
 
 export type DestinationPlaceSearchKind = "city" | "landmark";
 
@@ -361,9 +365,28 @@ export function buildLandmarkCompanionIntro(
   profile: DestinationPlaceSearchProfile,
   scene?: WeatherScene,
   weatherAvailable?: boolean,
+  locale: Locale = effectiveAppLocale(),
 ): string {
   const landmark = profile.label;
   const city = profile.nearestCity?.trim();
+
+  if (locale !== "zh-TW") {
+    const vars = {
+      landmark: displayDestinationForCopy(landmark, undefined, locale),
+      city: city ? displayDestinationForCopy(city, undefined, locale) : "",
+    };
+    if (city && normalizeMatchText(city) !== normalizeMatchText(landmark)) {
+      if (scene === "rainy") {
+        return chatRuntimeCopy(
+          weatherAvailable ? "landmarkIntroRainy" : "landmarkIntroRainyNoWeather",
+          locale,
+          vars,
+        );
+      }
+      return chatRuntimeCopy("landmarkIntroWithCity", locale, vars);
+    }
+    return chatRuntimeCopy("landmarkIntro", locale, vars);
+  }
 
   if (city && normalizeMatchText(city) !== normalizeMatchText(landmark)) {
     if (scene === "rainy") {

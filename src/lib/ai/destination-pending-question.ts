@@ -1,6 +1,7 @@
 import { matchesSelectionOwner } from "./numeric-selection-authority";
-import { displayDestinationForCopy } from "./destination-locale-aliases";
+import { applyKoParticles, displayDestinationForCopy } from "./destination-locale-aliases";
 import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
 import type { Locale } from "@/lib/i18n/types";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
@@ -23,7 +24,7 @@ import {
   type TripInterest,
 } from "@/lib/ai/trip-preference";
 import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
-import { parseTravelDateRangeFromText } from "@/lib/ai/parse-travel-date-range";
+import { parseTravelDateRangeFromText, stripTravelDateRangeFromText } from "@/lib/ai/parse-travel-date-range";
 import { parseTripDaysFromPendingReply } from "@/lib/ai/bare-number-reply";
 import {
   buildCityDaysConfirmedReply,
@@ -41,10 +42,13 @@ import {
   buildCombinationAllowlistFromTitles,
   buildCombinationSelectionAllowlist,
   getDestinationCombinations,
+  isUserAllOrAutoCombinationReply,
   pendingOptionTitlesForCombinations,
   resolveSelectedCombinations,
+  parseCombinationSelectionIndices,
 } from "@/lib/ai/destination-combination-suggestions";
 import { parseNearbyExtensionsFromText } from "@/lib/ai/combination-selection-reply";
+import { resolveSelectedCombinationAuthority } from "@/lib/ai/selected-combination-authority";
 import {
   isKnownCountryLabel,
   isKnownTouristCityLabel,
@@ -79,9 +83,17 @@ import {
 import {
   buildDefaultRoutesReply,
   getDestinationStyleGuide,
+  styleOptionDisplay,
 } from "@/lib/ai/destination-style-guide";
 import { logChatContextUpdate, logChatNextStep } from "@/lib/ai/chat-debug-log";
 import { parseMonthNumber } from "@/lib/ai/season-response-guardrail";
+import {
+  isCombinationConfirmAffirmation,
+  isCombinationCreateConfirmReply,
+  isCombinationHoldReply,
+  isTripLengthOnlyCombinationReply,
+  withoutDayReferences,
+} from "@/lib/ai/combination-partial-modify-reply";
 
 const FLEXIBLE_REPLY_RE =
   /^(都可以|都行|不限|沒特別|沒有特別|隨意|你推|都行吧|隨便|任何|沒有偏好|沒偏好)$/;
@@ -114,6 +126,15 @@ export type PendingQuestion = {
   destinationCountry?: string;
   expectedAnswerType?: ExpectedAnswerType;
   conversationState?: ConversationState;
+  /**
+   * combination_choice only: titles picked by 「第2組的第一天改一下」, waiting for 「幫我生成」.
+   * The confirm reply generates with exactly these combinations.
+   */
+  confirmCombinationTitles?: string[];
+  /** The confirm question text; the confirm is valid only while it is the last assistant reply. */
+  confirmQuestion?: string;
+  /** Nearby context the confirm was asked in (combinationConfirmContextKey). */
+  confirmContextKey?: string;
 };
 
 const AFFIRMATIVE_TAIL_RE =
@@ -197,6 +218,31 @@ const OPTION_ALIASES: Record<string, string[]> = {
     "每天值得去的地點",
   ],
 };
+
+/** Destination name for user-visible copy in the active locale (routing keeps `dest`). */
+function shownDestination(dest: string, locale?: Locale): string {
+  const resolved = locale ?? effectiveAppLocale();
+  return dest === "這趟"
+    ? chatRuntimeCopy("tripFallback", resolved)
+    : displayDestinationForCopy(dest, undefined, resolved);
+}
+
+/**
+ * zh-TW keeps the inline HEAD copy byte-for-byte; other locales use the chat-runtime key.
+ * `destination` (when given) is localized and gets ko particle correction.
+ */
+function localizedReply(
+  key: string,
+  zhReply: string,
+  locale: Locale | undefined,
+  destination?: string,
+): string {
+  const resolved = locale ?? effectiveAppLocale();
+  if (resolved === "zh-TW") return zhReply;
+  if (destination === undefined) return chatRuntimeCopy(key, resolved);
+  const shown = shownDestination(destination, resolved);
+  return applyKoParticles(chatRuntimeCopy(key, resolved, { destination: shown }), [shown], resolved);
+}
 
 function isFlexibleReply(text: string): boolean {
   return FLEXIBLE_REPLY_RE.test(text.trim());
@@ -501,6 +547,7 @@ export function parseAskDaysClarification(
 export function parsePendingOptionSelection(
   text: string,
   pending: PendingQuestion,
+  offeredCombinations?: CanonicalTravelContext["offeredCombinations"],
 ): string | null {
   const t = text.trim();
   if (!t) return null;
@@ -518,6 +565,28 @@ export function parsePendingOptionSelection(
   }
 
   if (pending.type === "combination_choice") {
+    // 「都不錯但第二天改一下」is a change request, not a pick (resolveSelectedCombinations is unchanged).
+    // 「幫我生成」after the 「第2組的第一天改一下」confirm question: exactly the confirmed combinations.
+    // (Callers drop a stale confirm first — dropStaleCombinationConfirm; 「好」"ok" count here only.)
+    if (
+      (pending.confirmCombinationTitles?.length && isCombinationCreateConfirmReply(t)) ||
+      (pending.confirmCombinationTitles?.length && isCombinationConfirmAffirmation(t))
+    ) {
+      return pending.confirmCombinationTitles.join("|");
+    }
+    // 「第二天不用改」(day + negated modify) picks nothing either.
+    if (isCombinationHoldReply(t)) return null;
+    // 「可以但改成1天」: the number is a trip length, never a combination id.
+    if (isTripLengthOnlyCombinationReply(t)) return null;
+    // All-select: the combinations the user was shown, even when the source list is empty / stale.
+    if (offeredCombinations?.length && isUserAllOrAutoCombinationReply(t)) {
+      return offeredCombinations.map((c) => c.title).join("|");
+    }
+    // 「1、3」: positions in the shown list (the source list may hold fewer under another locale).
+    const shownList = offeredCombinations ?? [];
+    const pickText = shownList.length ? shownCombinationPickText(t, pending.baseDestination) : null;
+    const shownPicks = pickText == null ? [] : parseCombinationSelectionIndices(pickText, shownList.length).map((i) => shownList[i]!.title);
+    if (shownPicks.length) return shownPicks.join("|");
     const dest = pending.baseDestination ?? "";
     const resolved = resolveSelectedCombinations(dest, t);
     if (resolved?.titles.length) {
@@ -624,6 +693,53 @@ export function parsePendingOptionSelection(
   return null;
 }
 
+/** Trip lengths (「3天」「3日間」「3 days」「3일」「2박 3일」「2泊」) are never combination ids; 「第一天」is kept. */
+const SHOWN_PICK_TRIP_LENGTH_RE = /(?<!第\s*)(?:\d+|[一二三四五六七八九十兩两]+)\s*(?:박(?:\s*\d+\s*일)?|泊|天|日間|日(?!目)|days?\b|nights?\b|일)/giu;
+
+/**
+ * 「第2組 3天」「3天 第2組」: the reply read for shown-list positions with trip lengths / date ranges removed.
+ * Null when it names a destination other than `dest` (「我要去京都 第2組」under 東京): the shown list does not apply.
+ */
+export function shownCombinationPickText(text: string, dest?: string): string | null {
+  const t = stripTravelDateRangeFromText(text).replace(SHOWN_PICK_TRIP_LENGTH_RE, " ");
+  const rest = t.replace(/第\s*[\d一二三四五六七八九十兩两]+\s*(?:組|组|個|个|套)?|\d+|組合|组合/gu, " ").replace(/[\s、，,。.！!]+/gu, " ").trim();
+  const named = dest && /\p{L}{2}/u.test(rest) ? resolveDestinationFromText(rest) : undefined;
+  if (named && normalizeDestinationLabel(named) !== normalizeDestinationLabel(dest!)) return null;
+  return t;
+}
+
+/**
+ * 「第2組的第一天改一下」: the combinations named once the day references are removed
+ * (「第一天」never adds combination 1). Null when no combination is named.
+ */
+export function resolveCombinationRefWithDaySelection(
+  text: string,
+  pending: PendingQuestion,
+  ctx?: CanonicalTravelContext,
+): { titles: string[]; ids: number[]; missing: number[] } | null {
+  if (pending.type !== "combination_choice") return null;
+  const stripped = withoutDayReferences(text);
+  // Positions in the shown list (as combination_choice picks), never the re-derived source list.
+  const shown = ctx?.offeredCombinations ?? [];
+  const shownIdx = parseCombinationSelectionIndices(stripped, shown.length);
+  if (shownIdx.length) {
+    const missing = parseCombinationSelectionIndices(stripped, 9).map((i) => i + 1).filter((n) => n > shown.length);
+    return { titles: shownIdx.map((i) => shown[i]!.title), ids: shownIdx.map((i) => shown[i]!.id), missing: [...new Set(missing)] };
+  }
+  const dest = pending.baseDestination ?? ctx?.destination ?? "";
+  if (!dest) return null;
+  const titles = resolveSelectedCombinations(dest, stripped)?.titles ?? [];
+  if (!titles.length) return null;
+  const ids = buildCombinationAllowlistFromTitles(dest, titles)?.selectedCombinationIds ?? [];
+  if (!ids.length) return null;
+  // 「第1組跟第3組」with two offered: 3 is named but not offered — the reply says so.
+  const offered = ctx?.offeredCombinations?.length ?? pending.options.length;
+  const missing = parseCombinationSelectionIndices(stripped, 9)
+    .map((i) => i + 1)
+    .filter((n) => n > offered && !ids.includes(n));
+  return { titles, ids, missing: [...new Set(missing)] };
+}
+
 export function applyDestinationPendingSelection(
   text: string,
   session: ChatPlanningSession,
@@ -640,7 +756,7 @@ export function applyDestinationPendingSelection(
   if (["ask_trip_style", "combination_choice"].includes(pending.type) && !matchesSelectionOwner(session, pending)) {
     return { session, contextPatch: {} };
   }
-  const selected = parsePendingOptionSelection(text, pending);
+  const selected = parsePendingOptionSelection(text, pending, session.travelContext?.offeredCombinations);
   if (!selected) {
     return { session, contextPatch: {} };
   }
@@ -785,7 +901,15 @@ function buildContextPatchForSelection(
       .map((part) => part.trim())
       .filter(Boolean);
     const dest = pending.baseDestination ?? base.destination;
-    const allowlist = dest
+    // Titles picked from the shown list: ids from that list, not the re-derived source list.
+    const shown = sessionContext?.offeredCombinations ?? [];
+    const titleIds = shown.filter((c) => titles.includes(c.title)).map((c) => c.id);
+    const shownAuthority = dest && titleIds.length
+      ? resolveSelectedCombinationAuthority({ selectedCombinationIds: titleIds, offeredCombinations: shown, selectionSource: "user_indexed" }, dest)
+      : null;
+    const allowlist = shownAuthority?.ok
+      ? shownAuthority.allowlist
+      : dest
       ? buildCombinationAllowlistFromTitles(dest, titles) ??
         buildCombinationSelectionAllowlist(dest, titles.join("、"))
       : null;
@@ -1009,7 +1133,10 @@ export function buildNextStepAfterAdviceSelection(
     }
     if (!days) {
       return {
-        reply: chatRuntimeCopy("cityGoodChoiceDaysAsk", locale, { destination: displayDestinationForCopy(dest, undefined, locale ?? "zh-TW") }),
+        reply: (() => {
+          const shown = displayDestinationForCopy(dest, undefined, locale ?? "zh-TW");
+          return applyKoParticles(chatRuntimeCopy("cityGoodChoiceDaysAsk", locale, { destination: shown }), [shown], locale);
+        })(),
         pendingQuestion: pendingQuestionForAskDays(
           dest,
           pending.destinationCountry ?? ctx.destinationCountry,
@@ -1037,14 +1164,24 @@ export function buildNextStepAfterAdviceSelection(
       .split("|")
       .map((part) => part.trim())
       .filter(Boolean);
-    const labelList = titles.length ? titles.join("、") : "建議組合";
+    const shownLocale = locale ?? effectiveAppLocale();
+    const labelList = titles.length
+      ? titles
+          .map((title) => styleOptionDisplay(title, shownLocale))
+          .join(shownLocale === "en" || shownLocale === "ko" ? ", " : "、")
+      : chatRuntimeCopy("suggestedMix", locale);
+    const shownDest = shownDestination(dest, locale);
     return {
       reply: [
-        chatRuntimeCopy(ctx.days ? "combinationFocusDays" : "combinationFocus", locale, {
-          styles: labelList,
-          destination: dest,
-          days: ctx.days ?? "",
-        }),
+        applyKoParticles(
+          chatRuntimeCopy(ctx.days ? "combinationFocusDays" : "combinationFocus", locale, {
+            styles: labelList,
+            destination: shownDest,
+            days: ctx.days ?? "",
+          }),
+          [labelList, shownDest],
+          shownLocale,
+        ),
         chatRuntimeCopy("confirmingPlaces", locale),
       ].join("\n"),
       pendingQuestion: undefined,
@@ -1055,9 +1192,16 @@ export function buildNextStepAfterAdviceSelection(
     const dest = pending.baseDestination ?? ctx.destination ?? "這趟";
     const days = ctx.days;
     const style = selected === "都可以" ? "混合" : selected;
+    const shownLocale = locale ?? effectiveAppLocale();
+    const shownStyle = styleOptionDisplay(style, shownLocale);
+    const shownDest = shownDestination(dest, locale);
     if (!days) {
       return {
-        reply: chatRuntimeCopy("styleDirectionDaysAsk", locale, { destination: dest, style }),
+        reply: applyKoParticles(
+          chatRuntimeCopy("styleDirectionDaysAsk", locale, { destination: shownDest, style: shownStyle }),
+          [shownDest],
+          shownLocale,
+        ),
         pendingQuestion: pendingQuestionForAskDays(
           dest,
           pending.destinationCountry ?? ctx.destinationCountry,
@@ -1066,7 +1210,7 @@ export function buildNextStepAfterAdviceSelection(
     }
     return {
       reply: [
-        chatRuntimeCopy("styleDirectionDaysKnown", locale, { destination: dest, days, style }),
+        chatRuntimeCopy("styleDirectionDaysKnown", locale, { destination: shownDest, days, style: shownStyle }),
         chatRuntimeCopy("combinationNext", locale),
       ].join("\n"),
       pendingQuestion: pendingQuestionForCombinationChoice(
@@ -1082,6 +1226,7 @@ export function buildNextStepAfterAdviceSelection(
       const { reply, durationOptions } = buildDefaultRoutesReply(
         dest,
         pending.destinationCountry ?? ctx.destinationCountry,
+        locale ?? effectiveAppLocale(),
       );
       return {
         reply,
@@ -1096,10 +1241,17 @@ export function buildNextStepAfterAdviceSelection(
 
     const guide = getDestinationStyleGuide(dest);
     const durationOptions = guide.durationOptions ?? ["5 天", "7 天", "10 天"];
+    const shownLocale = locale ?? effectiveAppLocale();
+    const shownSelected = styleOptionDisplay(selected, shownLocale);
+    const shownDest = shownDestination(dest, locale);
     return {
       reply: [
-        chatRuntimeCopy("styleDirectionOpen", locale, { destination: dest, selected }),
-        chatRuntimeCopy("styleRegionPace", locale, { destination: dest, selected }),
+        applyKoParticles(
+          chatRuntimeCopy("styleDirectionOpen", locale, { destination: shownDest, selected: shownSelected }),
+          [shownDest],
+          shownLocale,
+        ),
+        chatRuntimeCopy("styleRegionPace", locale, { destination: shownDest, selected: shownSelected }),
         chatRuntimeCopy("styleDaysAsk", locale),
       ].join("\n"),
       pendingQuestion: {
@@ -1180,12 +1332,16 @@ export function buildNextStepAfterAdviceSelection(
   if (pending.type === "trip_style_choice" && pending.options.includes("城市")) {
     if (selected === "城市") {
       return {
-        reply: [
-          "那我會比較建議你以曼谷為主。",
-          "曼谷很適合安排美食、按摩、夜市、市集、寺廟和城市散步。",
-          "如果第一次去，通常 4～5 天會比較剛好。",
-          "你這趟大概想排幾天？",
-        ].join("\n"),
+        reply: localizedReply(
+          "thaiStyleCity",
+          [
+            "那我會比較建議你以曼谷為主。",
+            "曼谷很適合安排美食、按摩、夜市、市集、寺廟和城市散步。",
+            "如果第一次去，通常 4～5 天會比較剛好。",
+            "你這趟大概想排幾天？",
+          ].join("\n"),
+          locale,
+        ),
         pendingQuestion: {
           type: "duration_choice",
           options: ["4 天", "5 天", "6 天"],
@@ -1197,12 +1353,16 @@ export function buildNextStepAfterAdviceSelection(
 
     if (selected === "美食按摩") {
       return {
-        reply: [
-          "那我會建議以曼谷為主，很適合排美食、按摩和夜市。",
-          "可以混搭米其林小吃、路邊攤、按摩店和河畔夜市，節奏不會太趕。",
-          "如果第一次去，通常 4～5 天會比較剛好。",
-          "你這趟大概想排幾天？",
-        ].join("\n"),
+        reply: localizedReply(
+          "thaiStyleFoodMassage",
+          [
+            "那我會建議以曼谷為主，很適合排美食、按摩和夜市。",
+            "可以混搭米其林小吃、路邊攤、按摩店和河畔夜市，節奏不會太趕。",
+            "如果第一次去，通常 4～5 天會比較剛好。",
+            "你這趟大概想排幾天？",
+          ].join("\n"),
+          locale,
+        ),
         pendingQuestion: {
           type: "duration_choice",
           options: ["4 天", "5 天", "6 天"],
@@ -1214,11 +1374,15 @@ export function buildNextStepAfterAdviceSelection(
 
     if (selected === "海島放鬆") {
       return {
-        reply: [
-          "那我會比較建議往普吉、喀比或蘇梅島方向排。",
-          "這幾個地方都很適合海灘放空、跳島和度假村節奏，第一次通常 5～7 天比較剛好。",
-          "你這趟大概想排幾天？",
-        ].join("\n"),
+        reply: localizedReply(
+          "thaiStyleIsland",
+          [
+            "那我會比較建議往普吉、喀比或蘇梅島方向排。",
+            "這幾個地方都很適合海灘放空、跳島和度假村節奏，第一次通常 5～7 天比較剛好。",
+            "你這趟大概想排幾天？",
+          ].join("\n"),
+          locale,
+        ),
         pendingQuestion: {
           type: "duration_choice",
           options: ["5 天", "6 天", "7 天"],
@@ -1231,11 +1395,15 @@ export function buildNextStepAfterAdviceSelection(
 
   if (selected === "曼谷＋芭達雅") {
     return {
-      reply: [
-        "曼谷＋芭達雅很適合排 5～6 天。",
-        "我會建議前半段住曼谷，安排美食、按摩、夜市和水上市場；後半段去芭達雅放鬆、看海或跳島。",
-        "你這趟比較想排幾天？我可以先幫你抓一版 4 天、5 天或 6 天的節奏。",
-      ].join("\n"),
+      reply: localizedReply(
+        "thaiBangkokPattaya",
+        [
+          "曼谷＋芭達雅很適合排 5～6 天。",
+          "我會建議前半段住曼谷，安排美食、按摩、夜市和水上市場；後半段去芭達雅放鬆、看海或跳島。",
+          "你這趟比較想排幾天？我可以先幫你抓一版 4 天、5 天或 6 天的節奏。",
+        ].join("\n"),
+        locale,
+      ),
       pendingQuestion: {
         type: "duration_choice",
         options: ["4 天", "5 天", "6 天"],
@@ -1247,11 +1415,16 @@ export function buildNextStepAfterAdviceSelection(
 
   if (selected === "海灘放鬆") {
     return {
-      reply: [
-        `好，以${pending.baseDestination ?? "芭達雅"}為主，我會幫你排海灘放鬆路線。`,
-        "通常 2～3 天可以安排沙灘、海景餐廳和傍晚散步，節奏不會太趕。",
-        "你這趟大概幾天？想偏重度假村放空，還是每天換不同海灘？",
-      ].join("\n"),
+      reply: localizedReply(
+        "pattayaBeach",
+        [
+          `好，以${pending.baseDestination ?? "芭達雅"}為主，我會幫你排海灘放鬆路線。`,
+          "通常 2～3 天可以安排沙灘、海景餐廳和傍晚散步，節奏不會太趕。",
+          "你這趟大概幾天？想偏重度假村放空，還是每天換不同海灘？",
+        ].join("\n"),
+        locale,
+        pending.baseDestination ?? "芭達雅",
+      ),
       pendingQuestion: {
         type: "duration_choice",
         options: ["2 天", "3 天", "4 天"],
@@ -1263,11 +1436,16 @@ export function buildNextStepAfterAdviceSelection(
 
   if (selected === "跳島") {
     return {
-      reply: [
-        `好，${pending.baseDestination ?? "芭達雅"}附近有不少跳島選擇，通常會排半日或一日船程。`,
-        "我會建議先抓 3～4 天，留 1～2 天給跳島，其餘時間在海灘或市區放鬆。",
-        "你這趟大概幾天？",
-      ].join("\n"),
+      reply: localizedReply(
+        "pattayaIslandHopping",
+        [
+          `好，${pending.baseDestination ?? "芭達雅"}附近有不少跳島選擇，通常會排半日或一日船程。`,
+          "我會建議先抓 3～4 天，留 1～2 天給跳島，其餘時間在海灘或市區放鬆。",
+          "你這趟大概幾天？",
+        ].join("\n"),
+        locale,
+        pending.baseDestination ?? "芭達雅",
+      ),
       pendingQuestion: {
         type: "duration_choice",
         options: ["3 天", "4 天", "5 天"],
@@ -1279,11 +1457,15 @@ export function buildNextStepAfterAdviceSelection(
 
   if (selected === "水上市場") {
     return {
-      reply: [
-        "水上市場通常會搭配曼谷或近郊半日遊最順。",
-        "若你想專攻水上市場，我建議 2～3 天曼谷＋近郊，或 4 天曼谷＋芭達雅各排一段。",
-        "你比較想排幾天？",
-      ].join("\n"),
+      reply: localizedReply(
+        "floatingMarket",
+        [
+          "水上市場通常會搭配曼谷或近郊半日遊最順。",
+          "若你想專攻水上市場，我建議 2～3 天曼谷＋近郊，或 4 天曼谷＋芭達雅各排一段。",
+          "你比較想排幾天？",
+        ].join("\n"),
+        locale,
+      ),
       pendingQuestion: {
         type: "duration_choice",
         options: ["2 天", "3 天", "4 天"],
@@ -1348,7 +1530,10 @@ export function buildNextStepAfterAdviceSelection(
   if (selected === "full_itinerary") {
     const dest = pending.baseDestination ?? ctx.destination ?? "這趟";
     const days = ctx.days ?? parseDayCountFromText(selected);
-    const reply = itineraryGenerationStatusReply({ ...ctx, destination: dest, days: days ?? ctx.days });
+    const reply = itineraryGenerationStatusReply(
+      { ...ctx, destination: dest, days: days ?? ctx.days },
+      locale ?? effectiveAppLocale(),
+    );
     if (reply) return { reply };
   }
 
@@ -1358,6 +1543,7 @@ export function buildNextStepAfterAdviceSelection(
     const reply = buildDailyRecommendationsReply(
       { ...ctx, destination: dest, days: ctx.days },
       interests,
+      locale ?? effectiveAppLocale(),
     );
     if (reply) return { reply };
   }
@@ -1391,7 +1577,10 @@ export function buildNextStepAfterAdviceSelection(
     }
     if (!days) {
       return {
-        reply: chatRuntimeCopy("cityGoodChoiceDaysAsk", locale, { destination: displayDestinationForCopy(dest, undefined, locale ?? "zh-TW") }),
+        reply: (() => {
+          const shown = displayDestinationForCopy(dest, undefined, locale ?? "zh-TW");
+          return applyKoParticles(chatRuntimeCopy("cityGoodChoiceDaysAsk", locale, { destination: shown }), [shown], locale);
+        })(),
         pendingQuestion: pendingQuestionForAskDays(
           dest,
           pending.destinationCountry ?? ctx.destinationCountry,
@@ -1410,11 +1599,16 @@ export function buildNextStepAfterAdviceSelection(
   const dest = pending.baseDestination ?? ctx.destination ?? "這趟";
   const days = ctx.days ?? parseDayCountFromText(selected);
   if (days) {
+    const resolvedLocale = locale ?? effectiveAppLocale();
+    const shownDest = shownDestination(dest, resolvedLocale);
     return {
-      reply: [
-        `好的，我會依${dest} ${days} 天的方向繼續幫你規劃。`,
-        "你比較想先定每天節奏，還是直接列出必去點？",
-      ].join("\n"),
+      reply:
+        resolvedLocale === "zh-TW"
+          ? [
+              `好的，我會依${dest} ${days} 天的方向繼續幫你規劃。`,
+              "你比較想先定每天節奏，還是直接列出必去點？",
+            ].join("\n")
+          : chatRuntimeCopy("continuePlanningNextStep", resolvedLocale, { destination: shownDest, days }),
       pendingQuestion: pendingQuestionForPlanningNextStep(
         dest,
         pending.destinationCountry ?? ctx.destinationCountry,
@@ -1423,7 +1617,12 @@ export function buildNextStepAfterAdviceSelection(
   }
 
   return {
-    reply: `好的，我會繼續幫你規劃${dest}這趟行程。你這趟大概幾天？`,
+    reply: localizedReply(
+      "continuePlanningAskDays",
+      `好的，我會繼續幫你規劃${dest}這趟行程。你這趟大概幾天？`,
+      locale,
+      dest,
+    ),
     pendingQuestion: {
       type: "duration_choice",
       options: ["3 天", "4 天", "5 天"],
@@ -1578,6 +1777,18 @@ export function pendingQuestionForPattayaStyleChoice(
   });
 }
 
+/**
+ * Our own reply names `canonical` (zh label, or its en / ja / ko display name), so localized
+ * country city lists keep the same inferred region pending as the zh copy.
+ */
+function replyMentionsPlace(reply: string, canonical: string): boolean {
+  if (reply.includes(canonical)) return true;
+  return (["en", "ja", "ko"] as const).some((locale) => {
+    const shown = displayDestinationForCopy(canonical, undefined, locale);
+    return shown !== canonical && reply.includes(shown);
+  });
+}
+
 export function inferPendingQuestionFromAdviceReply(
   reply: string,
   ctx: CanonicalTravelContext,
@@ -1603,14 +1814,16 @@ export function inferPendingQuestionFromAdviceReply(
     );
   }
 
-  if (reply.includes("首爾") && reply.includes("釜山") && reply.includes("濟州")) {
+  if (replyMentionsPlace(reply, "首爾") && replyMentionsPlace(reply, "釜山") && replyMentionsPlace(reply, "濟州")) {
     return pendingQuestionForKoreaRegionChoice(
       ctx.destinationCountry ?? session.travelContext?.destinationCountry ?? "韓國",
     );
   }
 
   if (
-    (reply.includes("曼谷") && reply.includes("清邁") && (reply.includes("普吉") || reply.includes("蘇梅"))) ||
+    (replyMentionsPlace(reply, "曼谷") &&
+      replyMentionsPlace(reply, "清邁") &&
+      (replyMentionsPlace(reply, "普吉") || replyMentionsPlace(reply, "蘇梅"))) ||
     reply.includes("城市、美食按摩，還是海島放鬆")
   ) {
     // Country-level Thailand always asks concrete cities (legacy style text → still region_choice).

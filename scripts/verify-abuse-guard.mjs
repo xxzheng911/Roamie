@@ -1,3 +1,4 @@
+import "./verify-netguard-full.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { applyGuardCommand } from "../src/lib/abuse-guard-logic.ts";
@@ -22,6 +23,12 @@ import {
 } from "../src/lib/worker-request-scope.ts";
 
 process.env.ABUSE_GUARD_ENFORCEMENT = "1";
+// 任務單 #6：全域 fetch 一律攔截（各情境都注入自己的 fetcher；落到全域 fetch 即為未 mock 的網路請求）。
+const unmockedNetwork = [];
+globalThis.fetch = async (input) => {
+  unmockedNetwork.push(String(input?.url ?? input).slice(0, 120));
+  throw new TypeError("NETWORK_BLOCKED");
+};
 
 const text = {
   url: "https://places.googleapis.com/v1/places:searchText",
@@ -456,7 +463,8 @@ try {
     const plusCalls = [];
     const plus = await asUser(guard, "plus-user", "203.0.113.22", () =>
       beginAiRequest(
-        { userId: "plus-user", email: null, hasPlusAccess: true, client: authClient(plusCalls) },
+        // 任務單 #6：預扣改走 service role client（auth.creditsClient）；使用者 client 不再參與扣點。
+        { userId: "plus-user", email: null, hasPlusAccess: true, client: authClient([]), creditsClient: authClient(plusCalls) },
         "ITINERARY_GENERATION",
         "itinerary",
         new Request("https://roamie.tw/api/generate-itinerary", { headers: { "x-roamie-request-id": "plus-1" } }),
@@ -467,9 +475,10 @@ try {
     assert.equal(plusCalls.includes("credits_reserve"), false);
 
     const freeCalls = [];
+    const freeUserClientCalls = [];
     const free = await asUser(guard, "free-user", "203.0.113.23", () =>
       beginAiRequest(
-        { userId: "free-user", email: null, hasPlusAccess: false, client: authClient(freeCalls) },
+        { userId: "free-user", email: null, hasPlusAccess: false, client: authClient(freeUserClientCalls), creditsClient: authClient(freeCalls) },
         "ITINERARY_GENERATION",
         "itinerary",
         new Request("https://roamie.tw/api/generate-itinerary", { headers: { "x-roamie-request-id": "free-1" } }),
@@ -477,6 +486,7 @@ try {
     );
     assert.equal(free.response, null);
     assert.equal(freeCalls.includes("credits_reserve"), true);
+    assert.deepEqual(freeUserClientCalls, [], "user JWT client must not reserve credits");
 
     const second = await asUser(guard, "free-user", "203.0.113.23", () =>
       authorizeAiUse("itinerary", new Request("https://roamie.tw/", { headers: { "x-roamie-request-id": "free-2" } })),
@@ -493,7 +503,7 @@ try {
     const deniedCalls = [];
     const denied = await asUser(guard, "free-user", "203.0.113.23", () =>
       beginAiRequest(
-        { userId: "free-user", email: null, hasPlusAccess: false, client: authClient(deniedCalls) },
+        { userId: "free-user", email: null, hasPlusAccess: false, client: authClient(deniedCalls), creditsClient: authClient(deniedCalls) },
         "ITINERARY_GENERATION",
         "itinerary",
         new Request("https://roamie.tw/api/generate-itinerary", { headers: { "x-roamie-request-id": "free-16" } }),
@@ -673,6 +683,7 @@ try {
   const credits = read("src/integrations/supabase/security-middleware.ts");
   assert.ok(credits.indexOf("authorizeAiUse") < credits.indexOf("credits_reserve"));
   assert.doesNotMatch(read("scripts/public-client-env.mjs"), /DISABLE_|ABUSE_GUARD|GOOGLE_GLOBAL_DAILY_UNITS/);
+  assert.deepEqual(unmockedNetwork, [], "no unmocked network request");
   console.log("PASS abuse guard: families, weights, IP, global, UTC, concurrency, idempotency, fail closed, AI fair-use, kill switches");
 } finally {
   console.info = originalInfo;

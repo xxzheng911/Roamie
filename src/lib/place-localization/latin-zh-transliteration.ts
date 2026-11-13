@@ -308,6 +308,8 @@ export function transliterateLatinToZh(name: string): {
   zh: string;
   confidence: number;
   usedKnownTokens: boolean;
+  /** Every token came from KNOWN_TOKEN_ZH (no syllable-level phonetic invention). */
+  allKnownTokens: boolean;
 } | null {
   const raw = (name ?? "").trim();
   if (!raw) return null;
@@ -316,7 +318,7 @@ export function transliterateLatinToZh(name: string): {
 
   const key = normalizePlaceNameKey(raw);
   if (KNOWN_TOKEN_ZH[key]) {
-    return { zh: KNOWN_TOKEN_ZH[key]!, confidence: 0.95, usedKnownTokens: true };
+    return { zh: KNOWN_TOKEN_ZH[key]!, confidence: 0.95, usedKnownTokens: true, allKnownTokens: true };
   }
 
   // Phrase-level known tokens (multi-word)
@@ -334,6 +336,7 @@ export function transliterateLatinToZh(name: string): {
   }
 
   const parts = working.split(/[\s\-_/]+/).filter(Boolean);
+  let allKnown = true;
   for (const part of parts) {
     if (/[\u4e00-\u9fff]/.test(part)) {
       replaced.push(part);
@@ -345,6 +348,7 @@ export function transliterateLatinToZh(name: string): {
       usedKnown = true;
       continue;
     }
+    allKnown = false;
     const syl = transliterateToken(part);
     if (syl) replaced.push(syl);
   }
@@ -356,7 +360,7 @@ export function transliterateLatinToZh(name: string): {
     ? Math.min(MAX_TRANSLITERATION_CONFIDENCE + 0.06, 0.92)
     : Math.min(0.8 + Math.min(zh.length, 6) * 0.01, MAX_TRANSLITERATION_CONFIDENCE);
 
-  return { zh, confidence, usedKnownTokens: usedKnown };
+  return { zh, confidence, usedKnownTokens: usedKnown, allKnownTokens: allKnown };
 }
 
 /** Register extra known tokens at runtime (tests / destination packs). */

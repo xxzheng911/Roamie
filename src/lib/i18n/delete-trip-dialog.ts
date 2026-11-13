@@ -21,14 +21,28 @@ const COPY = {
   },
 } as const satisfies Record<Locale, { title: string; description: string }>;
 
+/** 擁有者刪除有其他 accepted 成員的共享行程時，附加在 description 後的提醒。 */
+const SHARED_MEMBERS_NOTICE = {
+  "zh-TW": "其他成員也將無法再查看這趟行程與花費紀錄。",
+  en: "Other members will also lose access to this trip and its expense records.",
+  ja: "ほかのメンバーも、この旅程と費用の記録を見られなくなります。",
+  ko: "다른 멤버도 더 이상 이 여행 일정과 지출 기록을 볼 수 없게 됩니다.",
+} as const satisfies Record<Locale, string>;
+
 const CONFIRM_KEY = "productionUi.p3c8f5b363a";
 const CANCEL_KEY = "productionUi.p2cd0f3be87";
 
-export function deleteTripDialogLabels(locale: Locale) {
+export function deleteTripDialogLabels(
+  locale: Locale,
+  options: { hasOtherMembers?: boolean } = {},
+) {
   const copy = COPY[locale];
+  const separator = locale === "en" || locale === "ko" ? " " : "";
   return {
     title: copy.title,
-    description: copy.description,
+    description: options.hasOtherMembers
+      ? `${copy.description}${separator}${SHARED_MEMBERS_NOTICE[locale]}`
+      : copy.description,
     confirmLabel: translate(locale, CONFIRM_KEY),
     cancelLabel: translate(locale, CANCEL_KEY),
   };

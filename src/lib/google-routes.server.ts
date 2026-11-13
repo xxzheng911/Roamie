@@ -78,9 +78,15 @@ export type TripLegRoute = {
 export async function getTripLegsWithDurations(
   places: LatLng[],
   travelMode: RoutesTravelMode,
+  region?: string,
 ): Promise<RoutesApiSuccess<TripLegRoute[]> | RoutesApiError> {
   if (places.length < 2) {
     return { ok: true, data: [] };
+  }
+  // Korea: Google Routes returns ZERO_RESULTS (billed) for non-TRANSIT — skip every leg, same shape as soft-fail.
+  if (region === "kr" && travelMode !== "TRANSIT") {
+    const skipped = places.slice(0, -1).map((from, i) => ({ from, to: places[i + 1]!, travelMode, durationMinutes: 0, distanceMeters: 0 }));
+    return { ok: true, data: skipped };
   }
 
   const legs: TripLegRoute[] = [];

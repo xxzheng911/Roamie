@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "./verify-netguard-full.mjs";
 /**
  * #TS-PE 回歸：未簽名照片網址（A）與探索「全部」0 件（B）。
  * 執行：node scripts/verify-unsigned-photo-and-explore-all.mjs

@@ -1,4 +1,7 @@
-import { TRIP_WEATHER_VERSION, tripWeatherMode } from "./trip-weather-policy";
+import { TRIP_WEATHER_VERSION, formatLocaleDateRange, tripWeatherMode } from "./trip-weather-policy";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import type { Locale } from "@/lib/i18n/types";
+import { translate } from "@/lib/i18n/translate";
 import type { RoamieItineraryItem, TripTransportMode } from "@/lib/ai/types";
 import type { TripLocation } from "@/lib/location/types";
 import { inferActivityTypesFromDayItems } from "@/lib/outfit/infer-activities";
@@ -101,8 +104,12 @@ export function transportLabelForPrompt(transport?: TripTransportMode | string |
   }
 }
 
-export function formatTripDateRangeLabel(start: string, end: string): string {
-  if (!start) return "日期待定";
+export function formatTripDateRangeLabel(
+  start: string,
+  end: string,
+  locale: Locale = effectiveAppLocale(),
+): string {
+  if (!start) return translate(locale, "nativeQa.tripDatesTbd");
   if (!end || end === start) return start;
-  return `${start} ～ ${end}`;
+  return formatLocaleDateRange(start, end, locale, `${start} ～ ${end}`);
 }

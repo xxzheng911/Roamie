@@ -242,6 +242,33 @@ export function deriveCombinationThemeTitle(
   return combinationThemeTitle("culture_stroll", locale);
 }
 
+/**
+ * Post-composition check for derived titles: a sunset/coast title must still be
+ * backed by the places that survived filtering; otherwise use a general title.
+ */
+export function revalidateDerivedViewTitle(
+  title: string,
+  places: ThemeTitlePlaceHint[],
+  usedTitles: Set<string>,
+): string {
+  const trimmed = title.trim();
+  const locale = (Object.keys(THEME_TITLES.sunset_views!) as Locale[]).find((l) =>
+    ["sunset_views", "coast"].some((key) => THEME_TITLES[key]![l] === trimmed),
+  );
+  if (!locale) return title;
+  const blob = places
+    .map((p) => [p.localizedDisplayName, p.name, p.primaryType, ...(p.types ?? []), p.normalizedCategory].filter(Boolean).join(" "))
+    .join(" ")
+    .toLowerCase();
+  const sunsetScore = (blob.match(/sunset|viewpoint|viewing|觀景|夕陽|日落|mound|observation/g) ?? []).length;
+  if (sunsetScore >= 2) return title;
+  for (const key of ["landmark_walk", "culture_stroll", "attraction"]) {
+    const next = combinationThemeTitle(key, locale);
+    if (!usedTitles.has(next)) return next;
+  }
+  return combinationThemeTitle("culture_stroll", locale);
+}
+
 export function isMechanicalCombinationTitle(title: string): boolean {
   return MECHANICAL_TITLE_RE.test(title.trim());
 }

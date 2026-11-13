@@ -411,7 +411,10 @@ function mentionedCandidates(
     九: 9,
     十: 10,
   };
-  const ordinalMatches = [...text.matchAll(/第\s*([一二三四五六七八九十\d]+)\s*(?:個|項|張)?/g)];
+  // 「第二天」「第2日」 name a day, never the N-th candidate.
+  const ordinalMatches = [
+    ...text.matchAll(/第\s*([一二三四五六七八九十\d]+)(?![一二三四五六七八九十\d])(?!\s*(?:天|日))\s*(?:個|項|張)?/g),
+  ];
   if (ordinalMatches.length) {
     const places: ChatPlaceItem[] = [];
     const matches: PlanningEntityMatch[] = [];

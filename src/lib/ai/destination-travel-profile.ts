@@ -5,6 +5,7 @@ import { canonicalEditorialTheme } from "@/lib/ai/combination-theme-titles";
  * Never invents destination+category placeholder place names.
  */
 import {
+  categorySwitchSearchText,
   isNonGeographicActivityTail,
   normalizeDestinationLabel,
   resolveDestinationFromText,
@@ -12,6 +13,7 @@ import {
   splitTrailingActivityTail,
 } from "@/lib/ai/trip-planning-context";
 import type { GeocodeDestinationFn } from "@/lib/ai/destination-geocode";
+import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
 import { parseNegatedDestinationSwitch } from "@/lib/ai/continue-recommendation-intent";
 import { lockDestinationCoordinatesFromGeocode } from "@/lib/ai/resolved-destination-scope";
 import type { Locale } from "@/lib/i18n/types";
@@ -294,7 +296,8 @@ export function resolveCuratedOrCachedDestinationAreaScope(
     if (!compact.includes(parentCity)) continue;
     for (const area of profile.districts) {
       const normalizedArea = normalizeDestinationLabel(area).replace(/\s+/g, "");
-      if (!normalizedArea || !compact.includes(normalizedArea)) continue;
+      // 「濟州市」→「濟州」: a district equal to its parent city is the city itself, never 濟州濟州.
+      if (!normalizedArea || normalizedArea === parentCity || !compact.includes(normalizedArea)) continue;
       const explicitArea = compact.includes(`${parentCity}${normalizedArea}區`) ? `${normalizedArea}區` : normalizedArea;
       matches.push({
         displayLabel: `${parentCity}${explicitArea}`,
@@ -439,6 +442,9 @@ function provisionalPlaceAfterGo(label: string): string | null {
 export function extractProvisionalDestinationAreaCandidate(
   input: string,
 ): ProvisionalDestinationAreaCandidate | null {
+  // 「我想去博物館」「美術館に行きたい」: wish / switch wording around category words names no area
+  // (never 「我」 or the whole sentence as a provisional geographic label).
+  if (categorySwitchSearchText(input)) return null;
   if (
     resolveCuratedOrCachedDestinationAreaScope(input) ||
     extractCityTailAreaCandidate(input) ||
@@ -483,6 +489,16 @@ function areaTailAfterParent(afterCity: string): string {
   return isNonGeographicActivityTail(tail) ? "" : tail;
 }
 
+/** The tail is a category word itself; 「士林夜市」「信義商圈」(geo prefix + category) stay areas. */
+function isCategoryOnlyAreaTail(area: string): boolean {
+  if (!hasCategoryPlaceQuery(area)) return false;
+  // i = 1: one-character geo prefixes (「林」百貨,「森」美術館) stay areas too.
+  for (let i = 1; i < area.length; i++) {
+    if (!hasCategoryPlaceQuery(area.slice(0, i)) && hasCategoryPlaceQuery(area.slice(i))) return false;
+  }
+  return true;
+}
+
 /**
  * Known/resolved parent + adjacent geographic tail.
  * Tail need not include 區/鄉/鎮/市/District/City (屏東恆春, 宜蘭羅東).
@@ -508,7 +524,9 @@ function extractCityTailAreaCandidate(input: string): DestinationAreaCandidate |
   if (
     area.length < 1 ||
     area.length > 8 ||
-    !looksLikeGeographicLabel(area)
+    !looksLikeGeographicLabel(area) ||
+    // 「台北無菜單料理」「台北燒肉」: a category / cuisine tail is no area (溫泉 stays a place name).
+    isCategoryOnlyAreaTail(area)
   ) {
     return null;
   }

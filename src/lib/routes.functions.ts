@@ -53,12 +53,13 @@ export const routesComputeTripLegs = createServerFn({ method: "POST" })
       .object({
         places: z.array(LatLngSchema).min(2).max(30),
         travelMode: TravelModeSchema,
+        region: z.string().regex(/^[a-z]{2}$/).optional(),
       })
       .parse(input),
   )
   .handler(async ({ data }) => {
     const { getTripLegsWithDurations } = await import("@/lib/google-routes.server");
-    return getTripLegsWithDurations(data.places, data.travelMode);
+    return getTripLegsWithDurations(data.places, data.travelMode, data.region);
   });
 
 export const routesComputeLegEstimates = createServerFn({ method: "POST" })

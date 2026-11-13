@@ -1,5 +1,8 @@
 import type { RoamieItineraryItem, TripPlanSettings } from "@/lib/ai/types";
-import { recalculateDayArrivalTimesInItems } from "@/lib/saved-trip/recalculate-arrival-times";
+import {
+  recalculateDayArrivalTimesInItems,
+  withLastEntryFlag,
+} from "@/lib/saved-trip/recalculate-arrival-times";
 import { resolveLegTransportLabel } from "@/lib/saved-trip/transport-options";
 import { travelMinutesForArrival } from "@/lib/saved-trip/travel-time";
 import { routesModeToTripTransportLabel } from "@/lib/saved-trip/leg-transport-sot";
@@ -50,10 +53,14 @@ function preserveDayArrivalTimes(
 ): RoamieItineraryItem[] {
   const beforeDay = groupStopsByDate(itemsBefore).get(dateKey) ?? [];
   const afterDay = groupStopsByDate(itemsAfter).get(dateKey) ?? [];
-  if (beforeDay.length !== afterDay.length) return itemsAfter;
+  if (beforeDay.length !== afterDay.length) {
+    return itemsAfter.map((item) =>
+      (item.date?.trim() || "未指定日期") === dateKey ? withLastEntryFlag(item) : item,
+    );
+  }
   const preserved = afterDay.map((item, idx) => {
     const prevTime = beforeDay[idx]?.time?.trim();
-    return prevTime ? { ...item, time: beforeDay[idx]!.time } : item;
+    return withLastEntryFlag(prevTime ? { ...item, time: beforeDay[idx]!.time } : item);
   });
   return replaceDayItemsInItinerary(itemsAfter, dateKey, preserved);
 }

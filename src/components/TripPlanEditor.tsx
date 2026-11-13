@@ -23,7 +23,7 @@ import type {
 } from "@/lib/ai/types";
 import { TripStopSearchField } from "@/components/TripStopSearchField";
 import { tripPlaceToItineraryItem } from "@/lib/trip/trip-place-input";
-import { insertStopOnDate, moveStopInDay, removeStopAt } from "@/lib/trip/trip-stop-mutations";
+import { insertStopOnDate, moveStopInDay, removeStopAt, withStopDate } from "@/lib/trip/trip-stop-mutations";
 import { coalesceItineraryItems } from "@/lib/trip/itinerary-guards";
 import { useI18n } from "@/hooks/use-i18n";
 
@@ -81,7 +81,7 @@ function applyTripDateRange(
   groups.forEach(([, groupItems], idx) => {
     const date = newDates[idx] ?? newDates[newDates.length - 1] ?? start;
     for (const item of groupItems) {
-      next.push({ ...item, date });
+      next.push(withStopDate(item, date));
     }
   });
   return next;
@@ -95,7 +95,7 @@ function updateDayDate(
   return items.map((item) => {
     const key = item.date?.trim() || "未指定日期";
     if (key !== oldDateKey) return item;
-    return { ...item, date: newIso };
+    return withStopDate(item, newIso);
   });
 }
 

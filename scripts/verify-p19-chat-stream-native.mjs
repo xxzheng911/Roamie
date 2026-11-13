@@ -89,7 +89,44 @@ test("server propagates abort, has deadlines, structured empty-stream error and 
   assert.match(route, /\[CHAT_CREDIT_LIFECYCLE\]/);
   assert.match(route, /settleCredits\(false, "client_abort"\)/);
   assert.match(route, /onComplete:\s*async/);
-  assert.match(route, /rollbackServerCreditsByRequest/);
+  // X-Roamie-Cancel is a notice only: 204, no refund, no fall-through to generation.
+  assert.doesNotMatch(route, /rollbackServerCreditsByRequest/);
+  const cancelStart = route.indexOf('request.headers.get("x-roamie-cancel") === "true"');
+  assert.ok(cancelStart > 0, "cancel branch present");
+  const cancelOpen = route.indexOf("{", cancelStart);
+  let depth = 0;
+  let cancelEnd = -1;
+  for (let i = cancelOpen; i < route.length; i += 1) {
+    if (route[i] === "{") depth += 1;
+    else if (route[i] === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        cancelEnd = i;
+        break;
+      }
+    }
+  }
+  assert.ok(cancelEnd > cancelOpen, "cancel branch closed");
+  const cancelBranch = route.slice(cancelOpen, cancelEnd + 1);
+  assert.match(cancelBranch, /return new Response\(null, \{ status: 204 \}\);\s*\}$/);
+  assert.doesNotMatch(cancelBranch, /rollback|credits_rollback|settleCredits|settleServerCredits/i);
+  assert.doesNotMatch(cancelBranch, /status: rolledBack|503/);
+  assert.doesNotMatch(cancelBranch, /callRoamieAI|streamRoamieAI|reserveServerCredits|beginAiRequest/);
+  // Cancel check runs before any reservation or generation.
+  assert.ok(cancelStart < route.indexOf("beginAiRequest("), "cancel before beginAiRequest");
+  assert.ok(cancelStart < route.indexOf("reserveServerCredits(auth"), "cancel before reserve");
+  // Matches both `callRoamieAI(ctx)` and `callRoamieAI(ctx, { signal })`; the call must
+  // exist (indexOf > 0) so a missing call cannot make the ordering check pass vacuously.
+  const nonStreamCall = route.indexOf("callRoamieAI(ctx");
+  const streamCall = route.indexOf("streamRoamieAI(ctx");
+  assert.ok(nonStreamCall > 0, "non-stream call present");
+  assert.ok(streamCall > 0, "stream call present");
+  assert.ok(cancelStart < nonStreamCall, "cancel before non-stream call");
+  assert.ok(cancelStart < streamCall, "cancel before stream call");
+  // The cancel branch returns before every generation call site.
+  assert.ok(cancelEnd < nonStreamCall && cancelEnd < streamCall, "cancel branch closes before generation");
+  // A rejected commit is not delivered as success on the non-stream path.
+  assert.match(route, /if \(!\(await settleCredits\(true\)\)\) throw new Error/);
   assert.match(route, /parsed\.protocol === "capacitor:" && parsed\.hostname === "localhost"/);
   assert.match(
     itineraryRoute,

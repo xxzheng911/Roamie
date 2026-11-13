@@ -50,7 +50,7 @@ export function TripOutfitCard({
 }: Props) {
   const { t: uiT, locale } = useI18n();
 
-  const dateLabel = formatTripDateRangeLabel(dateRange.start, dateRange.end);
+  const dateLabel = formatTripDateRangeLabel(dateRange.start, dateRange.end, locale);
   const unavailable = weatherSource === "unavailable";
   const historical = weatherSource === "visual-crossing-stats";
   // Display-only normalization also covers summaries already saved before this UI change.

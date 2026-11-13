@@ -3,6 +3,10 @@ import type { WeatherSummary } from "@/lib/weather-types";
 import { classifyWeatherScene, type WeatherScene } from "@/lib/weather-scene";
 import { buildTemporalWeatherContext } from "@/lib/weather-context";
 import type { SearchAttempt } from "@/lib/ai/chat-place-recommendation";
+import type { Locale } from "@/lib/i18n/types";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import { applyKoParticles, displayDestinationForCopy } from "@/lib/ai/destination-locale-aliases";
 
 function resolveWeatherScene(
   weather: WeatherSummary | null | undefined,
@@ -35,7 +39,26 @@ export function buildWeatherAwarePlaceIntro(
   destination: string,
   scene: WeatherScene,
   weatherAvailable: boolean,
+  locale: Locale = effectiveAppLocale(),
 ): string {
+  if (locale !== "zh-TW") {
+    const shown = displayDestinationForCopy(destination, undefined, locale);
+    const key =
+      scene === "rainy"
+        ? weatherAvailable
+          ? "weatherIntroRainy"
+          : "weatherIntroMountainMist"
+        : scene === "hot"
+          ? "weatherIntroHot"
+          : scene === "cold"
+            ? "weatherIntroCold"
+            : scene === "night"
+              ? "weatherIntroNight"
+              : scene === "sunny"
+                ? "weatherIntroSunny"
+                : "weatherIntroDefault";
+    return applyKoParticles(chatRuntimeCopy(key, locale, { destination: shown }), [shown], locale);
+  }
   switch (scene) {
     case "rainy":
       return weatherAvailable

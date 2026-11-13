@@ -3,6 +3,9 @@ import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import type { PlaceResult } from "@/lib/place-result";
 import { parseExplicitBudgetConstraint } from "@/lib/budget-context";
+import { chatMoodDisplay } from "@/lib/chat-runtime-copy";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import type { Locale } from "@/lib/i18n/types";
 
 export type BudgetPreference = "low" | "medium" | "high";
 
@@ -125,10 +128,68 @@ export function refinePlaceResultsForBudget(
   );
 }
 
+function buildForeignBudgetRefinementSummary(
+  ctx: CanonicalTravelContext,
+  picks: Array<{ name: string }>,
+  locale: Exclude<Locale, "zh-TW">,
+): string {
+  const rawMood = ctx.mood?.trim();
+  const mood = rawMood ? chatMoodDisplay(rawMood, locale).trim() : "";
+  const list = picks
+    .slice(0, 5)
+    .map((p, i) => `${i + 1}. ${p.name}`)
+    .join("\n");
+  const copy = {
+    en: {
+      lead: mood
+        ? `Keeping your "${mood}" mood in mind, I'll keep spending on this trip easy.`
+        : "Got it, you'd like to keep spending on this trip easy.",
+      method:
+        "Without reliable price data, I'll put places that suit this way of traveling first, rather than treating a category as an actual price.",
+      better: "These should suit you better than the earlier picks:",
+      none: "I couldn't find better budget-friendly options nearby yet. Describe it a little differently and I'll look again.",
+      narrow: "If you want to narrow it down by style or distance, just let me know.",
+    },
+    ja: {
+      lead: mood
+        ? `「${mood}」の気分を大切にしつつ、今回は出費を抑えて気軽に楽しみたいんですね。`
+        : "なるほど、今回は出費を抑えて気軽に楽しみたいんですね。",
+      method:
+        "信頼できる価格データがない場合は、この旅のスタイルに合うスポットを優先して並べ、カテゴリを実際の価格とはみなしません。",
+      better: "さきほどのおすすめより、こちらのほうが合いそうです：",
+      none: "近くで予算を抑えたより良い候補が見つかりませんでした。言い方を変えて教えてもらえれば、もう一度探します。",
+      narrow: "スタイルや距離でさらに絞りたい場合は、気軽に教えてください。",
+    },
+    ko: {
+      lead: mood
+        ? `"${mood}" 기분을 기억하면서, 이번에는 지출을 부담 없이 하고 싶으시군요.`
+        : "알겠어요, 이번에는 지출을 부담 없이 하고 싶으시군요.",
+      method:
+        "신뢰할 만한 가격 정보가 없을 때는 이런 여행 방식에 더 맞는 장소를 먼저 보여 드리고, 카테고리를 실제 가격으로 보지 않아요.",
+      better: "아까 추천보다 이곳들이 더 잘 맞을 거예요:",
+      none: "근처에서 더 알맞은 저예산 옵션을 아직 찾지 못했어요. 조금 다르게 설명해 주시면 다시 찾아볼게요.",
+      narrow: "스타일이나 거리로 더 좁히고 싶다면 편하게 말해 주세요.",
+    },
+  }[locale];
+  return [
+    copy.lead,
+    copy.method,
+    picks.length ? copy.better : copy.none,
+    picks.length ? "" : undefined,
+    picks.length ? list : undefined,
+    picks.length ? "" : undefined,
+    picks.length ? copy.narrow : undefined,
+  ]
+    .filter((line) => line !== undefined)
+    .join("\n");
+}
+
 export function buildBudgetRefinementSummary(
   ctx: CanonicalTravelContext,
   picks: Array<{ name: string }>,
+  locale: Locale = effectiveAppLocale(),
 ): string {
+  if (locale !== "zh-TW") return buildForeignBudgetRefinementSummary(ctx, picks, locale);
   const mood = ctx.mood?.trim();
   const moodLead = mood ? `記著你「${mood}」的心情，` : "";
   const list = picks

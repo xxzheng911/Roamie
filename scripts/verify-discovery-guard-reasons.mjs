@@ -1,3 +1,4 @@
+import "./verify-netguard-full.mjs";
 import assert from 'node:assert/strict';
 import {runPlacesApiDeduped,beginPlacesGenerationSession} from '../src/lib/places-api-guard.ts';
 import {consumeGoogleBurst,consumeGuestGoogleBurst} from '../src/lib/google-burst.server.ts';

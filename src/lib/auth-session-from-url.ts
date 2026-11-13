@@ -43,25 +43,8 @@ export async function exchangeOAuthCode(code: string): Promise<Session> {
   });
 }
 
-/** Implicit / hash：access_token + refresh_token（部分 redirect 設定會走 hash） */
-export async function setSessionFromUrlHash(hash: URLSearchParams): Promise<Session | null> {
-  const access_token = hash.get("access_token");
-  const refresh_token = hash.get("refresh_token");
-  if (!access_token || !refresh_token) return null;
-
-  logAuthDebug("oauth.set_session_from_hash", {
-    hasAccessToken: true,
-    hasRefreshToken: true,
-  });
-
-  const { data, error } = await supabase.auth.setSession({
-    access_token,
-    refresh_token,
-  });
-  if (error) throw error;
-  return data.session;
-}
-
+// 不接受 URL hash 的 access_token／refresh_token（implicit flow）：特製連結可讓受害者登入成攻擊者帳號（login CSRF）。
+// 只走 PKCE ?code= 與既有 session；hash 僅用於讀取 OAuth error 顯示。
 export function readOAuthErrorFromUrl(
   query: URLSearchParams,
   hash: URLSearchParams,
@@ -89,7 +72,7 @@ export async function resolveSessionFromCallbackUrl(
   routeSearch?: OAuthCallbackSearch,
 ): Promise<{
   session: Session;
-  method: "code" | "hash" | "existing";
+  method: "code" | "existing";
 }> {
   const query = new URLSearchParams(window.location.search);
   const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
@@ -115,9 +98,6 @@ export async function resolveSessionFromCallbackUrl(
     const session = await exchangeOAuthCode(code);
     return { session, method: "code" };
   }
-
-  const fromHash = await setSessionFromUrlHash(hash);
-  if (fromHash) return { session: fromHash, method: "hash" };
 
   const existing = await getClientAuthSession();
   if (existing?.user) return { session: existing, method: "existing" };

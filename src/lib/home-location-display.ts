@@ -1,4 +1,6 @@
 import { REGION_NODES } from "@/lib/ai/region-adjacency/graph";
+import { applyCityLocaleAlias, canonicalFromDisplayName } from "@/lib/ai/destination-locale-aliases";
+import { itineraryDestinationDisplay } from "@/lib/native-qa-display";
 import type { Locale } from "@/lib/i18n/types";
 import { translate } from "@/lib/i18n/translate";
 
@@ -68,6 +70,61 @@ export function resolveHomeLocationDisplayLabel(
 ): string | null {
   const label = city?.trim() ?? "";
   if (!label) return null;
-  if (isReliableHomeLocalityLabel(label)) return label;
+  if (isReliableHomeLocalityLabel(label)) {
+    return locale === "zh-TW" ? label : (knownCityDisplay(label, locale) ?? label);
+  }
   return localizedCurrentLocationLabel(locale);
+}
+
+const ADMIN_SUFFIX = /(?:特別市|市|縣|県|都|府)$/u;
+
+/**
+ * Existing city display tables only (via itineraryDestinationDisplay). A label is localized
+ * only when the table knows it; unknown labels return undefined so callers keep the raw string.
+ */
+function knownCityDisplay(label: string, locale: Locale): string | undefined {
+  if (!LOCAL_SCRIPT.test(label)) {
+    const canonical = applyCityLocaleAlias(label);
+    if (canonical === label) return undefined;
+    return displayFromBases([canonical], locale);
+  }
+  const hangul = (name: string | undefined) => Boolean(name && /\p{Script=Hangul}/u.test(name));
+  const full = displayFromBases([label, ...otherScriptCanonical(label)], locale);
+  if (full && (locale !== "ko" || hangul(full))) return full;
+  const stripped = label.replace(ADMIN_SUFFIX, "");
+  const base = stripped !== label && stripped.length >= 2
+    ? withAdminSuffix(displayFromBases([stripped, ...otherScriptCanonical(stripped)], locale), label.slice(stripped.length), locale)
+    : undefined;
+  if (locale === "ko") return [full, base].find(hangul) ?? full ?? base;
+  return base;
+}
+
+/**
+ * 「新竹縣」is not「新竹市」: a county keeps its suffix (Hsinchu County, 新竹県). ja 「新北市」 keeps
+ * 市 (「新北」 alone is not the city's name); other cities stay as before (高雄市 → 高雄).
+ */
+function withAdminSuffix(base: string | undefined, suffix: string, locale: Locale): string | undefined {
+  if (!base) return undefined;
+  if (suffix === "縣" && locale !== "ja" && /^[\p{Script=Latin}\s.'-]+$/u.test(base)) return `${base} County`;
+  if (locale === "ja" && suffix === "縣") return `${base}県`;
+  if (locale === "ja" && suffix === "市" && base === "新北") return "新北市";
+  return base;
+}
+
+/** 「서울」「ソウル」「교토」: the canonical label of a known city written in another script. */
+function otherScriptCanonical(label: string): string[] {
+  const canonical = canonicalFromDisplayName(label) ?? applyCityLocaleAlias(label);
+  return canonical && canonical !== label ? [canonical] : [];
+}
+
+function displayFromBases(bases: string[], locale: Locale): string | undefined {
+  const candidates = [
+    ...new Set(bases.flatMap((base) => [base, base.replace(/台/g, "臺"), base.replace(/臺/g, "台")])),
+  ];
+  const displays = candidates
+    .filter((candidate) => itineraryDestinationDisplay(candidate, "en") !== candidate)
+    .map((candidate) => itineraryDestinationDisplay(candidate, locale))
+    .filter(Boolean);
+  if (locale === "ko") return displays.find((name) => /\p{Script=Hangul}/u.test(name)) ?? displays[0];
+  return displays[0];
 }
